@@ -1,0 +1,317 @@
+import "@angular/compiler";
+import { signal } from "@angular/core";
+import {
+  createExecutionPlan,
+  findDuplicateGroups,
+  GroupDecision,
+  ItemSummary,
+  ScanResult
+} from "@optimize-password/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiService } from "./api.service";
+import { AppComponent } from "./app.component";
+
+interface SessionState {
+  token: string;
+  accountName?: string;
+  apiBaseUrl: string;
+  enableMutations: boolean;
+  forceDryRun: boolean;
+  hasServiceAccountToken: boolean;
+  supportsDesktopAuth: boolean;
+}
+
+class MockApiService {
+  readonly session = signal<SessionState | undefined>({
+    token: "test-token",
+    apiBaseUrl: "http://127.0.0.1:3417",
+    enableMutations: false,
+    forceDryRun: true,
+    hasServiceAccountToken: false,
+    supportsDesktopAuth: true
+  });
+
+  private scanState = createScanFixture();
+  private readonly skippedGroups: ScanResult["groups"] = [];
+
+  readonly loadSession = vi.fn(async () => this.session()!);
+  readonly scan = vi.fn(async () => {
+    this.scanState = createScanFixture();
+    this.skippedGroups.length = 0;
+    return this.scanState;
+  });
+  readonly createPlan = vi.fn(async (decision: GroupDecision) =>
+    createExecutionPlan(decision.groupId, decision, this.scanState.items)
+  );
+  readonly execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }) => {
+    const plan = createExecutionPlan(decision.groupId, decision, this.scanState.items);
+    const results = plan.actions.map((action) => ({
+      itemId: action.itemId,
+      action: action.type,
+      ok: true,
+      dryRun: Boolean(decision.dryRun)
+    }));
+
+    if (decision.dryRun) {
+      return {
+        plan,
+        results,
+        dryRun: true,
+        dryRunKey: "approved-dry-run-key"
+      };
+    }
+
+    this.scanState = removeGroup(this.scanState, decision.groupId);
+    this.skippedGroups.length = 0;
+    return {
+      plan,
+      results,
+      completedGroupId: decision.groupId,
+      scan: this.scanState,
+      scanInvalidated: false
+    };
+  });
+  readonly skipGroup = vi.fn(async (scanId: string, groupId: string) => {
+    const group = this.scanState.groups.find((candidate) => candidate.id === groupId);
+    if (!group) {
+      throw new Error(`Unknown group: ${groupId}`);
+    }
+    this.skippedGroups.push(group);
+    this.scanState = removeGroup(this.scanState, groupId);
+    return {
+      skippedGroupId: groupId,
+      restorableSkippedGroupCount: this.skippedGroups.length,
+      scan: this.scanState
+    };
+  });
+  readonly restoreSkippedGroup = vi.fn(async () => {
+    const restoredGroup = this.skippedGroups.pop();
+    if (!restoredGroup) {
+      throw new Error("No skipped group");
+    }
+    this.scanState = {
+      ...this.scanState,
+      groups: [restoredGroup, ...this.scanState.groups]
+    };
+    return {
+      restoredGroupId: restoredGroup.id,
+      restorableSkippedGroupCount: this.skippedGroups.length,
+      scan: this.scanState
+    };
+  });
+  readonly clearScan = vi.fn(async () => ({ ok: true }));
+}
+
+describe("AppComponent interaction state", () => {
+  let api: MockApiService;
+  let component: AppComponent;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.stubGlobal("window", {
+      location: { origin: "http://127.0.0.1:4200" },
+      confirm: vi.fn(() => true),
+      prompt: vi.fn()
+    });
+
+    api = new MockApiService();
+    component = new AppComponent(api as unknown as ApiService);
+    component.scanMode.set("mock");
+  });
+
+  it("initializes a mock scan with recommended keep decisions and group filters", async () => {
+    await component.scan();
+
+    expect(api.scan).toHaveBeenCalledWith({ accountName: "", mode: "mock" });
+    expect(component.scanResult()?.groups).toHaveLength(2);
+    expect(component.groups()).toHaveLength(2);
+    expect(component.selectedItems()).toHaveLength(2);
+    expect(component.decisionSummary().keep).toBe(1);
+    expect(component.decisionSummary().archive).toBe(1);
+
+    component.updateTraitFilter("cross-vault");
+    expect(component.groups().every((group) => component.groupBadges(group).includes("跨保险库"))).toBe(true);
+  });
+
+  it("skips and restores the selected duplicate group without changing decisions for kept items", async () => {
+    await component.scan();
+    const skippedGroupId = component.selectedGroupId();
+    const keptItemId = component.selectedItems().find((item) => component.decisionFor(item).keep)?.id;
+
+    await component.skipSelectedGroup();
+
+    expect(api.skipGroup).toHaveBeenCalledWith(component.scanResult()?.scanId, skippedGroupId);
+    expect(component.scanResult()?.groups).toHaveLength(1);
+    expect(component.restorableSkippedGroupCount()).toBe(1);
+    expect(component.selectedGroupId()).not.toBe(skippedGroupId);
+
+    await component.restoreLastSkippedGroup();
+
+    expect(api.restoreSkippedGroup).toHaveBeenCalled();
+    expect(component.scanResult()?.groups).toHaveLength(2);
+    expect(component.selectedGroupId()).toBe(skippedGroupId);
+    expect(component.restorableSkippedGroupCount()).toBe(0);
+    expect(component.decisions()[keptItemId!].keep).toBe(true);
+  });
+
+  it("records successful live dry-run approval and clears it when the decision changes", async () => {
+    api.session.set({
+      token: "test-token",
+      apiBaseUrl: "http://127.0.0.1:3417",
+      enableMutations: true,
+      forceDryRun: false,
+      hasServiceAccountToken: false,
+      supportsDesktopAuth: true
+    });
+    component.scanMode.set("live");
+    await component.scan();
+
+    await component.dryRunPlan();
+
+    expect(api.execute).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+    expect(component.approvedDryRunKey()).toBe("approved-dry-run-key");
+    expect(component.canExecutePlan()).toBe(true);
+
+    const item = component.selectedItems()[0];
+    component.updateKeep(item, !component.decisionFor(item).keep);
+
+    expect(component.approvedDryRunKey()).toBeUndefined();
+    expect(component.canExecutePlan()).toBe(false);
+  });
+
+  it("executes a mock plan, advances the selected group, and clears restore state", async () => {
+    await component.scan();
+    const completedGroupId = component.selectedGroupId();
+
+    await component.skipSelectedGroup();
+    expect(component.restorableSkippedGroupCount()).toBe(1);
+    await component.restoreLastSkippedGroup();
+    expect(component.restorableSkippedGroupCount()).toBe(0);
+
+    await component.previewPlan();
+    expect(component.plan()?.groupId).toBe(completedGroupId);
+
+    await component.executePlan();
+
+    expect(api.execute).toHaveBeenCalledWith(expect.objectContaining({ groupId: completedGroupId }));
+    expect(component.scanResult()?.groups).toHaveLength(1);
+    expect(component.completedGroupCount()).toBe(1);
+    expect(component.selectedGroupId()).not.toBe(completedGroupId);
+    expect(component.plan()).toBeUndefined();
+    expect(component.executeResult()).toBeUndefined();
+    expect(component.restorableSkippedGroupCount()).toBe(0);
+    expect(component.status()).toContain("已完成 1 个重复组");
+  });
+});
+
+function createScanFixture(): ScanResult {
+  const items = [
+    item({
+      id: "vault-personal:github-1",
+      onePasswordItemId: "github-1",
+      vaultId: "vault-personal",
+      vaultName: "Personal",
+      title: "GitHub",
+      urls: ["https://github.com/login"],
+      usernames: ["alice@example.com"],
+      tags: ["dev"],
+      fieldCount: 5,
+      hasTotp: true,
+      hasNotes: true,
+      comparableFields: [
+        { label: "username", kind: "username", normalizedValue: "alice@example.com" },
+        { label: "password", kind: "secret", normalizedValueHash: "github-secret" }
+      ]
+    }),
+    item({
+      id: "vault-work:github-2",
+      onePasswordItemId: "github-2",
+      vaultId: "vault-work",
+      vaultName: "Work",
+      title: "github copy",
+      urls: ["github.com/login"],
+      usernames: ["alice@example.com"],
+      tags: ["imported"],
+      fieldCount: 3,
+      comparableFields: [
+        { label: "username", kind: "username", normalizedValue: "alice@example.com" },
+        { label: "password", kind: "secret", normalizedValueHash: "github-secret" }
+      ]
+    }),
+    item({
+      id: "vault-personal:aws-1",
+      onePasswordItemId: "aws-1",
+      vaultId: "vault-personal",
+      vaultName: "Personal",
+      title: "AWS root",
+      category: "api-credential",
+      urls: ["https://console.aws.amazon.com"],
+      usernames: ["ops@example.com"],
+      tags: ["cloud"],
+      fieldCount: 6,
+      hasTotp: true,
+      hasAttachments: true,
+      hasNotes: true,
+      comparableFields: [
+        { label: "access key", kind: "text", normalizedValue: "AKIA-MOCK-KEY" },
+        { label: "secret key", kind: "secret", normalizedValueHash: "aws-secret" }
+      ]
+    }),
+    item({
+      id: "vault-archive:aws-2",
+      onePasswordItemId: "aws-2",
+      vaultId: "vault-archive",
+      vaultName: "Archive",
+      title: "AWS old",
+      category: "api-credential",
+      urls: ["https://console.aws.amazon.com"],
+      usernames: ["ops@example.com"],
+      tags: ["old"],
+      fieldCount: 3,
+      comparableFields: [
+        { label: "access key", kind: "text", normalizedValue: "AKIA-MOCK-KEY" },
+        { label: "secret key", kind: "secret", normalizedValueHash: "aws-secret" }
+      ]
+    })
+  ];
+
+  return {
+    scanId: "scan-web-test",
+    scannedAt: "2026-06-28T00:00:00.000Z",
+    vaults: [
+      { id: "vault-personal", name: "Personal" },
+      { id: "vault-work", name: "Work" },
+      { id: "vault-archive", name: "Archive" }
+    ],
+    items,
+    groups: findDuplicateGroups(items)
+  };
+}
+
+function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | "title">): ItemSummary {
+  return {
+    onePasswordItemId: overrides.id,
+    vaultId: "vault-personal",
+    vaultName: "Personal",
+    category: "login",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    urls: [],
+    usernames: [],
+    tags: [],
+    fieldCount: 2,
+    hasTotp: false,
+    hasPasskey: false,
+    hasAttachments: false,
+    hasNotes: false,
+    comparableFields: [],
+    ...overrides
+  };
+}
+
+function removeGroup(scan: ScanResult, groupId: string): ScanResult {
+  return {
+    ...scan,
+    groups: scan.groups.filter((group) => group.id !== groupId)
+  };
+}

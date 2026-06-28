@@ -1,0 +1,28 @@
+{
+  "name": "@optimize-password/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "dev": "OP_FORCE_DRY_RUN=true tsx watch src/server.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@1password/sdk": "^0.4.0",
+    "@fastify/cors": "^11.0.1",
+    "@optimize-password/core": "file:../../packages/core",
+    "fastify": "^5.3.3",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.3",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^4.0.15"
+  }
+}

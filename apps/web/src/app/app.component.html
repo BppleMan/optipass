@@ -1,0 +1,358 @@
+<main class="shell">
+  <header class="topbar">
+    <div>
+      <h1>Optimize Password</h1>
+      <p>本地扫描 1Password 重复项，先计划后执行。</p>
+    </div>
+    <form class="scan-form" (ngSubmit)="scan()">
+      <label for="accountName">
+        <span>1Password 账户名 / account_uuid</span>
+        <input
+          id="accountName"
+          name="accountName"
+          [ngModel]="accountName()"
+          (ngModelChange)="accountName.set($event)"
+          placeholder="留空时使用 OP_ACCOUNT_NAME"
+          autocomplete="off"
+        >
+      </label>
+      <label for="scanMode">
+        <span>扫描模式</span>
+        <select id="scanMode" name="scanMode" [ngModel]="scanMode()" (ngModelChange)="scanMode.set($event)">
+          <option value="live">真实扫描</option>
+          <option value="mock">演示数据</option>
+        </select>
+      </label>
+      <button type="submit" [disabled]="loading()">
+        {{ loading() ? "处理中" : "扫描" }}
+      </button>
+    </form>
+  </header>
+
+  <section *ngIf="session() as activeSession" class="runtime-band">
+    <div>
+      <span class="runtime-label">API</span>
+      <span>{{ activeSession.apiBaseUrl }}</span>
+    </div>
+    <div>
+      <span class="runtime-label">入口</span>
+      <span>{{ clientOrigin }} · {{ appModeLabel() }}</span>
+    </div>
+    <div>
+      <span class="runtime-label">授权</span>
+      <span>{{ authModeLabel() }}</span>
+    </div>
+    <div>
+      <span class="runtime-label">真实变更</span>
+      <span>{{ mutationModeLabel() }}</span>
+    </div>
+    <div>
+      <span class="runtime-label">Desktop Auth</span>
+      <span>{{ activeSession.supportsDesktopAuth ? "支持" : "不可用" }}</span>
+    </div>
+  </section>
+
+  <section *ngIf="error()" class="notice error">{{ error() }}</section>
+  <section *ngIf="status()" class="notice success">{{ status() }}</section>
+  <section *ngIf="scanStale()" class="notice warning-notice">
+    <span>已执行变更，请重新扫描后继续处理。</span>
+    <button type="button" class="secondary" (click)="scan()" [disabled]="loading()">重新扫描</button>
+  </section>
+
+  <section *ngIf="scanResult() as result" class="summary-band">
+    <div>
+      <span class="metric">{{ result.vaults.length }}</span>
+      <span>保险库</span>
+    </div>
+    <div>
+      <span class="metric">{{ result.items.length }}</span>
+      <span>已扫描项目</span>
+    </div>
+    <div>
+      <span class="metric">{{ result.groups.length }}</span>
+      <span>剩余重复组</span>
+    </div>
+    <div>
+      <span class="metric">{{ completedGroupCount() }}</span>
+      <span>本轮已处理组</span>
+    </div>
+    <div>
+      <span class="metric">{{ result.scannedAt | date:'short' }}</span>
+      <span>扫描时间</span>
+    </div>
+    <div class="summary-action">
+      <button type="button" class="secondary" (click)="clearScan()" [disabled]="loading()">清空扫描</button>
+      <span>清除本地扫描缓存</span>
+    </div>
+  </section>
+
+  <section *ngIf="scanResult()" class="overview-band" aria-label="重复组分布概览">
+    <div>
+      <span class="overview-label">可见</span>
+      <strong>{{ groupOverview().visible }} / {{ groupOverview().total }}</strong>
+    </div>
+    <button type="button" class="overview-chip" [class.active]="confidenceFilter() === 'high'" (click)="applyConfidenceOverviewFilter('high')">
+      <span>高置信</span>
+      <strong>{{ groupOverview().high }}</strong>
+    </button>
+    <button type="button" class="overview-chip" [class.active]="confidenceFilter() === 'medium'" (click)="applyConfidenceOverviewFilter('medium')">
+      <span>中置信</span>
+      <strong>{{ groupOverview().medium }}</strong>
+    </button>
+    <button type="button" class="overview-chip" [class.active]="confidenceFilter() === 'low'" (click)="applyConfidenceOverviewFilter('low')">
+      <span>低置信</span>
+      <strong>{{ groupOverview().low }}</strong>
+    </button>
+    <button type="button" class="overview-chip" [class.active]="traitFilter() === 'cross-vault'" (click)="applyTraitOverviewFilter('cross-vault')">
+      <span>跨保险库</span>
+      <strong>{{ groupOverview().crossVault }}</strong>
+    </button>
+    <button type="button" class="overview-chip" [class.active]="traitFilter() === 'totp'" (click)="applyTraitOverviewFilter('totp')">
+      <span>含 TOTP</span>
+      <strong>{{ groupOverview().totp }}</strong>
+    </button>
+    <button type="button" class="overview-chip" [class.active]="traitFilter() === 'passkey'" (click)="applyTraitOverviewFilter('passkey')">
+      <span>含 Passkey</span>
+      <strong>{{ groupOverview().passkey }}</strong>
+    </button>
+    <button type="button" class="overview-chip" [class.active]="traitFilter() === 'attachments'" (click)="applyTraitOverviewFilter('attachments')">
+      <span>含附件</span>
+      <strong>{{ groupOverview().attachments }}</strong>
+    </button>
+  </section>
+
+  <section *ngIf="!scanResult()" class="empty-state">
+    <h2>开始前</h2>
+    <p>真实扫描默认使用 1Password Desktop App 授权；也可以通过 OP_SERVICE_ACCOUNT_TOKEN 使用 service account。没有账号配置时可先用演示数据检查 UI 和执行计划流程。</p>
+  </section>
+
+  <section *ngIf="scanResult()" class="workspace">
+    <aside class="groups">
+      <div class="panel-heading">
+        <h2>重复组</h2>
+        <span>{{ groups().length }} / {{ allGroups().length }} 组可见 · 已处理 {{ completedGroupCount() }}</span>
+      </div>
+      <div class="group-filters">
+        <input
+          name="groupQuery"
+          aria-label="搜索重复组"
+          [ngModel]="groupQuery()"
+          (ngModelChange)="updateGroupQuery($event)"
+          placeholder="搜索标题、URL、保险库"
+          autocomplete="off"
+        >
+        <div class="filter-row">
+          <select name="confidenceFilter" aria-label="按置信度筛选" [ngModel]="confidenceFilter()" (ngModelChange)="updateConfidenceFilter($event)">
+            <option value="all">全部置信度</option>
+            <option value="high">高置信度</option>
+            <option value="medium">中置信度</option>
+            <option value="low">低置信度</option>
+          </select>
+          <select name="ruleFilter" aria-label="按命中规则筛选" [ngModel]="ruleFilter()" (ngModelChange)="updateRuleFilter($event)">
+            <option value="all">全部命中规则</option>
+            <option value="secret">敏感字段指纹</option>
+            <option value="username-url">用户名 + 站点</option>
+            <option value="url">URL</option>
+            <option value="field">普通字段值</option>
+            <option value="title">标题</option>
+          </select>
+          <select name="traitFilter" aria-label="按组特征筛选" [ngModel]="traitFilter()" (ngModelChange)="updateTraitFilter($event)">
+            <option value="all">全部特征</option>
+            <option value="cross-vault">跨保险库</option>
+            <option value="totp">含 TOTP</option>
+            <option value="passkey">含 Passkey</option>
+            <option value="attachments">含附件</option>
+          </select>
+          <select name="vaultFilter" aria-label="按保险库筛选" [ngModel]="vaultFilter()" (ngModelChange)="updateVaultFilter($event)">
+            <option value="all">全部保险库</option>
+            <option *ngFor="let vault of vaults()" [value]="vault.id">{{ vault.name }}</option>
+          </select>
+          <select name="categoryFilter" aria-label="按类型筛选" [ngModel]="categoryFilter()" (ngModelChange)="updateCategoryFilter($event)">
+            <option value="all">全部类型</option>
+            <option *ngFor="let category of categories()" [value]="category">{{ category }}</option>
+          </select>
+          <select name="groupSort" aria-label="重复组排序" [ngModel]="groupSort()" (ngModelChange)="updateGroupSort($event)">
+            <option value="priority">按处理优先级</option>
+            <option value="size">按数量</option>
+            <option value="confidence">按置信度</option>
+            <option value="rules">按规则数</option>
+          </select>
+        </div>
+        <button type="button" class="secondary clear-filters" (click)="clearGroupFilters()" [disabled]="loading()">清空筛选</button>
+      </div>
+      <div *ngIf="groups().length === 0" class="group-empty">没有符合筛选条件的重复组。</div>
+      <button
+        *ngFor="let group of groups()"
+        class="group-row"
+        type="button"
+        [class.active]="group.id === selectedGroupId()"
+        (click)="selectGroup(group)"
+      >
+        <span class="group-title">{{ group.itemIds.length }} 个项目</span>
+        <span class="group-meta">{{ reasonLabels(group) }} · {{ group.confidence }}</span>
+        <span class="group-meta">{{ groupVaultLabels(group) }}</span>
+        <span class="group-badges">
+          <span *ngFor="let badge of groupBadges(group)">{{ badge }}</span>
+        </span>
+      </button>
+    </aside>
+
+    <section class="detail" *ngIf="selectedGroup() as group; else noVisibleGroup">
+      <div class="panel-heading">
+        <div>
+          <h2>组内项目</h2>
+          <p>{{ group.reasons.length }} 条命中规则 · 第 {{ groupPositionLabel() }} 组</p>
+        </div>
+        <div class="queue-nav" aria-label="重复组导航">
+          <button type="button" class="secondary compact" (click)="selectPreviousGroup()" [disabled]="loading() || !hasPreviousGroup()">上一组</button>
+          <span>{{ groupPositionLabel() }}</span>
+          <button type="button" class="secondary compact" (click)="selectNextGroup()" [disabled]="loading() || !hasNextGroup()">下一组</button>
+        </div>
+        <div class="actions">
+          <button type="button" class="secondary" (click)="restoreLastSkippedGroup()" [disabled]="loading() || scanStale() || restorableSkippedGroupCount() === 0">
+            撤销跳过{{ restorableSkippedGroupCount() ? " " + restorableSkippedGroupCount() : "" }}
+          </button>
+          <button type="button" class="secondary" (click)="skipSelectedGroup()" [disabled]="loading() || scanStale()">跳过此组</button>
+          <button type="button" class="secondary" (click)="previewPlan()" [disabled]="loading() || scanStale()">预览计划</button>
+          <button type="button" class="secondary" (click)="dryRunPlan()" [disabled]="loading() || scanStale()">试运行</button>
+          <button type="button" (click)="executePlan()" [disabled]="!canExecutePlan()">执行计划</button>
+        </div>
+      </div>
+
+      <div class="reason-list">
+        <span *ngFor="let reason of group.reasons">{{ reason.label }}</span>
+      </div>
+
+      <div class="decision-summary">
+        <span>保留 {{ decisionSummary().keep }}</span>
+        <span>归档 {{ decisionSummary().archive }}</span>
+        <span>永久删除 {{ decisionSummary().delete }}</span>
+        <span>移动 {{ decisionSummary().move }}</span>
+      </div>
+      <div class="decision-toolbar">
+        <button type="button" class="secondary" (click)="applyRecommendedKeeps()" [disabled]="loading() || scanStale()">应用推荐保留</button>
+        <button type="button" class="secondary" (click)="keepAllSelectedItems()" [disabled]="loading() || scanStale()">全部保留</button>
+        <button type="button" class="secondary" (click)="archiveAllNonKeptItems()" [disabled]="loading() || scanStale()">未保留全部归档</button>
+      </div>
+
+      <div class="item-table">
+        <div class="item-row header">
+          <span>保留</span>
+          <span>项目</span>
+          <span>保险库</span>
+          <span>目标保险库</span>
+          <span>未保留动作</span>
+        </div>
+
+        <div class="item-row" *ngFor="let item of selectedItems()">
+          <label class="checkbox-cell">
+            <input
+              type="checkbox"
+              [attr.aria-label]="'保留项目：' + item.title"
+              [ngModel]="decisionFor(item).keep"
+              (ngModelChange)="updateKeep(item, $event)"
+            >
+          </label>
+          <div class="item-main">
+            <strong>{{ item.title }}</strong>
+            <span *ngIf="recommendationLabelsFor(item).length" class="recommendation-line">
+              <ng-container *ngFor="let label of recommendationLabelsFor(item)">推荐：{{ label }} </ng-container>
+            </span>
+            <span>{{ item.category }} · {{ item.urls[0] || "无 URL" }}</span>
+            <span>
+              字段 {{ item.fieldCount }}
+              <ng-container *ngIf="item.hasTotp"> · TOTP</ng-container>
+              <ng-container *ngIf="item.hasPasskey"> · Passkey</ng-container>
+              <ng-container *ngIf="item.hasAttachments"> · 附件</ng-container>
+              <ng-container *ngIf="item.hasNotes"> · 备注</ng-container>
+            </span>
+          </div>
+          <span>{{ item.vaultName }}</span>
+          <select
+            [ngModel]="decisionFor(item).targetVaultId || item.vaultId"
+            (ngModelChange)="updateTargetVault(item, $event)"
+            [disabled]="!decisionFor(item).keep"
+            [attr.aria-label]="'选择保留项目标保险库：' + item.title"
+          >
+            <option *ngFor="let vault of vaults()" [value]="vault.id">{{ vault.name }}</option>
+          </select>
+          <select
+            [ngModel]="decisionFor(item).deleteMode || 'archive'"
+            (ngModelChange)="updateDeleteMode(item, $event)"
+            [disabled]="decisionFor(item).keep"
+            [attr.aria-label]="'选择未保留动作：' + item.title"
+          >
+            <option value="archive">归档</option>
+            <option value="delete">永久删除</option>
+          </select>
+        </div>
+      </div>
+
+      <section *ngIf="plan() as currentPlan" class="plan">
+        <h3>执行计划</h3>
+        <div class="plan-summary">
+          <span>保留 {{ currentPlan.summary.keep }}</span>
+          <span>移动 {{ currentPlan.summary.move }}</span>
+          <span>归档 {{ currentPlan.summary.archive }}</span>
+          <span [class.danger-chip]="currentPlan.summary.delete > 0">永久删除 {{ currentPlan.summary.delete }}</span>
+          <span>影响保险库 {{ planAffectedVaultLabels(currentPlan) || "-" }}</span>
+        </div>
+        <p *ngFor="let blocker of currentPlan.blockers" class="blocker">{{ blocker }}</p>
+        <p *ngFor="let warning of currentPlan.warnings" class="warning">{{ warning }}</p>
+        <p *ngIf="currentPlan.requiresExplicitDeleteConfirmation" class="blocker">该计划包含永久删除，执行时需要输入“永久删除”确认。</p>
+        <p *ngIf="currentPlanRequiresDryRun() && !approvedDryRunKey() && currentPlan.blockers.length === 0" class="warning">
+          真实执行前需要先成功试运行当前计划；修改保留项、目标保险库或未保留动作后需要重新试运行。
+        </p>
+        <p *ngIf="liveExecutionDisabled() && currentPlan.blockers.length === 0" class="warning">
+          {{ mutationDisabledHint() }}
+        </p>
+        <ul>
+          <li *ngFor="let action of currentPlan.actions">
+            <strong>{{ actionLabel(action) }}</strong>
+            <span>{{ itemLabel(action.itemId) }}</span>
+          </li>
+        </ul>
+      </section>
+
+      <section *ngIf="executeResult() as result" class="plan">
+        <h3>执行结果</h3>
+        <div class="result-summary">
+          <span [class.ok]="executionSummary().failed === 0 && !executionSummary().blocked">
+            {{ executionSummary().dryRun ? "试运行" : "真实执行" }}
+          </span>
+          <span>成功 {{ executionSummary().ok }}</span>
+          <span>失败 {{ executionSummary().failed }}</span>
+          <span *ngIf="executionSummary().skipped">跳过 {{ executionSummary().skipped }}</span>
+          <span *ngIf="executionSummary().blocked" class="failed">已阻止</span>
+        </div>
+        <p *ngIf="result.error" class="blocker">{{ result.error }}</p>
+
+        <div class="result-table" *ngIf="result.results?.length">
+          <div class="result-row header">
+            <span>状态</span>
+            <span>动作</span>
+            <span>项目</span>
+            <span>错误</span>
+          </div>
+          <div class="result-row" *ngFor="let row of result.results" [class.failed]="!row.ok">
+            <span>{{ resultStatusLabel(row) }}</span>
+            <span>{{ resultActionLabel(row) }}</span>
+            <span>{{ itemLabel(row.itemId) }}</span>
+            <span>{{ row.error || "-" }}</span>
+          </div>
+        </div>
+
+        <details>
+          <summary>原始响应</summary>
+          <pre>{{ result | json }}</pre>
+        </details>
+      </section>
+    </section>
+    <ng-template #noVisibleGroup>
+      <section class="detail empty-detail">
+        <h2>没有选中的可见重复组</h2>
+        <p>请选择左侧列表中的重复组，或调整筛选条件。</p>
+      </section>
+    </ng-template>
+  </section>
+</main>
