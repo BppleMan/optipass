@@ -1,0 +1,124 @@
+# Optimize Password
+
+本地 1Password 重复项整理工具。当前实现采用 Angular UI + Node.js TypeScript 后端，后端通过 1Password JavaScript SDK 操作 1Password。
+
+## 安全边界
+
+- 不支持也不需要 `.1pux` 或 CSV 导出。
+- 本地 API 默认只监听 `127.0.0.1`。
+- API 和生产模式前端都会返回 CSP、`X-Frame-Options`、`nosniff`、`no-store` 等基础安全响应头。
+- 1Password 原始 item 只在后端进程内存中处理，不写入磁盘。
+- 可以随时清空当前扫描结果和后端内存中的完整 item 缓存；这个动作不会改动 1Password 数据。
+- UI 不展示密码、TOTP secret、API key 等敏感值，只展示摘要和“是否存在”。
+- 删除默认建议使用归档，可恢复；永久删除需要显式选择，并在执行时输入 `永久删除` 短语确认。
+- 默认禁止真实归档、删除和跨保险库迁移；只有显式设置 `OP_ENABLE_MUTATIONS=true` 才允许后端调用真实变更接口。
+- `pnpm dev` 和 API 开发模式会强制设置 `OP_FORCE_DRY_RUN=true`，即使误设 `OP_ENABLE_MUTATIONS=true` 也不会允许真实变更。
+
+## 启动
+
+1. 在 1Password 桌面 App 中开启 SDK 集成：
+   - Settings > Developer > Integrate with other apps
+   - 如果要使用生物识别授权，也请在 Security 设置里开启 Touch ID / Windows Hello / system authentication
+2. 安装依赖：
+
+```bash
+pnpm install
+```
+
+3. 启动本地工具：
+
+```bash
+OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" pnpm dev
+```
+
+也可以不设置账号名，启动后在 UI 中输入 account name；或在 UI 中选择“演示数据”检查交互流程。
+默认开发启动会强制启用 dry-run 保护，只允许真实扫描和试运行，不会改动 1Password 数据。
+
+如果要用 service account，可改用：
+
+```bash
+OP_SERVICE_ACCOUNT_TOKEN="ops_..." pnpm dev
+```
+
+service account 只能访问被授权的 vault；Desktop App 授权适合整理个人账户中的可访问 vault。
+
+默认前端来源只允许 `http://127.0.0.1:4200` 和 `http://localhost:4200`。如果你改了前端端口，可设置：
+
+```bash
+WEB_ORIGINS="http://127.0.0.1:4300" OP_ACCOUNT_NAME="..." pnpm dev
+```
+
+4. 打开前端默认地址：
+
+```text
+http://127.0.0.1:4200
+```
+
+生产构建后也可以只启动一个本地服务：
+
+```bash
+pnpm build
+OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" pnpm start
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:3417
+```
+
+确认要执行真实变更时，再显式开启：
+
+```bash
+OP_ENABLE_MUTATIONS=true OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" pnpm start
+```
+
+如果环境中设置了 `OP_FORCE_DRY_RUN=true`，它会覆盖 `OP_ENABLE_MUTATIONS=true`，后端仍会禁止真实归档、删除和迁移。
+
+## 当前能力
+
+- 跨保险库扫描所有可访问 item。
+- 基于 `@1password/sdk@0.4.x`，默认使用 Desktop App 授权；后端按 vault 批量读取完整 item。
+- UI 会显示本地 API 地址、入口模式、授权来源和 Desktop Auth 支持状态，方便真实扫描前排查配置。
+- 按标题、URL、用户名+URL、敏感字段哈希、普通字段值等多条件归组。
+- 支持 1Password SDK 当前暴露的全部 item 类型，并保留未知类型为 `unknown`。
+- 每个重复组给出推荐保留项。
+- 推荐保留项会显示非敏感推荐理由，例如 TOTP、附件、备注、字段数量、URL 数量或最近更新。
+- 扫描后会显示重复组分布概览，可按高/中/低置信度、跨保险库、TOTP、Passkey、附件快速筛选。
+- 重复组列表可按置信度、命中规则、保险库和 item 类型筛选，可按处理优先级、数量、置信度或命中规则数排序，并标注跨保险库、TOTP、Passkey、附件和低置信度组。
+- 详情区支持上一组/下一组浏览；跳过或完成一组后会尽量停在相邻位置，方便连续处理长列表。
+- UI 可为每个 item 勾选多个保留项，并选择保留项目标保险库。
+- 组内支持快捷应用推荐保留、全部保留、未保留全部归档，便于处理较大的重复组。
+- 可跳过当前重复组，也可撤销上次跳过；跳过和撤销只会调整当前整理列表，不会改动 1Password 数据。
+- 可清空当前扫描；清空只会移除本地扫描结果和后端内存缓存，不会改动 1Password 数据。
+- 后端生成执行计划，执行前展示会归档、删除或迁移哪些 item。
+- 执行计划会汇总保留、移动、归档、永久删除数量和受影响保险库，便于执行前核对影响面。
+- 执行计划会由后端规范化动作顺序：保留、跨保险库迁移、归档、永久删除。
+- 真实扫描下必须先成功试运行当前执行计划，试运行会返回后端校验结果，但不会调用归档、删除或迁移动作。
+- 未设置 `OP_ENABLE_MUTATIONS=true` 时，即使试运行通过，真实执行也会被后端阻止。
+- 设置了 `OP_FORCE_DRY_RUN=true` 时，真实执行也会被后端阻止；开发命令默认启用该保护。
+- 执行结果会显示成功/失败摘要和逐项结果，失败时保留错误原因用于核对。
+- 整组执行成功后会从当前扫描结果中移除该组，并自动进入下一组，适合连续处理较多重复项。
+- 如果真实执行中有任何动作失败，后续动作会被跳过，当前扫描会被标记为需要重新扫描，避免扩大部分失败的影响范围。
+- 后端返回的校验、授权、并发保护错误会直接显示在 UI 顶部。
+- 无保留项的计划会被阻止执行。
+- 永久删除需要输入 `永久删除` 短语确认；默认使用归档。
+- 演示数据模式下执行计划只做 no-op dry-run，不会调用 1Password。
+- 后端会校验执行请求必须覆盖当前重复组的全部 item，防止夹带或漏掉项目。
+- 后端同一时间只允许一个真实执行任务，并会阻止执行期间重新扫描，防止多窗口或重复请求并发修改同一扫描结果。
+- 生产模式下 API 可直接服务构建后的 Angular 前端，不需要同时运行 Angular dev server。
+
+## 验证
+
+```bash
+pnpm test
+pnpm typecheck
+pnpm build
+pnpm smoke:mock
+```
+
+`pnpm smoke:mock` 会强制设置 `OP_FORCE_DRY_RUN=true`，并清空传给临时服务的 `OP_ACCOUNT_NAME`、`OP_SERVICE_ACCOUNT_TOKEN` 和 `OP_ENABLE_MUTATIONS`，只验证生产单服务模式、mock 扫描、鉴权和敏感值脱敏，不会连接或修改真实 1Password 数据。
+
+## 迁移说明
+
+1Password SDK 当前没有暴露独立的跨保险库 move API。本工具把跨保险库迁移设计为“在目标 vault 创建副本，成功后归档原 item”的两步计划。复制会包含字段、备注、标签、网站、附件字段和 Document 文件；如果读取或创建失败，源 item 不会被归档。含 Passkey 的 item 会被阻止跨保险库迁移，请保留在原保险库中处理。执行迁移前请先审查计划。
