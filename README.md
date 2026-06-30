@@ -2,6 +2,8 @@
 
 本地 1Password 重复项整理工具。当前实现采用 Angular UI + Node.js TypeScript 后端，后端通过 1Password JavaScript SDK 操作 1Password。
 
+后续重复判定与清理语义以 [docs/duplicate-semantics.md](docs/duplicate-semantics.md) 为准；当前代码如与该文档冲突，说明代码仍待调整。
+
 ## 安全边界
 
 - 不支持也不需要 `.1pux` 或 CSV 导出。
@@ -28,10 +30,16 @@ pnpm install
 3. 启动本地工具：
 
 ```bash
+pnpm dev
+```
+
+真实扫描默认使用 1Password Desktop App 本机交互授权。启动后在 UI 中输入 account name 或 account_uuid；如果不想每次输入，也可以把它设为默认值：
+
+```bash
 OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" pnpm dev
 ```
 
-也可以不设置账号名，启动后在 UI 中输入 account name；或在 UI 中选择“演示数据”检查交互流程。
+也可以在 UI 中选择“演示数据”检查交互流程。
 默认开发启动会强制启用 dry-run 保护，只允许真实扫描和试运行，不会改动 1Password 数据。
 
 如果要用 service account，可改用：
@@ -58,7 +66,7 @@ http://127.0.0.1:4200
 
 ```bash
 pnpm build
-OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" pnpm start
+pnpm start
 ```
 
 然后打开：
@@ -70,7 +78,7 @@ http://127.0.0.1:3417
 确认要执行真实变更时，再显式开启：
 
 ```bash
-OP_ENABLE_MUTATIONS=true OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" pnpm start
+OP_ENABLE_MUTATIONS=true pnpm start
 ```
 
 如果环境中设置了 `OP_FORCE_DRY_RUN=true`，它会覆盖 `OP_ENABLE_MUTATIONS=true`，后端仍会禁止真实归档、删除和迁移。

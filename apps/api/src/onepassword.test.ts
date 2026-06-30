@@ -1,5 +1,28 @@
-import { describe, expect, it } from "vitest";
-import { mapOnePasswordCategory } from "./onepassword.js";
+import { describe, expect, it, vi } from "vitest";
+
+const sdkMock = vi.hoisted(() => {
+  class DesktopAuth {
+    accountName: string;
+
+    constructor(accountName: string) {
+      this.accountName = accountName;
+    }
+  }
+
+  return {
+    createClient: vi.fn(),
+    DesktopAuth
+  };
+});
+
+vi.mock("@1password/sdk", () => ({
+  default: {
+    createClient: sdkMock.createClient,
+    DesktopAuth: sdkMock.DesktopAuth
+  }
+}));
+
+import { mapOnePasswordCategory, OnePasswordService } from "./onepassword.js";
 
 describe("mapOnePasswordCategory", () => {
   it("maps all SDK item categories used by 1Password", () => {
@@ -27,5 +50,42 @@ describe("mapOnePasswordCategory", () => {
     expect(mapOnePasswordCategory("SoftwareLicense")).toBe("software-license");
     expect(mapOnePasswordCategory("Person")).toBe("person");
     expect(mapOnePasswordCategory("Unsupported")).toBe("unsupported");
+  });
+});
+
+describe("OnePasswordService", () => {
+  it("reads full items in SDK-sized batches", async () => {
+    const itemIds = Array.from({ length: 121 }, (_, index) => `item-${index}`);
+    const getAll = vi.fn(async (_vaultId: string, batch: string[]) => ({
+      individualResponses: batch.map((id) => ({
+        content: {
+          id,
+          category: "Login",
+          title: id,
+          fields: [],
+          websites: [],
+          tags: []
+        }
+      }))
+    }));
+    sdkMock.createClient.mockResolvedValue({
+      vaults: {
+        list: vi.fn(() => [{ id: "vault-1", title: "Personal" }])
+      },
+      items: {
+        list: vi.fn(() => itemIds.map((id) => ({ id }))),
+        getAll
+      }
+    });
+
+    const service = new OnePasswordService();
+    await service.scan({ serviceAccountToken: "ops-test" });
+
+    expect(getAll).toHaveBeenCalledTimes(3);
+    expect(getAll.mock.calls.map((call) => call[1])).toEqual([
+      itemIds.slice(0, 50),
+      itemIds.slice(50, 100),
+      itemIds.slice(100)
+    ]);
   });
 });

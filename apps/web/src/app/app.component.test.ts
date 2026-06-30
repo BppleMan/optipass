@@ -107,12 +107,14 @@ describe("AppComponent interaction state", () => {
   let component: AppComponent;
 
   beforeEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.stubGlobal("window", {
       location: { origin: "http://127.0.0.1:4200" },
       confirm: vi.fn(() => true),
       prompt: vi.fn()
     });
+    vi.stubGlobal("localStorage", createMemoryStorage());
 
     api = new MockApiService();
     component = new AppComponent(api as unknown as ApiService);
@@ -124,13 +126,43 @@ describe("AppComponent interaction state", () => {
 
     expect(api.scan).toHaveBeenCalledWith({ accountName: "", mode: "mock" });
     expect(component.scanResult()?.groups).toHaveLength(2);
-    expect(component.groups()).toHaveLength(2);
+    expect(component.activeCandidateTab()).toBe("similar-login");
+    expect(component.groups()).toHaveLength(1);
     expect(component.selectedItems()).toHaveLength(2);
     expect(component.decisionSummary().keep).toBe(1);
     expect(component.decisionSummary().archive).toBe(1);
 
     component.updateTraitFilter("cross-vault");
     expect(component.groups().every((group) => component.groupBadges(group).includes("跨保险库"))).toBe(true);
+
+    component.setCandidateTab("misc");
+    expect(component.groups()).toHaveLength(1);
+  });
+
+  it("blocks live scans without a Desktop App account identifier", async () => {
+    component.scanMode.set("live");
+
+    await component.scan();
+
+    expect(api.scan).not.toHaveBeenCalled();
+    expect(component.error()).toContain("真实扫描需要填写 Desktop App 账户标识");
+  });
+
+  it("loads and persists the Desktop App account identifier locally", async () => {
+    const storage = createMemoryStorage({ "optipass.desktopAccountName": "StoredAccount" });
+    vi.stubGlobal("localStorage", storage);
+
+    await component.ngOnInit();
+
+    expect(component.accountName()).toBe("StoredAccount");
+
+    component.updateAccountName("  BppleMan  ");
+
+    expect(storage.getItem("optipass.desktopAccountName")).toBe("BppleMan");
+
+    component.updateAccountName(" ");
+
+    expect(storage.getItem("optipass.desktopAccountName")).toBeNull();
   });
 
   it("skips and restores the selected duplicate group without changing decisions for kept items", async () => {
@@ -164,6 +196,7 @@ describe("AppComponent interaction state", () => {
       supportsDesktopAuth: true
     });
     component.scanMode.set("live");
+    component.accountName.set("BppleMan");
     await component.scan();
 
     await component.dryRunPlan();
@@ -220,7 +253,7 @@ function createScanFixture(): ScanResult {
       hasNotes: true,
       comparableFields: [
         { label: "username", kind: "username", normalizedValue: "alice@example.com" },
-        { label: "password", kind: "secret", normalizedValueHash: "github-secret" }
+        { label: "password", kind: "secret", normalizedValueHash: "github-work-secret" }
       ]
     }),
     item({
@@ -262,7 +295,7 @@ function createScanFixture(): ScanResult {
       onePasswordItemId: "aws-2",
       vaultId: "vault-archive",
       vaultName: "Archive",
-      title: "AWS old",
+      title: "AWS root",
       category: "api-credential",
       urls: ["https://console.aws.amazon.com"],
       usernames: ["ops@example.com"],
@@ -300,6 +333,7 @@ function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | "title"
     usernames: [],
     tags: [],
     fieldCount: 2,
+    hasPassword: false,
     hasTotp: false,
     hasPasskey: false,
     hasAttachments: false,
@@ -313,5 +347,23 @@ function removeGroup(scan: ScanResult, groupId: string): ScanResult {
   return {
     ...scan,
     groups: scan.groups.filter((group) => group.id !== groupId)
+  };
+}
+
+function createMemoryStorage(initial: Record<string, string> = {}): Storage {
+  const values = new Map(Object.entries(initial));
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: vi.fn(() => values.clear()),
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    key: vi.fn((index: number) => Array.from(values.keys())[index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      values.delete(key);
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(key, value);
+    })
   };
 }

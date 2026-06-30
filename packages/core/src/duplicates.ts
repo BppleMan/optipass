@@ -1,4 +1,5 @@
 import {
+  DuplicateCandidateClass,
   DuplicateGroup,
   DuplicateReason,
   DuplicateRule,
@@ -7,59 +8,22 @@ import {
 } from "./model.js";
 import {
   normalizeComparableUrl,
-  normalizeLooseText,
-  normalizeTitle,
   normalizeUrlHost,
-  normalizeUsername,
   stableGroupId
 } from "./normalize.js";
 
-interface IndexedReason {
-  rule: DuplicateRule;
-  key: string;
-  label: string;
-  itemId: string;
+interface DuplicateDraft {
+  candidateClass: DuplicateCandidateClass;
+  itemIds: string[];
+  reasons: DuplicateReason[];
+  confidence: DuplicateGroup["confidence"];
 }
 
-class DisjointSet {
-  private readonly parent = new Map<string, string>();
-
-  add(id: string): void {
-    if (!this.parent.has(id)) {
-      this.parent.set(id, id);
-    }
-  }
-
-  find(id: string): string {
-    const parent = this.parent.get(id);
-    if (!parent || parent === id) {
-      return id;
-    }
-    const root = this.find(parent);
-    this.parent.set(id, root);
-    return root;
-  }
-
-  union(a: string, b: string): void {
-    this.add(a);
-    this.add(b);
-    const rootA = this.find(a);
-    const rootB = this.find(b);
-    if (rootA !== rootB) {
-      this.parent.set(rootB, rootA);
-    }
-  }
-
-  groups(): string[][] {
-    const out = new Map<string, string[]>();
-    for (const id of this.parent.keys()) {
-      const root = this.find(id);
-      const bucket = out.get(root) ?? [];
-      bucket.push(id);
-      out.set(root, bucket);
-    }
-    return Array.from(out.values()).filter((ids) => ids.length > 1);
-  }
+interface LoginAnchorBucket {
+  kind: "full-url" | "domain";
+  key: string;
+  label: string;
+  itemIds: string[];
 }
 
 export interface DuplicateOptions {
@@ -67,117 +31,20 @@ export interface DuplicateOptions {
 }
 
 export function findDuplicateGroups(items: ItemSummary[], options: DuplicateOptions = {}): DuplicateGroup[] {
-  const minTitleLength = options.minTitleLength ?? 3;
-  const itemById = new Map(items.map((item) => [item.id, item]));
-  const reasons = new Map<string, IndexedReason[]>();
+  const minTitleLength = options.minTitleLength ?? 1;
+  const deleteSuggestionItemIds = new Set(
+    items.filter((item) => isDeleteSuggestionItem(item)).map((item) => item.id)
+  );
 
-  const addReason = (reason: IndexedReason): void => {
-    const bucket = reasons.get(reason.key) ?? [];
-    bucket.push(reason);
-    reasons.set(reason.key, bucket);
-  };
+  const drafts = [
+    ...buildLoginIdentityGroups(items.filter((item) => item.category === "login" && !deleteSuggestionItemIds.has(item.id))),
+    ...buildMiscTitleGroups(items.filter((item) => item.category !== "login"), minTitleLength),
+    ...buildDeleteSuggestionGroups(items.filter((item) => deleteSuggestionItemIds.has(item.id)))
+  ];
 
-  for (const item of items) {
-    const title = normalizeTitle(item.title);
-    if (title.length >= minTitleLength) {
-      addReason({
-        rule: "title",
-        key: `title:${title}`,
-        label: `标题相同：${item.title}`,
-        itemId: item.id
-      });
-    }
-
-    for (const rawUrl of item.urls) {
-      const comparableUrl = normalizeComparableUrl(rawUrl);
-      if (comparableUrl) {
-        addReason({
-          rule: "url",
-          key: `url:${comparableUrl}`,
-          label: `URL 相同：${comparableUrl}`,
-          itemId: item.id
-        });
-      }
-
-      const urlHost = normalizeUrlHost(rawUrl);
-      for (const username of item.usernames) {
-        const normalizedUsername = normalizeUsername(username);
-        if (urlHost && normalizedUsername) {
-          addReason({
-            rule: "username-url",
-            key: `username-url:${normalizedUsername}@${urlHost}`,
-            label: `用户名 + 站点相同：${normalizedUsername}@${urlHost}`,
-            itemId: item.id
-          });
-        }
-      }
-    }
-
-    for (const field of item.comparableFields) {
-      if (field.normalizedValueHash) {
-        addReason({
-          rule: "secret",
-          key: `secret:${field.kind}:${field.normalizedValueHash}`,
-          label: `敏感字段指纹相同：${field.label}`,
-          itemId: item.id
-        });
-      } else if (field.normalizedValue) {
-        const normalized = normalizeLooseText(field.normalizedValue);
-        if (normalized.length >= 3) {
-          addReason({
-            rule: "field",
-            key: `field:${field.kind}:${normalized}`,
-            label: `字段值相同：${field.label}`,
-            itemId: item.id
-          });
-        }
-      }
-    }
-  }
-
-  const ds = new DisjointSet();
-  const duplicateReasons: DuplicateReason[] = [];
-
-  for (const bucket of reasons.values()) {
-    const uniqueIds = Array.from(new Set(bucket.map((reason) => reason.itemId)));
-    if (uniqueIds.length < 2) {
-      continue;
-    }
-
-    uniqueIds.forEach((id) => ds.add(id));
-    for (let index = 1; index < uniqueIds.length; index += 1) {
-      ds.union(uniqueIds[0], uniqueIds[index]);
-    }
-
-    const first = bucket[0];
-    duplicateReasons.push({
-      rule: first.rule,
-      key: first.key,
-      label: first.label,
-      itemIds: uniqueIds
-    });
-  }
-
-  return ds
-    .groups()
-    .map((itemIds) => {
-      const groupReasons = duplicateReasons.filter((reason) =>
-        reason.itemIds.some((id) => itemIds.includes(id))
-      );
-      const groupItems = itemIds.map((id) => itemById.get(id)).filter((item): item is ItemSummary => Boolean(item));
-      const recommendedKeepReasons = recommendKeepItemsWithReasons(groupItems);
-      const recommendedKeepIds = recommendedKeepReasons.map((reason) => reason.itemId);
-
-      return {
-        id: stableGroupId(itemIds),
-        itemIds: itemIds.sort((a, b) => scoreItem(itemById.get(b)) - scoreItem(itemById.get(a))),
-        reasons: groupReasons,
-        recommendedKeepIds,
-        recommendedKeepReasons,
-        confidence: confidenceFor(groupReasons)
-      };
-    })
-    .sort((a, b) => b.itemIds.length - a.itemIds.length || b.reasons.length - a.reasons.length);
+  return drafts
+    .map((draft) => toDuplicateGroup(draft, items))
+    .sort(compareGroups);
 }
 
 export function recommendKeepItems(items: ItemSummary[]): string[] {
@@ -198,6 +65,277 @@ export function recommendKeepItemsWithReasons(items: ItemSummary[]): Recommended
   }
 
   return [toRecommendedKeepReason(sorted[0])];
+}
+
+function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
+  const buckets = new Map<string, LoginAnchorBucket>();
+
+  const addToBucket = (bucket: Omit<LoginAnchorBucket, "itemIds">, itemId: string): void => {
+    const existing = buckets.get(bucket.key) ?? { ...bucket, itemIds: [] };
+    if (!existing.itemIds.includes(itemId)) {
+      existing.itemIds.push(itemId);
+    }
+    buckets.set(bucket.key, existing);
+  };
+
+  for (const item of items) {
+    const identities = accountIdentities(item);
+    const urls = normalizedUrls(item);
+    const domains = normalizedDomains(item);
+
+    for (const identity of identities) {
+      for (const url of urls) {
+        addToBucket({
+          kind: "full-url",
+          key: `login-full-url:${url}\u0000${identity}`,
+          label: `完整 URL + 用户名相同：${identity}@${url}`
+        }, item.id);
+      }
+      for (const domain of domains) {
+        addToBucket({
+          kind: "domain",
+          key: `login-domain:${domain}\u0000${identity}`,
+          label: `域名 + 用户名相同：${identity}@${domain}`
+        }, item.id);
+      }
+    }
+  }
+
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const byItemSet = new Map<string, DuplicateDraft>();
+
+  for (const bucket of buckets.values()) {
+    const itemIds = uniqueSorted(bucket.itemIds);
+    if (itemIds.length < 2) {
+      continue;
+    }
+
+    const groupItems = itemIds.map((id) => itemById.get(id)).filter((item): item is ItemSummary => Boolean(item));
+    const reason: DuplicateReason = {
+      rule: "username-url",
+      key: bucket.key,
+      label: bucket.label,
+      itemIds
+    };
+    const itemSetKey = itemIds.join("\u0000");
+    const existing = byItemSet.get(itemSetKey);
+
+    if (existing) {
+      existing.reasons.push(reason);
+      if (bucket.kind === "full-url") {
+        existing.confidence = "high";
+      }
+      if (existing.candidateClass !== "exact-duplicate" && isExactLoginDuplicateGroup(groupItems)) {
+        existing.candidateClass = "exact-duplicate";
+        existing.confidence = "high";
+        existing.reasons.push(exactCredentialReason(itemIds));
+      }
+      continue;
+    }
+
+    const exact = isExactLoginDuplicateGroup(groupItems);
+    byItemSet.set(itemSetKey, {
+      candidateClass: exact ? "exact-duplicate" : "similar-login",
+      itemIds,
+      reasons: exact ? [reason, exactCredentialReason(itemIds)] : [reason],
+      confidence: exact ? "high" : bucket.kind === "full-url" ? "high" : "medium"
+    });
+  }
+
+  return removeStrictSubsetGroups(Array.from(byItemSet.values()));
+}
+
+function buildMiscTitleGroups(items: ItemSummary[], minTitleLength: number): DuplicateDraft[] {
+  const buckets = new Map<string, ItemSummary[]>();
+
+  for (const item of items) {
+    const title = item.title.trim();
+    if (title.length < minTitleLength) {
+      continue;
+    }
+    const bucket = buckets.get(title) ?? [];
+    bucket.push(item);
+    buckets.set(title, bucket);
+  }
+
+  return Array.from(buckets.entries()).flatMap(([title, bucket]) => {
+    if (bucket.length < 2) {
+      return [];
+    }
+    const itemIds = uniqueSorted(bucket.map((item) => item.id));
+    return [{
+      candidateClass: "misc-title" as const,
+      itemIds,
+      reasons: [{
+        rule: "title" as const,
+        key: `misc-title:${title}`,
+        label: `非登录标题相同：${title}`,
+        itemIds
+      }],
+      confidence: "low" as const
+    }];
+  });
+}
+
+function buildDeleteSuggestionGroups(items: ItemSummary[]): DuplicateDraft[] {
+  return items.map((item) => {
+    const reasons: DuplicateReason[] = [];
+    if (!hasAccountIdentity(item)) {
+      reasons.push({
+        rule: "missing-account-identity",
+        key: `delete-suggestion:missing-account-identity:${item.id}`,
+        label: "登录项缺少账号身份",
+        itemIds: [item.id]
+      });
+    }
+    if (!hasCredentialMaterial(item)) {
+      reasons.push({
+        rule: "missing-credential-material",
+        key: `delete-suggestion:missing-credential-material:${item.id}`,
+        label: "登录项缺少密码、一次性密码或登录方式",
+        itemIds: [item.id]
+      });
+    }
+
+    return {
+      candidateClass: "delete-suggestion",
+      itemIds: [item.id],
+      reasons,
+      confidence: "low"
+    };
+  });
+}
+
+function toDuplicateGroup(draft: DuplicateDraft, allItems: ItemSummary[]): DuplicateGroup {
+  const itemById = new Map(allItems.map((item) => [item.id, item]));
+  const groupItems = draft.itemIds.map((id) => itemById.get(id)).filter((item): item is ItemSummary => Boolean(item));
+  const recommendedKeepReasons = draft.candidateClass === "delete-suggestion"
+    ? []
+    : recommendKeepItemsWithReasons(groupItems);
+
+  return {
+    id: stableGroupId([draft.candidateClass, ...draft.itemIds]),
+    candidateClass: draft.candidateClass,
+    itemIds: draft.itemIds.sort((a, b) => scoreItem(itemById.get(b)) - scoreItem(itemById.get(a))),
+    reasons: draft.reasons,
+    recommendedKeepIds: recommendedKeepReasons.map((reason) => reason.itemId),
+    recommendedKeepReasons,
+    confidence: draft.confidence
+  };
+}
+
+function isDeleteSuggestionItem(item: ItemSummary): boolean {
+  return item.category === "login" && (!hasAccountIdentity(item) || !hasCredentialMaterial(item));
+}
+
+function hasAccountIdentity(item: ItemSummary): boolean {
+  return accountIdentities(item).length > 0;
+}
+
+function hasCredentialMaterial(item: ItemSummary): boolean {
+  return item.hasPassword || credentialHashes(item).length > 0 || item.hasTotp || item.hasPasskey;
+}
+
+function accountIdentities(item: ItemSummary): string[] {
+  return uniqueSorted([
+    ...item.usernames,
+    ...item.comparableFields
+      .filter((field) => field.kind === "username" || field.kind === "email" || field.kind === "phone")
+      .map((field) => field.normalizedValue ?? "")
+  ].map((value) => value.trim()).filter(Boolean));
+}
+
+function normalizedUrls(item: ItemSummary): string[] {
+  return uniqueSorted(item.urls.map((url) => normalizeComparableUrl(url)).filter((url): url is string => Boolean(url)));
+}
+
+function normalizedDomains(item: ItemSummary): string[] {
+  return uniqueSorted(item.urls.map((url) => normalizeUrlHost(url)).filter((host): host is string => Boolean(host)));
+}
+
+function isExactLoginDuplicateGroup(items: ItemSummary[]): boolean {
+  if (items.length < 2 || items.some((item) => item.category !== "login")) {
+    return false;
+  }
+
+  const firstUrlSet = normalizedUrls(items[0]).join("\u0000");
+  const firstCredentialSet = credentialHashes(items[0]).join("\u0000");
+  if (!firstUrlSet || !firstCredentialSet) {
+    return false;
+  }
+
+  return items.every((item) =>
+    normalizedUrls(item).join("\u0000") === firstUrlSet &&
+    credentialHashes(item).join("\u0000") === firstCredentialSet
+  );
+}
+
+function credentialHashes(item: ItemSummary): string[] {
+  return uniqueSorted(item.comparableFields
+    .filter((field) => field.kind === "secret" && field.normalizedValueHash)
+    .map((field) => field.normalizedValueHash!));
+}
+
+function exactCredentialReason(itemIds: string[]): DuplicateReason {
+  return {
+    rule: "credential-material",
+    key: `credential-material:${itemIds.join("\u0000")}`,
+    label: "同一登录身份下凭据材料相同",
+    itemIds
+  };
+}
+
+function removeStrictSubsetGroups(groups: DuplicateDraft[]): DuplicateDraft[] {
+  const sorted = groups.slice().sort((a, b) =>
+    b.itemIds.length - a.itemIds.length ||
+    confidenceRank(b.confidence) - confidenceRank(a.confidence) ||
+    classRank(b.candidateClass) - classRank(a.candidateClass)
+  );
+  const selected: DuplicateDraft[] = [];
+
+  for (const group of sorted) {
+    if (selected.some((candidate) => isStrictSubset(group.itemIds, candidate.itemIds))) {
+      continue;
+    }
+    selected.push(group);
+  }
+
+  return selected;
+}
+
+function isStrictSubset(candidate: string[], container: string[]): boolean {
+  return candidate.length < container.length && candidate.every((id) => container.includes(id));
+}
+
+function compareGroups(a: DuplicateGroup, b: DuplicateGroup): number {
+  return (
+    classRank(b.candidateClass) - classRank(a.candidateClass) ||
+    confidenceRank(b.confidence) - confidenceRank(a.confidence) ||
+    b.itemIds.length - a.itemIds.length ||
+    b.reasons.length - a.reasons.length ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function classRank(candidateClass: DuplicateCandidateClass): number {
+  switch (candidateClass) {
+    case "similar-login":
+      return 4;
+    case "exact-duplicate":
+      return 3;
+    case "misc-title":
+      return 2;
+    case "delete-suggestion":
+      return 1;
+  }
+}
+
+function confidenceRank(confidence: DuplicateGroup["confidence"]): number {
+  return confidence === "high" ? 3 : confidence === "medium" ? 2 : 1;
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
 }
 
 function scoreItem(item: ItemSummary | undefined): number {
@@ -258,14 +396,4 @@ function recommendationLabels(item: ItemSummary): string[] {
   }
 
   return labels.length > 0 ? labels : ["信息较完整"];
-}
-
-function confidenceFor(reasons: DuplicateReason[]): DuplicateGroup["confidence"] {
-  if (reasons.some((reason) => reason.rule === "secret" || reason.rule === "username-url")) {
-    return "high";
-  }
-  if (reasons.some((reason) => reason.rule === "url")) {
-    return "medium";
-  }
-  return "low";
 }

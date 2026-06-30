@@ -70,6 +70,22 @@ describe("createExecutionPlan", () => {
     expect(plan.blockers).toEqual(["该组没有选择任何保留项。请至少保留一个 item。"]);
   });
 
+  it("allows advisory delete suggestions to keep nothing", () => {
+    const plan = createExecutionPlan(
+      "delete-suggestion-1",
+      {
+        scanId: "scan-1",
+        groupId: "delete-suggestion-1",
+        items: [{ itemId: "vault-a:1", keep: false }]
+      },
+      [item({ id: "vault-a:1", title: "Empty login" })],
+      { requireKeep: false }
+    );
+
+    expect(plan.blockers).toEqual([]);
+    expect(plan.actions.map((action) => action.type)).toEqual(["archive"]);
+  });
+
   it("flags permanent delete plans for explicit confirmation", () => {
     const plan = createExecutionPlan(
       "group-1",

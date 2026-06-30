@@ -29,8 +29,15 @@ export type DuplicateRule =
   | "title"
   | "url"
   | "username-url"
-  | "secret"
-  | "field";
+  | "credential-material"
+  | "missing-account-identity"
+  | "missing-credential-material";
+
+export type DuplicateCandidateClass =
+  | "exact-duplicate"
+  | "similar-login"
+  | "misc-title"
+  | "delete-suggestion";
 
 export interface VaultSummary {
   id: string;
@@ -58,6 +65,7 @@ export interface ItemSummary {
   usernames: string[];
   tags: string[];
   fieldCount: number;
+  hasPassword: boolean;
   hasTotp: boolean;
   hasPasskey: boolean;
   hasAttachments: boolean;
@@ -74,6 +82,7 @@ export interface DuplicateReason {
 
 export interface DuplicateGroup {
   id: string;
+  candidateClass: DuplicateCandidateClass;
   itemIds: string[];
   reasons: DuplicateReason[];
   recommendedKeepIds: string[];

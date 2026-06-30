@@ -180,7 +180,7 @@ describe("api app", () => {
     expect(clearResponse.statusCode).toBe(200);
     expect(clearResponse.json()).toEqual({ ok: true });
     expect(afterClearResponse.statusCode).toBe(400);
-    expect(afterClearResponse.json().message).toContain("No scan has been run");
+    expect(afterClearResponse.json().message).toContain("还没有扫描结果");
     expect(service.clearCache).toHaveBeenCalledTimes(1);
     expect(service.scan).not.toHaveBeenCalled();
     expect(service.archive).not.toHaveBeenCalled();
@@ -188,7 +188,7 @@ describe("api app", () => {
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
   });
 
-  it("reports missing live auth configuration as a bad request", async () => {
+  it("reports missing live desktop auth account as a bad request", async () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/scan",
@@ -197,7 +197,7 @@ describe("api app", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().message).toContain("Missing 1Password account name");
+    expect(response.json().message).toContain("Desktop App 授权需要账户名或 account_uuid");
   });
 
   it("serves the production web UI without intercepting API routes", async () => {
@@ -447,7 +447,7 @@ describe("api app", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json().message).toContain("No skipped duplicate group");
+    expect(response.json().message).toContain("没有可恢复");
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
@@ -495,7 +495,7 @@ describe("api app", () => {
     expect(executeResponse.statusCode).toBe(200);
     expect(executeResponse.json().completedGroupId).toBe(group.id);
     expect(restoreResponse.statusCode).toBe(400);
-    expect(restoreResponse.json().message).toContain("No skipped duplicate group");
+    expect(restoreResponse.json().message).toContain("没有可恢复");
     expect(service.scan).not.toHaveBeenCalled();
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
@@ -583,8 +583,8 @@ describe("api app", () => {
 
     expect(planResponse.statusCode).toBe(400);
     expect(executeResponse.statusCode).toBe(400);
-    expect(planResponse.json().message).toContain("Scan is stale");
-    expect(executeResponse.json().message).toContain("Scan is stale");
+    expect(planResponse.json().message).toContain("扫描结果已过期");
+    expect(executeResponse.json().message).toContain("扫描结果已过期");
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
   });
@@ -617,7 +617,7 @@ describe("api app", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().blocked).toBe(true);
-    expect(response.json().error).toContain("dry-run");
+    expect(response.json().error).toContain("试运行");
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
@@ -667,7 +667,7 @@ describe("api app", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().blocked).toBe(true);
-    expect(response.json().error).toContain("mutations are disabled");
+    expect(response.json().error).toContain("真实 1Password 变更");
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
@@ -814,7 +814,7 @@ describe("api app", () => {
 
     expect(secondExecute.statusCode).toBe(200);
     expect(secondExecute.json().blocked).toBe(true);
-    expect(secondExecute.json().error).toContain("Another execution is already running");
+    expect(secondExecute.json().error).toContain("已有执行任务正在运行");
     expect(service.archive).toHaveBeenCalledTimes(1);
 
     releaseArchive();
@@ -867,7 +867,7 @@ describe("api app", () => {
     });
 
     expect(rescanResponse.statusCode).toBe(409);
-    expect(rescanResponse.json().message).toContain("execution is already running");
+    expect(rescanResponse.json().message).toContain("已有执行任务正在运行");
     expect(service.scan).toHaveBeenCalledTimes(1);
 
     releaseArchive();
@@ -936,7 +936,7 @@ describe("api app", () => {
     expect(executeResponse.json().scan.groups).toHaveLength(scan.groups.length - 1);
     expect(service.archive).toHaveBeenCalled();
     expect(completedGroupPlanResponse.statusCode).toBe(400);
-    expect(completedGroupPlanResponse.json().message).toContain("Unknown duplicate group");
+    expect(completedGroupPlanResponse.json().message).toContain("找不到重复组");
     expect(nextGroupPlanResponse.statusCode).toBe(200);
   });
 
@@ -988,7 +988,7 @@ describe("api app", () => {
     expect(executeResponse.json().scanInvalidated).toBe(false);
     expect(executeResponse.json().completedGroupId).toBe(group.id);
     expect(restoreResponse.statusCode).toBe(400);
-    expect(restoreResponse.json().message).toContain("No skipped duplicate group");
+    expect(restoreResponse.json().message).toContain("没有可恢复");
     expect(service.archive).toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
@@ -1040,7 +1040,7 @@ describe("api app", () => {
     expect(executeResponse.json().scanInvalidated).toBe(true);
     expect(executeResponse.json().results.some((result: { ok: boolean }) => !result.ok)).toBe(true);
     expect(planAfterFailureResponse.statusCode).toBe(400);
-    expect(planAfterFailureResponse.json().message).toContain("Run a scan");
+    expect(planAfterFailureResponse.json().message).toContain("请先运行扫描");
   });
 
   it("stops live execution after the first failed mutation", async () => {

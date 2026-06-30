@@ -1,5 +1,9 @@
 import { ExecutionPlan, ExecutionPlanSummary, GroupDecision, ItemSummary, PlanAction } from "./model.js";
 
+interface ExecutionPlanOptions {
+  requireKeep?: boolean;
+}
+
 export function validateDecisionItemSet(decisions: GroupDecision, expectedItemIds: string[]): string[] {
   const blockers: string[] = [];
   const actualItemIds = decisions.items.map((decision) => decision.itemId);
@@ -20,20 +24,26 @@ export function validateDecisionItemSet(decisions: GroupDecision, expectedItemId
   return blockers;
 }
 
-export function createExecutionPlan(groupId: string, decisions: GroupDecision, items: ItemSummary[]): ExecutionPlan {
+export function createExecutionPlan(
+  groupId: string,
+  decisions: GroupDecision,
+  items: ItemSummary[],
+  options: ExecutionPlanOptions = {}
+): ExecutionPlan {
   const itemById = new Map(items.map((item) => [item.id, item]));
   const warnings: string[] = [];
   const blockers: string[] = [];
   const keepDecisions = decisions.items.filter((decision) => decision.keep);
+  const requireKeep = options.requireKeep ?? true;
 
-  if (keepDecisions.length === 0) {
+  if (requireKeep && keepDecisions.length === 0) {
     blockers.push("该组没有选择任何保留项。请至少保留一个 item。");
   }
 
   const actions = decisions.items.map<PlanAction>((decision) => {
     const item = itemById.get(decision.itemId);
     if (!item) {
-      throw new Error(`Unknown item in decision: ${decision.itemId}`);
+      throw new Error(`执行请求包含未知 item：${decision.itemId}`);
     }
 
     const targetVaultId = decision.targetVaultId || item.vaultId;

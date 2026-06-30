@@ -71,8 +71,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (error instanceof ClientInputError || error instanceof ZodError) {
       return reply.code(400).send({
         statusCode: 400,
-        error: "Bad Request",
-        message: error.message
+        error: "请求错误",
+        message: error instanceof ZodError ? "请求参数格式不正确，请刷新页面后重试。" : error.message
       });
     }
 
@@ -89,7 +89,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     const token = request.headers["x-session-token"];
     if (token !== config.sessionToken) {
-      await reply.code(401).send({ error: "Invalid local session token" });
+      await reply.code(401).send({ error: "本地会话令牌无效，请刷新页面后重试。" });
     }
   });
 
@@ -107,7 +107,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
   server.get("/api/scan", async () => {
     if (!latestScan) {
-      throw new ClientInputError("No scan has been run yet.");
+      throw new ClientInputError("还没有扫描结果，请先运行一次扫描。");
     }
     return redactScanResultForClient(latestScan);
   });
@@ -115,8 +115,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/scan/clear", async (_request, reply) => {
     if (activeMutationScanId) {
       return reply.code(409).send({
-        error: "Conflict",
-        message: "An execution is already running. Wait for it to finish before clearing the scan."
+        error: "冲突",
+        message: "当前已有执行任务正在运行，请等待完成后再清空扫描结果。"
       });
     }
 
@@ -132,8 +132,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/scan", async (request, reply) => {
     if (activeMutationScanId) {
       return reply.code(409).send({
-        error: "Conflict",
-        message: "An execution is already running. Wait for it to finish before scanning again."
+        error: "冲突",
+        message: "当前已有执行任务正在运行，请等待完成后再重新扫描。"
       });
     }
 
@@ -148,12 +148,16 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     const accountName = body.accountName || config.accountName;
     if (!config.serviceAccountToken && !accountName) {
-      throw new ClientInputError("Missing 1Password account name. Set OP_ACCOUNT_NAME, enter an account name, set OP_SERVICE_ACCOUNT_TOKEN, or use mock mode.");
+      throw new ClientInputError("官方 1Password SDK 的 Desktop App 授权需要账户名或 account_uuid 来定位账户。它不是密码或 token；请在页面顶部填写，或用 OP_ACCOUNT_NAME 设置默认值。");
     }
-    latestScan = await onePassword.scan({
-      serviceAccountToken: config.serviceAccountToken,
-      accountName
-    });
+    try {
+      latestScan = await onePassword.scan({
+        serviceAccountToken: config.serviceAccountToken,
+        accountName
+      });
+    } catch (error) {
+      throw new ClientInputError(formatOnePasswordError(error));
+    }
     latestScanMode = "live";
     latestDryRunKey = undefined;
     latestSkippedGroups = [];
@@ -169,8 +173,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/groups/:groupId/skip", async (request, reply) => {
     if (activeMutationScanId) {
       return reply.code(409).send({
-        error: "Conflict",
-        message: "An execution is already running. Wait for it to finish before skipping a group."
+        error: "冲突",
+        message: "当前已有执行任务正在运行，请等待完成后再跳过重复组。"
       });
     }
 
@@ -179,7 +183,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     const scan = currentScanFor(body.scanId, latestScan);
     const skippedGroup = scan.groups.find((group) => group.id === params.groupId);
     if (!skippedGroup) {
-      throw new ClientInputError(`Unknown duplicate group: ${params.groupId}`);
+      throw new ClientInputError(`找不到重复组：${params.groupId}`);
     }
 
     latestSkippedGroups.push(skippedGroup);
@@ -196,8 +200,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/groups/restore-skipped", async (request, reply) => {
     if (activeMutationScanId) {
       return reply.code(409).send({
-        error: "Conflict",
-        message: "An execution is already running. Wait for it to finish before restoring a skipped group."
+        error: "冲突",
+        message: "当前已有执行任务正在运行，请等待完成后再恢复跳过的重复组。"
       });
     }
 
@@ -205,7 +209,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     const scan = currentScanFor(body.scanId, latestScan);
     const restoredGroup = latestSkippedGroups.pop();
     if (!restoredGroup) {
-      throw new ClientInputError("No skipped duplicate group can be restored.");
+      throw new ClientInputError("没有可恢复的已跳过重复组。");
     }
 
     latestScan = {
@@ -259,7 +263,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         plan,
         results: [],
         blocked: true,
-        error: "Run a successful dry-run for the current plan before executing live changes."
+        error: "执行真实变更前，请先成功试运行当前计划。"
       };
     }
 
@@ -271,7 +275,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         plan,
         results: [],
         blocked: true,
-        error: `Permanent delete requires typing ${permanentDeleteConfirmationPhrase}.`
+        error: `永久删除需要输入“${permanentDeleteConfirmationPhrase}”确认。`
       };
     }
 
@@ -280,7 +284,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         plan,
         results: [],
         blocked: true,
-        error: "Another execution is already running. Wait for it to finish, then rescan before continuing."
+        error: "当前已有执行任务正在运行，请等待完成后重新扫描再继续。"
       };
     }
 
@@ -366,7 +370,7 @@ function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResul
 
   const group = scan.groups.find((candidate) => candidate.id === decision.groupId);
   if (!group) {
-    throw new ClientInputError(`Unknown duplicate group: ${decision.groupId}`);
+    throw new ClientInputError(`找不到重复组：${decision.groupId}`);
   }
 
   const consistencyBlockers = validateDecisionItemSet(decision, group.itemIds);
@@ -374,7 +378,9 @@ function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResul
     ...decision,
     items: decision.items.filter((item) => group.itemIds.includes(item.itemId))
   };
-  const plan = createExecutionPlan(decision.groupId, planDecision, scan.items);
+  const plan = createExecutionPlan(decision.groupId, planDecision, scan.items, {
+    requireKeep: group.candidateClass !== "delete-suggestion"
+  });
   const targetVaultBlockers = validateTargetVaults(decision, scan);
   return {
     ...plan,
@@ -384,11 +390,11 @@ function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResul
 
 function currentScanFor(scanId: string, latestScan: ScanResult | undefined): ScanResult {
   if (!latestScan) {
-    throw new ClientInputError("Run a scan before creating, skipping, or executing a plan.");
+    throw new ClientInputError("请先运行扫描，再创建计划、跳过重复组或执行计划。");
   }
 
   if (scanId !== latestScan.scanId) {
-    throw new ClientInputError("Scan is stale. Run a new scan before continuing.");
+    throw new ClientInputError("当前扫描结果已过期，请重新扫描后再继续。");
   }
 
   return latestScan;
@@ -415,9 +421,9 @@ class ClientInputError extends Error {
 
 function mutationDisabledMessage(config: ApiConfig): string {
   if (config.forceDryRun) {
-    return "Real 1Password mutations are disabled because OP_FORCE_DRY_RUN=true is enabled. Unset it only when you are ready to modify 1Password data.";
+    return "真实 1Password 变更已被开发保护禁用。只有取消 OP_FORCE_DRY_RUN 并显式设置 OP_ENABLE_MUTATIONS=true 后，才能执行真实归档、删除或迁移。";
   }
-  return "Real 1Password mutations are disabled. Set OP_ENABLE_MUTATIONS=true only when you are ready to modify 1Password data.";
+  return "真实 1Password 变更当前已禁用。只有显式设置 OP_ENABLE_MUTATIONS=true 后，才能执行真实归档、删除或迁移。";
 }
 
 async function executePlanActions(actions: PlanAction[], latestScan: ScanResult, onePassword: PasswordService) {
@@ -433,7 +439,7 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
 
     const item = itemById.get(action.itemId);
     if (!item) {
-      results.push({ itemId: action.itemId, action: action.type, ok: false, error: "Unknown item" });
+      results.push({ itemId: action.itemId, action: action.type, ok: false, error: "找不到要处理的项目。" });
       results.push(...skippedResults(actions.slice(index + 1)));
       break;
     }
@@ -452,7 +458,7 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
         itemId: action.itemId,
         action: action.type,
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: mutationActionError(action, error)
       });
       results.push(...skippedResults(actions.slice(index + 1)));
       break;
@@ -468,8 +474,38 @@ function skippedResults(actions: PlanAction[]): Array<{ itemId: string; action: 
     action: action.type,
     ok: false,
     skipped: true,
-    error: "Skipped because a previous action failed."
+    error: "由于前一个操作失败，已跳过。"
   }));
+}
+
+function mutationActionError(action: PlanAction, error: unknown): string {
+  const detail = errorMessage(error);
+  if (action.type === "archive") {
+    return `归档失败：${detail}`;
+  }
+  if (action.type === "delete") {
+    return `删除失败：${detail}`;
+  }
+  if (action.type === "copy-to-vault-and-archive-source") {
+    return `迁移失败：${detail}`;
+  }
+  return `执行失败：${detail}`;
+}
+
+function formatOnePasswordError(error: unknown): string {
+  const message = errorMessage(error);
+  const normalized = message.toLowerCase();
+  if (normalized.includes("you can only retrieve up to 50 items at once")) {
+    return "1Password 扫描失败：SDK 一次最多只能读取 50 个项目，请更新后重新扫描。";
+  }
+  if (normalized.includes("account") && normalized.includes("auth")) {
+    return `1Password 授权失败：请确认账户标识正确，并已在 1Password 桌面 App 中开启开发者集成。原始错误：${message}`;
+  }
+  return `1Password 扫描失败：${message}`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function redactScanResultForClient(scan: ScanResult): ScanResult {
@@ -524,7 +560,7 @@ async function registerStaticUi(server: FastifyInstance, webDistDir: string | un
     const filePath = await resolveStaticFile(root, candidatePath);
 
     if (!filePath) {
-      return reply.code(404).send({ error: "Not Found" });
+      return reply.code(404).send({ error: "找不到请求的资源。" });
     }
 
     reply.type(contentTypeFor(filePath));

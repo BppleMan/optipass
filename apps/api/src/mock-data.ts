@@ -21,13 +21,14 @@ const items: ItemSummary[] = [
     usernames: ["alice@example.com"],
     tags: ["dev"],
     fieldCount: 5,
+    hasPassword: true,
     hasTotp: true,
     hasPasskey: false,
     hasAttachments: false,
     hasNotes: true,
     comparableFields: [
       { label: "username", kind: "username", normalizedValue: "alice@example.com" },
-      { label: "password", kind: "secret", normalizedValueHash: "mock-github-secret" }
+      { label: "password", kind: "secret", normalizedValueHash: "mock-github-work-secret" }
     ]
   },
   {
@@ -43,6 +44,7 @@ const items: ItemSummary[] = [
     usernames: ["alice@example.com"],
     tags: ["imported"],
     fieldCount: 3,
+    hasPassword: true,
     hasTotp: false,
     hasPasskey: false,
     hasAttachments: false,
@@ -65,6 +67,7 @@ const items: ItemSummary[] = [
     usernames: ["ops@example.com"],
     tags: ["cloud"],
     fieldCount: 6,
+    hasPassword: true,
     hasTotp: true,
     hasPasskey: false,
     hasAttachments: true,
@@ -79,7 +82,7 @@ const items: ItemSummary[] = [
     onePasswordItemId: "aws-2",
     vaultId: "vault-archive",
     vaultName: "Archive",
-    title: "AWS old",
+    title: "AWS root",
     category: "api-credential",
     createdAt: "2023-01-01T12:00:00.000Z",
     updatedAt: "2024-01-01T12:00:00.000Z",
@@ -87,6 +90,7 @@ const items: ItemSummary[] = [
     usernames: ["ops@example.com"],
     tags: ["old"],
     fieldCount: 3,
+    hasPassword: true,
     hasTotp: false,
     hasPasskey: false,
     hasAttachments: false,
@@ -109,6 +113,7 @@ const items: ItemSummary[] = [
     usernames: [],
     tags: ["vpn"],
     fieldCount: 1,
+    hasPassword: false,
     hasTotp: false,
     hasPasskey: false,
     hasAttachments: false,

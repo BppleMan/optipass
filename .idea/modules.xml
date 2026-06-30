@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/optimize-password.iml" filepath="$PROJECT_DIR$/.idea/optimize-password.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/optipass.iml" filepath="$PROJECT_DIR$/.idea/optipass.iml" />
     </modules>
   </component>
 </project>

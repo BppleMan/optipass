@@ -87,18 +87,41 @@ export class ApiService {
 
   private apiErrorMessage(error: unknown): string {
     if (error instanceof HttpErrorResponse) {
+      if (error.status === 0) {
+        return "无法连接本地 API，请确认后端服务正在运行。";
+      }
       const body = error.error as unknown;
       if (body && typeof body === "object" && "message" in body) {
         return String((body as { message: unknown }).message);
       }
+      if (body && typeof body === "object" && "error" in body) {
+        return String((body as { error: unknown }).error);
+      }
       if (typeof body === "string" && body.trim()) {
         return body;
       }
-      return `${error.status} ${error.statusText}`.trim();
+      return this.httpStatusMessage(error.status);
     }
     if (error instanceof Error) {
-      return error.message;
+      return error.message || "操作失败，请稍后重试。";
     }
-    return String(error);
+    return "操作失败，请稍后重试。";
+  }
+
+  private httpStatusMessage(status: number): string {
+    switch (status) {
+      case 400:
+        return "请求参数不正确，请刷新页面后重试。";
+      case 401:
+        return "本地会话已失效，请刷新页面后重试。";
+      case 404:
+        return "请求的本地资源不存在，请刷新页面后重试。";
+      case 409:
+        return "当前操作与正在运行的任务冲突，请稍后重试。";
+      case 500:
+        return "本地 API 处理失败，请查看后端日志。";
+      default:
+        return `本地 API 请求失败（HTTP ${status}）。`;
+    }
   }
 }

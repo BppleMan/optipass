@@ -12,6 +12,7 @@ export function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | 
     usernames: [],
     tags: [],
     fieldCount: 2,
+    hasPassword: false,
     hasTotp: false,
     hasPasskey: false,
     hasAttachments: false,

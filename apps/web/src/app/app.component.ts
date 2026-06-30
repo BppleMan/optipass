@@ -3,8 +3,10 @@ import { Component, computed, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import {
   DuplicateGroup,
+  DuplicateRule,
   ExecutionPlan,
   GroupDecision,
+  ItemCategory,
   ItemDecision,
   ItemSummary,
   PlanAction,
@@ -34,7 +36,35 @@ interface ExecuteActionResult {
 }
 
 const permanentDeleteConfirmationPhrase = "永久删除";
+const desktopAccountNameStorageKey = "optipass.desktopAccountName";
 type GroupTraitFilter = "all" | "cross-vault" | "totp" | "passkey" | "attachments";
+type CandidateTab = "similar-login" | "exact" | "delete-suggestion" | "misc";
+type RuleFilter = "all" | DuplicateRule;
+
+interface CandidateTabView {
+  id: CandidateTab;
+  label: string;
+  count: number;
+}
+
+interface WorkflowStep {
+  index: number;
+  label: string;
+  status: "done" | "current" | "upcoming";
+}
+
+interface VaultProgressView {
+  id: string;
+  name: string;
+  count: number;
+}
+
+interface CategoryDistributionView {
+  category: ItemCategory;
+  label: string;
+  count: number;
+  icon: string;
+}
 
 interface GroupOverview {
   total: number;
@@ -47,6 +77,34 @@ interface GroupOverview {
   passkey: number;
   attachments: number;
 }
+
+const itemCategoryCatalog: Array<{ category: ItemCategory; label: string; icon: string }> = [
+  { category: "login", label: "登录项", icon: "登" },
+  { category: "password", label: "密码", icon: "密" },
+  { category: "api-credential", label: "API 凭据", icon: "API" },
+  { category: "ssh-key", label: "SSH 密钥", icon: "SSH" },
+  { category: "database", label: "数据库", icon: "库" },
+  { category: "server", label: "服务器", icon: "服" },
+  { category: "router", label: "路由器", icon: "路" },
+  { category: "secure-note", label: "安全笔记", icon: "记" },
+  { category: "document", label: "文档", icon: "文" },
+  { category: "identity", label: "身份", icon: "份" },
+  { category: "person", label: "人物", icon: "人" },
+  { category: "email", label: "邮箱", icon: "邮" },
+  { category: "credit-card", label: "信用卡", icon: "卡" },
+  { category: "bank-account", label: "银行账户", icon: "银" },
+  { category: "crypto-wallet", label: "加密钱包", icon: "链" },
+  { category: "software-license", label: "软件许可证", icon: "软" },
+  { category: "membership", label: "会员", icon: "会" },
+  { category: "rewards", label: "奖励", icon: "奖" },
+  { category: "passport", label: "护照", icon: "护" },
+  { category: "driver-license", label: "驾照", icon: "驾" },
+  { category: "outdoor-license", label: "户外许可证", icon: "户" },
+  { category: "medical-record", label: "医疗记录", icon: "医" },
+  { category: "social-security-number", label: "社安号", icon: "SSN" },
+  { category: "unsupported", label: "未支持类型", icon: "未" },
+  { category: "unknown", label: "未知类型", icon: "?" }
+];
 
 @Component({
   selector: "op-root",
@@ -71,11 +129,13 @@ export class AppComponent implements OnInit {
   readonly approvedDryRunKey = signal<string | undefined>(undefined);
   readonly groupQuery = signal("");
   readonly confidenceFilter = signal<"all" | "high" | "medium" | "low">("all");
-  readonly ruleFilter = signal<"all" | "title" | "url" | "username-url" | "secret" | "field">("all");
+  readonly ruleFilter = signal<RuleFilter>("all");
   readonly traitFilter = signal<GroupTraitFilter>("all");
   readonly vaultFilter = signal("all");
   readonly categoryFilter = signal("all");
   readonly groupSort = signal<"priority" | "size" | "confidence" | "rules">("priority");
+  readonly activeCandidateTab = signal<CandidateTab>("similar-login");
+  readonly activeVaultId = signal<string | undefined>(undefined);
   readonly decisions = signal<Record<string, ItemDecision>>({});
   readonly session = computed(() => this.api.session());
   readonly clientOrigin = typeof window === "undefined" ? "unknown" : window.location.origin;
@@ -84,6 +144,87 @@ export class AppComponent implements OnInit {
   readonly allGroups = computed(() => this.scanResult()?.groups ?? []);
   readonly groupOverview = computed(() => this.buildGroupOverview());
   readonly vaults = computed(() => this.scanResult()?.vaults ?? []);
+  readonly workflowStep = computed(() => {
+    if (this.loading() && !this.scanResult()) {
+      return 2;
+    }
+    if (!this.scanResult()) {
+      return 1;
+    }
+    if (this.plan() || this.executeResult()) {
+      return 5;
+    }
+    return 4;
+  });
+  readonly workflowSteps = computed<WorkflowStep[]>(() => {
+    const current = this.workflowStep();
+    return ["连接", "读取数据", "分析候选", "人工解决", "应用方案"].map((label, index) => {
+      const step = index + 1;
+      return {
+        index: step,
+        label,
+        status: step < current ? "done" : step === current ? "current" : "upcoming"
+      };
+    });
+  });
+  readonly candidateTabs = computed<CandidateTabView[]>(() => {
+    const counts: Record<CandidateTab, number> = {
+      "similar-login": 0,
+      exact: 0,
+      "delete-suggestion": 0,
+      misc: 0
+    };
+    for (const group of this.allGroups()) {
+      counts[this.candidateClassForGroup(group)] += 1;
+    }
+    return [
+      { id: "similar-login", label: "疑似相似", count: counts["similar-login"] },
+      { id: "exact", label: "全等重复", count: counts.exact },
+      { id: "delete-suggestion", label: "可删除建议", count: counts["delete-suggestion"] },
+      { id: "misc", label: "杂项组", count: counts.misc }
+    ];
+  });
+  readonly vaultProgress = computed<VaultProgressView[]>(() => {
+    const result = this.scanResult();
+    if (!result) {
+      return [];
+    }
+    const counts = new Map(result.vaults.map((vault) => [vault.id, 0]));
+    for (const item of result.items) {
+      counts.set(item.vaultId, (counts.get(item.vaultId) ?? 0) + 1);
+    }
+    return result.vaults.map((vault) => ({
+      id: vault.id,
+      name: vault.name,
+      count: counts.get(vault.id) ?? 0
+    }));
+  });
+  readonly activeVaultItemCount = computed(() => {
+    const activeVaultId = this.activeVaultId();
+    const result = this.scanResult();
+    if (!result || !activeVaultId) {
+      return result?.items.length ?? 0;
+    }
+    return result.items.filter((item) => item.vaultId === activeVaultId).length;
+  });
+  readonly categoryDistribution = computed<CategoryDistributionView[]>(() => {
+    const result = this.scanResult();
+    if (!result) {
+      return [];
+    }
+    const activeVaultId = this.activeVaultId();
+    const items = activeVaultId ? result.items.filter((item) => item.vaultId === activeVaultId) : result.items;
+    const counts = new Map<ItemCategory, number>();
+    for (const item of items) {
+      counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+    }
+    return itemCategoryCatalog.map(({ category, label, icon }) => ({
+      category,
+      label,
+      icon,
+      count: counts.get(category) ?? 0
+    }));
+  });
   readonly categories = computed(() => {
     const result = this.scanResult();
     if (!result) {
@@ -155,13 +296,23 @@ export class AppComponent implements OnInit {
   async ngOnInit(): Promise<void> {
     try {
       const session = await this.api.loadSession();
-      this.accountName.set(session.accountName ?? "");
+      this.accountName.set(this.readStoredAccountName() ?? session.accountName ?? "");
     } catch (error) {
       this.error.set(this.messageFor(error));
     }
   }
 
+  updateAccountName(value: string): void {
+    this.accountName.set(value);
+    this.persistAccountName(value);
+  }
+
   async scan(): Promise<void> {
+    if (this.requiresDesktopAccountName()) {
+      this.error.set("真实扫描需要填写 Desktop App 账户标识。它是 1Password 桌面 App 左上角显示的账户名或 account_uuid，不是密码或 token。");
+      return;
+    }
+
     this.loading.set(true);
     this.error.set(undefined);
     this.status.set(undefined);
@@ -170,11 +321,13 @@ export class AppComponent implements OnInit {
     this.approvedDryRunKey.set(undefined);
     this.scanStale.set(false);
     try {
-      const result = await this.api.scan({ accountName: this.accountName(), mode: this.scanMode() });
+      const result = await this.api.scan({ accountName: this.accountName().trim(), mode: this.scanMode() });
       this.scanResult.set(result);
       this.activeScanMode.set(this.scanMode());
       this.initialGroupCount.set(result.groups.length);
       this.restorableSkippedGroupCount.set(0);
+      this.activeCandidateTab.set(this.firstAvailableCandidateTab(result));
+      this.activeVaultId.set(result.vaults[0]?.id);
       this.selectedGroupId.set(this.filterAndSortGroups(result.groups)[0]?.id);
       this.decisions.set(this.initialDecisions(result));
     } catch (error) {
@@ -212,7 +365,7 @@ export class AppComponent implements OnInit {
     this.afterGroupFiltersChanged();
   }
 
-  updateRuleFilter(value: "all" | "title" | "url" | "username-url" | "secret" | "field"): void {
+  updateRuleFilter(value: RuleFilter): void {
     this.ruleFilter.set(value);
     this.afterGroupFiltersChanged();
   }
@@ -256,6 +409,15 @@ export class AppComponent implements OnInit {
   applyTraitOverviewFilter(trait: Exclude<GroupTraitFilter, "all">): void {
     this.traitFilter.set(this.traitFilter() === trait ? "all" : trait);
     this.afterGroupFiltersChanged();
+  }
+
+  setCandidateTab(tab: CandidateTab): void {
+    this.activeCandidateTab.set(tab);
+    this.afterGroupFiltersChanged();
+  }
+
+  setActiveVault(vaultId: string): void {
+    this.activeVaultId.set(vaultId);
   }
 
   decisionFor(item: ItemSummary): ItemDecision {
@@ -424,11 +586,13 @@ export class AppComponent implements OnInit {
       this.initialGroupCount.set(0);
       this.restorableSkippedGroupCount.set(0);
       this.selectedGroupId.set(undefined);
+      this.activeVaultId.set(undefined);
       this.decisions.set({});
       this.plan.set(undefined);
       this.executeResult.set(undefined);
       this.approvedDryRunKey.set(undefined);
       this.scanStale.set(false);
+      this.activeCandidateTab.set("similar-login");
       this.status.set("已清空当前扫描结果和本地缓存。");
     } catch (error) {
       this.error.set(this.messageFor(error));
@@ -543,9 +707,9 @@ export class AppComponent implements OnInit {
       return "Service account token";
     }
     if (this.accountName().trim()) {
-      return "Desktop App 授权";
+      return "Desktop App 交互授权";
     }
-    return "等待账户名";
+    return "Desktop App 授权：需填写账户标识";
   }
 
   appModeLabel(): string {
@@ -622,7 +786,7 @@ export class AppComponent implements OnInit {
   groupBadges(group: DuplicateGroup): string[] {
     const items = this.itemsForGroup(group);
     const vaultCount = new Set(items.map((item) => item.vaultId)).size;
-    const badges = [`建议保留 ${group.recommendedKeepIds.length}`];
+    const badges = [this.candidateClassLabel(this.candidateClassForGroup(group)), `建议保留 ${group.recommendedKeepIds.length}`];
 
     if (vaultCount > 1) {
       badges.push("跨保险库");
@@ -641,6 +805,94 @@ export class AppComponent implements OnInit {
     }
 
     return badges;
+  }
+
+  groupAnchorLabel(group: DuplicateGroup): string {
+    const items = this.itemsForGroup(group);
+    const first = items[0];
+    if (!first) {
+      return group.id;
+    }
+    const site = this.itemSiteLabel(first);
+    const username = this.itemUsernameLabel(first);
+    if (site !== "-" && username !== "-") {
+      return `${site} · ${username}`;
+    }
+    if (site !== "-") {
+      return site;
+    }
+    return first.title;
+  }
+
+  groupAnchorKind(group: DuplicateGroup): string {
+    const candidateClass = this.candidateClassForGroup(group);
+    if (candidateClass === "similar-login") {
+      return group.reasons.some((reason) => reason.rule === "username-url") ? "domain + 用户名" : "站点";
+    }
+    if (candidateClass === "exact") {
+      return "全等候选";
+    }
+    if (candidateClass === "delete-suggestion") {
+      return "缺少核心字段";
+    }
+    return "非登录标题";
+  }
+
+  candidateClassLabel(candidateClass: CandidateTab): string {
+    if (candidateClass === "similar-login") {
+      return "疑似相似";
+    }
+    if (candidateClass === "exact") {
+      return "全等重复";
+    }
+    if (candidateClass === "delete-suggestion") {
+      return "可删除建议";
+    }
+    return "杂项组";
+  }
+
+  candidateHintFor(group: DuplicateGroup): string {
+    const candidateClass = this.candidateClassForGroup(group);
+    if (candidateClass === "similar-login") {
+      return "这些登录项在站点和用户名上相似，可能是同一凭据的多个版本。";
+    }
+    if (candidateClass === "exact") {
+      return "这些项目高度接近，适合优先确认是否只保留一份。";
+    }
+    if (candidateClass === "delete-suggestion") {
+      return "这些登录项缺少用户名、密码、一次性密码或登录方式，建议人工确认是否归档或删除。";
+    }
+    return "这些非登录信息类项目标题相同，作为低优先级杂项候选供人工整理。";
+  }
+
+  itemSiteLabel(item: ItemSummary): string {
+    const url = item.urls[0];
+    if (!url) {
+      return "-";
+    }
+    return this.domainForUrl(url);
+  }
+
+  itemUsernameLabel(item: ItemSummary): string {
+    return item.usernames[0] || "-";
+  }
+
+  credentialMaterialLabel(item: ItemSummary): string {
+    const parts: string[] = [];
+    if (item.hasPassword || item.comparableFields.some((field) => field.kind === "secret")) {
+      parts.push("密码");
+    }
+    if (item.hasTotp) {
+      parts.push("一次性密码");
+    }
+    if (item.hasPasskey) {
+      parts.push("登录方式");
+    }
+    return parts.length ? parts.join(" / ") : "缺少凭据材料";
+  }
+
+  categoryLabel(category: string): string {
+    return itemCategoryCatalog.find((item) => item.category === category)?.label ?? category;
   }
 
   recommendationLabelsFor(item: ItemSummary): string[] {
@@ -725,6 +977,39 @@ export class AppComponent implements OnInit {
     return String(error);
   }
 
+  private requiresDesktopAccountName(): boolean {
+    const session = this.session();
+    return this.scanMode() === "live" && !session?.hasServiceAccountToken && !this.accountName().trim();
+  }
+
+  private readStoredAccountName(): string | undefined {
+    try {
+      if (typeof localStorage === "undefined") {
+        return undefined;
+      }
+      const value = localStorage.getItem(desktopAccountNameStorageKey)?.trim();
+      return value || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private persistAccountName(value: string): void {
+    try {
+      if (typeof localStorage === "undefined") {
+        return;
+      }
+      const trimmed = value.trim();
+      if (trimmed) {
+        localStorage.setItem(desktopAccountNameStorageKey, trimmed);
+      } else {
+        localStorage.removeItem(desktopAccountNameStorageKey);
+      }
+    } catch {
+      // localStorage may be unavailable in restrictive browser modes; the current input still works.
+    }
+  }
+
   private isExecuteResponse(value: unknown): value is ExecuteResponse {
     return Boolean(
       value &&
@@ -775,6 +1060,7 @@ export class AppComponent implements OnInit {
 
   private filterAndSortGroups(groups: DuplicateGroup[]): DuplicateGroup[] {
     const query = this.groupQuery().trim().toLowerCase();
+    const candidateTab = this.activeCandidateTab();
     const confidence = this.confidenceFilter();
     const rule = this.ruleFilter();
     const trait = this.traitFilter();
@@ -784,6 +1070,7 @@ export class AppComponent implements OnInit {
     const itemById = new Map(result?.items.map((item) => [item.id, item]) ?? []);
 
     return groups
+      .filter((group) => this.candidateClassForGroup(group) === candidateTab)
       .filter((group) => confidence === "all" || group.confidence === confidence)
       .filter((group) => rule === "all" || group.reasons.some((reason) => reason.rule === rule))
       .filter((group) => trait === "all" || this.groupHasTrait(group, trait))
@@ -886,6 +1173,74 @@ export class AppComponent implements OnInit {
       return items.some((item) => item.hasPasskey);
     }
     return items.some((item) => item.hasAttachments);
+  }
+
+  private candidateClassForGroup(group: DuplicateGroup): CandidateTab {
+    if (group.candidateClass === "similar-login") {
+      return "similar-login";
+    }
+    if (group.candidateClass === "exact-duplicate") {
+      return "exact";
+    }
+    if (group.candidateClass === "delete-suggestion") {
+      return "delete-suggestion";
+    }
+    if (group.candidateClass === "misc-title") {
+      return "misc";
+    }
+
+    const items = this.itemsForGroup(group);
+    const loginItems = items.filter((item) => item.category === "login");
+    if (loginItems.some((item) => this.isDeleteSuggestionItem(item))) {
+      return "delete-suggestion";
+    }
+    if (loginItems.length > 0 && group.reasons.some((reason) => reason.rule === "username-url" || reason.rule === "url")) {
+      return "similar-login";
+    }
+    if (
+      group.confidence === "high" &&
+      group.reasons.some((reason) => reason.rule === "url") &&
+      group.reasons.some((reason) => reason.rule === "title")
+    ) {
+      return "exact";
+    }
+    return "misc";
+  }
+
+  private firstAvailableCandidateTab(result: ScanResult): CandidateTab {
+    const counts: Record<CandidateTab, number> = {
+      "similar-login": 0,
+      exact: 0,
+      "delete-suggestion": 0,
+      misc: 0
+    };
+    const previous = this.scanResult();
+    this.scanResult.set(result);
+    for (const group of result.groups) {
+      counts[this.candidateClassForGroup(group)] += 1;
+    }
+    this.scanResult.set(previous);
+    return (["similar-login", "exact", "delete-suggestion", "misc"] as CandidateTab[]).find((tab) => counts[tab] > 0) ?? "similar-login";
+  }
+
+  private isDeleteSuggestionItem(item: ItemSummary): boolean {
+    if (item.category !== "login") {
+      return false;
+    }
+    return this.itemUsernameLabel(item) === "-" || this.credentialMaterialLabel(item) === "缺少凭据材料";
+  }
+
+  private domainForUrl(value: string): string {
+    const raw = value.trim();
+    if (!raw) {
+      return "-";
+    }
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      return new URL(withProtocol).hostname.replace(/^www\./i, "") || raw;
+    } catch {
+      return raw.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split("/")[0] || raw;
+    }
   }
 
   private selectGroupByOffset(offset: number): void {

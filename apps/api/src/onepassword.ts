@@ -12,6 +12,7 @@ import {
 
 type OnePasswordClient = Awaited<ReturnType<typeof sdk.createClient>>;
 type RawItem = Item;
+const maxGetAllBatchSize = 50;
 
 interface CachedRawItem {
   item: RawItem;
@@ -47,7 +48,7 @@ export class OnePasswordService {
       const overviews = await client.items.list(vault.id);
       const itemIds = overviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean);
 
-      for (const batch of chunks(itemIds, 100)) {
+      for (const batch of chunks(itemIds, maxGetAllBatchSize)) {
         const response = await client.items.getAll(vault.id, batch);
         for (const itemResponse of response.individualResponses) {
           if (!itemResponse.content) {
@@ -90,7 +91,7 @@ export class OnePasswordService {
     const client = await this.requireClient();
     const cached = this.rawItems.get(appItemId);
     if (!cached) {
-      throw new Error(`Cannot migrate ${appItemId}; scan cache does not contain full item data.`);
+      throw new Error(`无法迁移 ${appItemId}：扫描缓存中没有完整项目数据。`);
     }
 
     const source = cached.item;
@@ -101,7 +102,7 @@ export class OnePasswordService {
     const files = await Promise.all(
       sourceFiles.map(async (file) => {
         if (!file.attributes || !file.sectionId || !file.fieldId) {
-          throw new Error(`Cannot migrate ${appItemId}; file attachment metadata is incomplete.`);
+          throw new Error(`无法迁移 ${appItemId}：文件附件元数据不完整。`);
         }
 
         return {
@@ -146,7 +147,7 @@ export class OnePasswordService {
         : undefined;
 
     if (!auth) {
-      throw new Error("Missing 1Password authentication details.");
+      throw new Error("缺少 1Password 授权信息。");
     }
 
     const authCacheKey = typeof auth === "string" ? `service:${auth}` : `desktop:${auth.accountName}`;
@@ -165,11 +166,15 @@ export class OnePasswordService {
 
   private async requireClient(): Promise<OnePasswordClient> {
     if (!this.client) {
-      throw new Error("1Password client is not initialized. Run a scan first.");
+      throw new Error("1Password 客户端尚未初始化，请先完成一次真实扫描。");
     }
     return this.client;
   }
 }
+
+export const onePasswordLimits = {
+  maxGetAllBatchSize
+};
 
 export function toAppItemId(vaultId: string, onePasswordItemId: string): string {
   return `${vaultId}:${onePasswordItemId}`;
@@ -205,8 +210,9 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     usernames,
     tags,
     fieldCount: fields.length,
+    hasPassword: fields.some((field) => isPasswordField(field)),
     hasTotp: fields.some((field) => fieldType(field).includes("totp")),
-    hasPasskey: fields.some((field) => fieldType(field).includes("passkey")),
+    hasPasskey: fields.some((field) => isSignInWithField(field)),
     hasAttachments: files.length > 0 || Boolean(readAny(item, "document")),
     hasNotes: notes.trim().length > 0,
     comparableFields
@@ -318,6 +324,32 @@ function fieldType(field: ItemField): string {
 function isUsernameField(field: ItemField): boolean {
   const label = String(readAny(field, "title", "label", "id") ?? "").toLowerCase();
   return label === "username" || label.includes("user name") || label.includes("account");
+}
+
+function isPasswordField(field: ItemField): boolean {
+  const type = fieldType(field);
+  const label = String(readAny(field, "title", "label", "id") ?? "").toLowerCase();
+  return (
+    !type.includes("totp") &&
+    (
+      type.includes("concealed") ||
+      type.includes("password") ||
+      label === "password" ||
+      label === "密码"
+    )
+  );
+}
+
+function isSignInWithField(field: ItemField): boolean {
+  const type = fieldType(field);
+  const label = String(readAny(field, "title", "label", "id") ?? "").toLowerCase();
+  return (
+    type.includes("passkey") ||
+    type.includes("signinwith") ||
+    label.includes("sign in with") ||
+    label.includes("login with") ||
+    label.includes("登录方式")
+  );
 }
 
 function hashValue(value: string): string {
