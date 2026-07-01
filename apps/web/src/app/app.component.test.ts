@@ -226,7 +226,7 @@ describe("AppComponent interaction state", () => {
     expect(component.decisions()[keptItemId!].keep).toBe(true);
   });
 
-  it("records successful live dry-run approval and clears it when the decision changes", async () => {
+  it("records successful live preview approval and clears it when the decision changes", async () => {
     api.session.set({
       token: "test-token",
       apiBaseUrl: "http://127.0.0.1:3417",
@@ -240,8 +240,9 @@ describe("AppComponent interaction state", () => {
     await component.scan();
     await component.analyze();
 
-    await component.dryRunPlan();
+    await component.previewPlan();
 
+    expect(api.createPlan).toHaveBeenCalled();
     expect(api.execute).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
     expect(component.approvedDryRunKey()).toBe("approved-dry-run-key");
     expect(component.canExecutePlan()).toBe(true);

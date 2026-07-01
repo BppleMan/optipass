@@ -118,18 +118,18 @@ const itemCategoryCatalog: Array<{ category: ItemCategory; label: string; icon: 
 ];
 
 const dashboardCategoryIcons: Record<DashboardCategory, string> = {
-  login: "登",
-  "secure-note": "记",
-  "credit-card": "卡",
-  document: "文",
-  password: "密",
-  "api-credential": "证",
-  database: "库",
-  "ssh-key": "钥",
-  identity: "身",
-  server: "服",
-  "software-license": "软",
-  other: "其"
+  login: "login",
+  "secure-note": "note",
+  "credit-card": "card",
+  document: "document",
+  password: "password",
+  "api-credential": "api",
+  database: "database",
+  "ssh-key": "ssh",
+  identity: "identity",
+  server: "server",
+  "software-license": "license",
+  other: "other"
 };
 
 @Component({
@@ -628,7 +628,16 @@ export class AppComponent implements OnInit {
     this.error.set(undefined);
     this.status.set(undefined);
     try {
-      this.plan.set(await this.api.createPlan(decision));
+      const plan = await this.api.createPlan(decision);
+      this.plan.set(plan);
+      if (this.currentPlanRequiresDryRun() && plan.blockers.length === 0) {
+        const result = await this.api.execute({ ...decision, dryRun: true });
+        if (this.isExecuteResponse(result) && result.plan) {
+          this.executeResult.set(result);
+          this.plan.set(result.plan);
+          this.approvedDryRunKey.set(this.isSuccessfulDryRun(result) ? result.dryRunKey : undefined);
+        }
+      }
     } catch (error) {
       this.error.set(this.messageFor(error));
     } finally {
@@ -1170,7 +1179,7 @@ export class AppComponent implements OnInit {
     return item.usernames[0] || "-";
   }
 
-  credentialMaterialLabel(item: ItemSummary): string {
+  credentialTypeLabel(item: ItemSummary): string {
     const parts: string[] = [];
     if (item.hasPassword || item.comparableFields.some((field) => field.kind === "secret")) {
       parts.push("密码");
@@ -1179,9 +1188,14 @@ export class AppComponent implements OnInit {
       parts.push("一次性密码");
     }
     if (item.hasPasskey) {
-      parts.push("登录方式");
+      parts.push("Passkey");
     }
-    return parts.length ? parts.join(" / ") : "缺少凭据材料";
+    return parts.length ? parts.join(" / ") : "缺少凭据";
+  }
+
+  credentialMaterialLabel(item: ItemSummary): string {
+    const label = this.credentialTypeLabel(item);
+    return label === "缺少凭据" ? "缺少凭据材料" : label;
   }
 
   categoryLabel(category: string): string {
@@ -1393,10 +1407,20 @@ export class AppComponent implements OnInit {
         const itemText = group.itemIds
           .map((id) => {
             const item = itemById.get(id);
-            return item ? `${item.title} ${item.vaultName} ${item.urls.join(" ")}` : id;
+            return item
+              ? [
+                  item.title,
+                  item.vaultName,
+                  item.urls.join(" "),
+                  item.urls.map((url) => this.domainForUrl(url)).join(" "),
+                  item.usernames.join(" "),
+                  this.categoryLabel(item.category),
+                  this.credentialTypeLabel(item)
+                ].join(" ")
+              : id;
           })
           .join(" ");
-        return `${reasonText} ${itemText}`.toLowerCase().includes(query);
+        return `${reasonText} ${this.groupAnchorLabel(group)} ${itemText}`.toLowerCase().includes(query);
       })
       .slice()
       .sort((a, b) => {

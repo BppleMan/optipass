@@ -6,7 +6,10 @@
 >
   <header class="app-chrome">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">OP</span>
+      <span class="brand-mark" aria-label="Optipass logo">
+        <span class="logo-mark-lock" aria-hidden="true"></span>
+        <span class="logo-mark-pass" aria-hidden="true"></span>
+      </span>
       <div>
         <strong>Optipass</strong>
         <span>1Password 本地整理台</span>
@@ -24,7 +27,7 @@
       </div>
       <div>
         <span>扫描模式</span>
-        <strong>{{ scanMode() === "live" ? "真实扫描" : "演示数据" }}</strong>
+        <strong>{{ scanMode() === "live" ? "真实扫描" : "模拟数据" }}</strong>
       </div>
       <div>
         <span>变更安全</span>
@@ -34,39 +37,61 @@
   </header>
 
   <section *ngIf="error()" class="notice error">{{ error() }}</section>
-  <section *ngIf="status()" class="notice success">{{ status() }}</section>
+  <section *ngIf="status() && !workspaceActive()" class="notice success">{{ status() }}</section>
   <section *ngIf="scanStale()" class="notice warning-notice">
     <span>已执行变更，请重新扫描后继续处理。</span>
     <button type="button" class="secondary" (click)="scan()" [disabled]="loading()">重新扫描</button>
   </section>
 
   <section *ngIf="!workspaceActive()" class="launch-screen">
-    <div class="launch-copy">
-      <span class="eyebrow">本地优先 · 人工确认</span>
-      <h1>读取 1Password 数据，再手动分析重复项</h1>
-      <p>Optipass 先通过 1Password Desktop App 发起本机授权，只读取并脱敏数据。扫描完成后由你手动触发分析、预览方案，并决定是否应用变更。</p>
-    </div>
-
     <form class="launch-panel" (ngSubmit)="scan()">
-      <label for="accountName">
-        <span>Desktop App 账户标识</span>
+      <span class="launch-logo" aria-label="Optipass logo">
+        <span aria-hidden="true"></span>
+      </span>
+      <header class="launch-heading">
+        <h1>整理 1Password 重复凭据</h1>
+        <p>只读取本机数据，扫描后再手动分析、预览并确认变更。</p>
+      </header>
+
+      <div class="scan-mode-segment" role="group" aria-label="扫描模式">
+        <button
+          type="button"
+          [class.active]="scanMode() === 'live'"
+          [attr.aria-pressed]="scanMode() === 'live'"
+          (click)="scanMode.set('live')"
+        >
+          真实扫描
+        </button>
+        <button
+          type="button"
+          [class.active]="scanMode() === 'mock'"
+          [attr.aria-pressed]="scanMode() === 'mock'"
+          (click)="scanMode.set('mock')"
+        >
+          模拟数据
+        </button>
+      </div>
+
+      <label class="launch-field" for="accountName">
+        <span>1Password 账户标识</span>
         <input
           id="accountName"
           name="accountName"
           [ngModel]="accountName()"
           (ngModelChange)="updateAccountName($event)"
-          placeholder="1Password 左上角账户名或 account_uuid"
+          placeholder="bppleman"
           autocomplete="off"
         >
-        <small>不是密码、token 或 CLI 配置，只用于定位本机 1Password 账户。</small>
       </label>
 
-      <label for="scanMode">
-        <span>扫描模式</span>
-        <select id="scanMode" name="scanMode" [ngModel]="scanMode()" (ngModelChange)="scanMode.set($event)">
-          <option value="live">真实扫描</option>
-          <option value="mock">演示数据</option>
-        </select>
+      <label class="launch-field" for="backendApi">
+        <span>后端 API</span>
+        <input
+          id="backendApi"
+          name="backendApi"
+          [value]="session()?.apiBaseUrl || clientOrigin"
+          readonly
+        >
       </label>
 
       <button type="submit" [disabled]="loading()">{{ loading() ? "读取中" : "开始扫描" }}</button>
@@ -81,7 +106,7 @@
           <button type="button" class="danger-button" (click)="scan()" [disabled]="loading() || analyzing()">重新扫描</button>
         </div>
         <label class="search-box">
-          <span aria-hidden="true">⌕</span>
+          <span class="search-icon" aria-hidden="true"></span>
           <input
             type="search"
             [ngModel]="vaultQuery()"
@@ -98,7 +123,7 @@
             [class.active]="vault.id === activeVaultId()"
             (click)="setActiveVault(vault.id)"
           >
-            <span class="row-icon" aria-hidden="true">▣</span>
+            <span class="row-icon vault-icon" aria-hidden="true"></span>
             <strong>{{ vault.name }}</strong>
             <em>{{ vault.count }}</em>
           </button>
@@ -114,7 +139,7 @@
           </button>
         </div>
         <label class="search-box">
-          <span aria-hidden="true">⌕</span>
+          <span class="search-icon" aria-hidden="true"></span>
           <input
             type="search"
             [ngModel]="groupQuery()"
@@ -148,7 +173,6 @@
               <strong>{{ groupAnchorLabel(group) }}</strong>
               <em>{{ group.itemIds.length }}</em>
             </span>
-            <span class="group-meta">{{ groupAnchorKind(group) }}</span>
           </button>
           <div *ngIf="groups().length === 0" class="panel-empty">当前筛选下没有候选组。</div>
         </div>
@@ -162,7 +186,7 @@
       <section class="vault-dashboard">
         <header class="dashboard-heading">
           <div class="dashboard-title">
-            <span aria-hidden="true">▥</span>
+            <span class="section-icon dashboard-icon" aria-hidden="true"></span>
             <h2>{{ activeVaultName() }}</h2>
           </div>
           <div class="dashboard-meter" aria-label="全局扫描进度">
@@ -180,7 +204,7 @@
             class="category-card"
             [class.empty]="category.count === 0"
           >
-            <span class="category-icon" aria-hidden="true">{{ category.icon }}</span>
+            <span [class]="'category-icon category-icon-' + category.icon" aria-hidden="true"></span>
             <strong>{{ category.label }}</strong>
             <em>{{ category.count }}</em>
           </button>
@@ -190,19 +214,6 @@
       <section class="analysis-surface">
         <ng-container *ngIf="analysisReady(); else analysisWaiting">
           <section *ngIf="selectedGroup() as group; else noVisibleGroup" class="table-panel">
-            <header class="table-heading">
-              <div>
-                <span class="eyebrow">{{ candidateClassLabel(activeCandidateTab()) }}</span>
-                <h2>{{ groupAnchorLabel(group) }}</h2>
-                <p>{{ group.itemIds.length }} 个项目 · {{ groupVaultLabels(group) || "-" }} · {{ groupPositionLabel() }}</p>
-              </div>
-              <div class="queue-nav">
-                <button type="button" class="secondary compact" (click)="selectPreviousGroup()" [disabled]="loading() || !hasPreviousGroup()">上一组</button>
-                <span>{{ groupPositionLabel() }}</span>
-                <button type="button" class="secondary compact" (click)="selectNextGroup()" [disabled]="loading() || !hasNextGroup()">下一组</button>
-              </div>
-            </header>
-
             <div class="item-table">
               <div class="item-row header">
                 <span></span>
@@ -211,7 +222,7 @@
                 <span>凭据材料</span>
                 <span>站点</span>
                 <span>更新时间</span>
-                <span>保险库</span>
+                <span>目标保险库</span>
                 <span>删除/归档</span>
               </div>
 
@@ -226,32 +237,55 @@
                 </label>
                 <div class="identity-cell">
                   <strong>{{ itemUsernameLabel(item) }}</strong>
-                  <small>{{ item.title }} · 字段 {{ item.fieldCount }}</small>
+                  <small>{{ categoryLabel(item.category) }} · {{ item.title }} · 字段 {{ item.fieldCount }}</small>
                 </div>
-                <span>{{ categoryLabel(item.category) }}</span>
+                <span>{{ credentialTypeLabel(item) }}</span>
                 <div class="credential-cell">
                   <button
                     type="button"
                     class="secret-button"
+                    [class.revealed]="revealedCredentialFields(item)"
                     (click)="toggleCredentialReveal(item)"
                     [disabled]="credentialMaterialLabel(item) === '缺少凭据材料'"
+                    [attr.aria-label]="revealedCredentialFields(item) ? '隐藏凭据材料：' + item.title : '显示凭据材料：' + item.title"
                   >
-                    {{ credentialMaterialDisplay(item) }}
+                    <span class="secret-value">{{ credentialMaterialDisplay(item) }}</span>
+                    <span class="secret-eye" aria-hidden="true"></span>
                   </button>
-                  <small>{{ credentialMaterialMeta(item) }}</small>
                 </div>
                 <span>{{ itemSiteLabel(item) }}</span>
                 <span>{{ item.updatedAt ? (item.updatedAt | date:'yyyy-MM-dd') : "-" }}</span>
-                <span>{{ item.vaultName }}</span>
                 <select
-                  [ngModel]="decisionFor(item).deleteMode || 'archive'"
-                  (ngModelChange)="updateDeleteMode(item, $event)"
-                  [disabled]="decisionFor(item).keep"
+                  class="vault-target-select"
+                  [ngModel]="decisionFor(item).targetVaultId || item.vaultId"
+                  (ngModelChange)="updateTargetVault(item, $event)"
+                  [attr.aria-label]="'选择应用后迁移至的保险库：' + item.title"
+                >
+                  <option *ngFor="let vault of vaults()" [value]="vault.id">{{ vault.name }}</option>
+                </select>
+                <div
+                  class="delete-mode-segment"
+                  [class.disabled]="decisionFor(item).keep"
+                  role="group"
                   [attr.aria-label]="'选择未保留动作：' + item.title"
                 >
-                  <option value="archive">归档</option>
-                  <option value="delete">永久删除</option>
-                </select>
+                  <button
+                    type="button"
+                    [class.active]="(decisionFor(item).deleteMode || 'archive') === 'archive'"
+                    [disabled]="decisionFor(item).keep"
+                    (click)="updateDeleteMode(item, 'archive')"
+                  >
+                    归档
+                  </button>
+                  <button
+                    type="button"
+                    [class.active]="decisionFor(item).deleteMode === 'delete'"
+                    [disabled]="decisionFor(item).keep"
+                    (click)="updateDeleteMode(item, 'delete')"
+                  >
+                    删除
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -313,17 +347,13 @@
   <section *ngIf="analysisReady() && selectedGroup()" class="resolution-bar">
     <div class="resolution-summary">
       <span>变更摘要</span>
-      <strong>归档 {{ decisionSummary().archive }}</strong>
-      <strong>保留 {{ decisionSummary().keep }}</strong>
-      <strong>迁移 {{ decisionSummary().move }}</strong>
-      <strong [class.danger-text]="decisionSummary().delete > 0">删除 {{ decisionSummary().delete }}</strong>
+      <strong class="summary-chip archive">归档 {{ decisionSummary().archive }}</strong>
+      <strong class="summary-chip keep">保留 {{ decisionSummary().keep }}</strong>
+      <strong class="summary-chip move">迁移 {{ decisionSummary().move }}</strong>
+      <strong class="summary-chip delete" [class.danger-text]="decisionSummary().delete > 0">删除 {{ decisionSummary().delete }}</strong>
     </div>
     <div class="resolution-actions">
-      <button type="button" class="secondary" (click)="applyRecommendedKeeps()" [disabled]="loading() || scanStale()">应用推荐</button>
-      <button type="button" class="secondary" (click)="keepAllSelectedItems()" [disabled]="loading() || scanStale()">全部保留</button>
-      <button type="button" class="secondary" (click)="skipSelectedGroup()" [disabled]="loading() || scanStale()">跳过此组</button>
       <button type="button" class="secondary" (click)="previewPlan()" [disabled]="loading() || scanStale()">预览方案</button>
-      <button type="button" class="secondary" (click)="dryRunPlan()" [disabled]="loading() || scanStale()">试运行</button>
       <button type="button" (click)="executePlan()" [disabled]="!canExecutePlan()">应用方案</button>
     </div>
   </section>
