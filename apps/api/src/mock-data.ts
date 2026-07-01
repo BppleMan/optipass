@@ -126,6 +126,7 @@ export function createMockScanResult(): ScanResult {
   return {
     scanId: randomUUID(),
     scannedAt: new Date().toISOString(),
+    analyzedAt: new Date().toISOString(),
     vaults,
     items,
     groups: findDuplicateGroups(items)

@@ -1,15 +1,18 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ScanProgress, ScanResult, ScanSnapshot } from "@optimize-password/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApiServer, PasswordService } from "./app.js";
 import { createMockScanResult } from "./mock-data.js";
 
 const token = "test-session-token";
+type ApiServer = Awaited<ReturnType<typeof createApiServer>>;
 
 function createService(): PasswordService {
   return {
     scan: vi.fn(),
+    revealCredentials: vi.fn(),
     archive: vi.fn(),
     delete: vi.fn(),
     copyToVaultAndArchiveSource: vi.fn(),
@@ -46,7 +49,7 @@ function createThreeItemScanResult() {
 }
 
 async function dryRunGroup(
-  app: Awaited<ReturnType<typeof createApiServer>>,
+  app: ApiServer,
   payload: Record<string, unknown>
 ): Promise<string> {
   const response = await app.inject({
@@ -63,6 +66,47 @@ async function dryRunGroup(
   expect(response.json().dryRun).toBe(true);
   expect(response.json().dryRunKey).toEqual(expect.any(String));
   return response.json().dryRunKey;
+}
+
+async function startScan(app: ApiServer, payload: Record<string, unknown>): Promise<{ scanId: string; mode: string; progress: ScanProgress }> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/scan",
+    headers: { "x-session-token": token },
+    payload
+  });
+
+  expect(response.statusCode).toBe(200);
+  return response.json();
+}
+
+async function waitForScan(app: ApiServer, scanId: string): Promise<ScanSnapshot> {
+  let snapshot: ScanSnapshot | undefined;
+  await vi.waitFor(async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/scan",
+      headers: { "x-session-token": token }
+    });
+    expect(response.statusCode).toBe(200);
+    snapshot = response.json();
+    expect(snapshot.scanId).toBe(scanId);
+  });
+  return snapshot!;
+}
+
+async function scanAndAnalyze(app: ApiServer, payload: Record<string, unknown>): Promise<ScanResult> {
+  const start = await startScan(app, payload);
+  await waitForScan(app, start.scanId);
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/analyze",
+    headers: { "x-session-token": token },
+    payload: { scanId: start.scanId }
+  });
+
+  expect(response.statusCode).toBe(200);
+  return response.json();
 }
 
 describe("api app", () => {
@@ -130,40 +174,52 @@ describe("api app", () => {
     expect(response.headers["content-security-policy"]).toContain("object-src 'none'");
   });
 
-  it("returns mock duplicate groups without calling 1Password", async () => {
-    const response = await app.inject({
+  it("starts mock scans without analyzing until requested", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    const snapshot = await waitForScan(app, start.scanId);
+    const analyzeResponse = await app.inject({
       method: "POST",
-      url: "/api/scan",
+      url: "/api/analyze",
       headers: { "x-session-token": token },
-      payload: { mode: "mock" }
+      payload: { scanId: start.scanId }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(response.json().groups.length).toBeGreaterThan(0);
+    expect(start).not.toHaveProperty("groups");
+    expect(start.progress.phase).toBe("completed");
+    expect(snapshot.items.length).toBeGreaterThan(0);
+    expect(snapshot).not.toHaveProperty("groups");
+    expect(analyzeResponse.statusCode).toBe(200);
+    expect(analyzeResponse.json().groups.length).toBeGreaterThan(0);
     expect(service.scan).not.toHaveBeenCalled();
   });
 
   it("redacts comparison-only fields from scan responses", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
+    const start = await startScan(app, { mode: "mock" });
+    const body = await waitForScan(app, start.scanId);
 
-    const body = response.json();
     expect(body.items.every((item: { comparableFields: unknown[] }) => item.comparableFields.length === 0)).toBe(true);
     expect(JSON.stringify(body)).not.toContain("AKIA-MOCK-KEY");
     expect(JSON.stringify(body)).not.toContain("mock-aws-secret");
   });
 
-  it("clears the current scan and local item cache without calling 1Password mutations", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
+  it("streams scan progress events with a completed snapshot", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/scan/events?scanId=${start.scanId}`,
+      headers: { "x-session-token": token }
     });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("event: started");
+    expect(response.body).toContain("event: completed");
+    expect(response.body).toContain("\"scan\"");
+    expect(response.body).not.toContain("AKIA-MOCK-KEY");
+  });
+
+  it("clears the current scan and local item cache without calling 1Password mutations", async () => {
+    const scanResponse = await startScan(app, { mode: "mock" });
+    await waitForScan(app, scanResponse.scanId);
 
     const clearResponse = await app.inject({
       method: "POST",
@@ -176,7 +232,7 @@ describe("api app", () => {
       headers: { "x-session-token": token }
     });
 
-    expect(scanResponse.statusCode).toBe(200);
+    expect(scanResponse.scanId).toEqual(expect.any(String));
     expect(clearResponse.statusCode).toBe(200);
     expect(clearResponse.json()).toEqual({ ok: true });
     expect(afterClearResponse.statusCode).toBe(400);
@@ -243,13 +299,7 @@ describe("api app", () => {
   });
 
   it("blocks execution when the decision omits items from the duplicate group", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -269,13 +319,7 @@ describe("api app", () => {
   });
 
   it("blocks unknown decision item ids without raising a server error", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -305,13 +349,7 @@ describe("api app", () => {
   });
 
   it("blocks plans that target an unknown vault", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -338,13 +376,7 @@ describe("api app", () => {
   });
 
   it("uses no-op dry-run execution for mock scans", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -369,13 +401,7 @@ describe("api app", () => {
   });
 
   it("skips a duplicate group from the current scan without calling 1Password", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -397,13 +423,7 @@ describe("api app", () => {
   });
 
   it("restores the most recently skipped duplicate group without calling 1Password", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
     await app.inject({
@@ -431,13 +451,7 @@ describe("api app", () => {
   });
 
   it("reports when no skipped group can be restored", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
 
     const response = await app.inject({
       method: "POST",
@@ -454,13 +468,7 @@ describe("api app", () => {
   });
 
   it("clears skipped-group restore state after completing a mock group", async () => {
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
     const skippedGroup = scan.groups[0];
     const skipResponse = await app.inject({
       method: "POST",
@@ -505,13 +513,7 @@ describe("api app", () => {
   it("allows live dry-run for permanent-delete plans without mutating items", async () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -542,22 +544,11 @@ describe("api app", () => {
   });
 
   it("rejects plans and execution for stale scan ids", async () => {
-    const firstScanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    const firstScan = firstScanResponse.json();
+    const firstScan = await scanAndAnalyze(app, { mode: "mock" });
     const group = firstScan.groups[0];
 
-    const secondScanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "mock" }
-    });
-    expect(secondScanResponse.json().scanId).not.toBe(firstScan.scanId);
+    const secondScan = await scanAndAnalyze(app, { mode: "mock" });
+    expect(secondScan.scanId).not.toBe(firstScan.scanId);
 
     const payload = {
       scanId: firstScan.scanId,
@@ -583,8 +574,8 @@ describe("api app", () => {
 
     expect(planResponse.statusCode).toBe(400);
     expect(executeResponse.statusCode).toBe(400);
-    expect(planResponse.json().message).toContain("扫描结果已过期");
-    expect(executeResponse.json().message).toContain("扫描结果已过期");
+    expect(planResponse.json().message).toContain("已过期");
+    expect(executeResponse.json().message).toContain("已过期");
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
   });
@@ -592,13 +583,7 @@ describe("api app", () => {
   it("blocks live execution until the current plan has a successful dry-run", async () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
 
     const response = await app.inject({
@@ -640,13 +625,7 @@ describe("api app", () => {
       logger: false
     });
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const payload = {
       scanId: scan.scanId,
@@ -678,13 +657,7 @@ describe("api app", () => {
     vi.mocked(service.archive).mockResolvedValue(undefined);
     vi.mocked(service.delete).mockResolvedValue(undefined);
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const originalPayload = {
       scanId: scan.scanId,
@@ -732,13 +705,7 @@ describe("api app", () => {
   it("requires the permanent-delete confirmation phrase for live delete execution", async () => {
     vi.mocked(service.scan).mockResolvedValue(createThreeItemScanResult());
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const payload = {
       scanId: scan.scanId,
@@ -777,13 +744,7 @@ describe("api app", () => {
       releaseArchive = resolve;
     }));
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const payload = {
       scanId: scan.scanId,
@@ -831,13 +792,7 @@ describe("api app", () => {
       releaseArchive = resolve;
     }));
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const payload = {
       scanId: scan.scanId,
@@ -878,13 +833,7 @@ describe("api app", () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
     vi.mocked(service.archive).mockResolvedValue(undefined);
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const nextGroup = scan.groups[1];
     const payload = {
@@ -944,13 +893,7 @@ describe("api app", () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
     vi.mocked(service.archive).mockResolvedValue(undefined);
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const skippedGroup = scan.groups[0];
     const skipResponse = await app.inject({
       method: "POST",
@@ -998,13 +941,7 @@ describe("api app", () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
     vi.mocked(service.archive).mockRejectedValue(new Error("archive failed"));
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const payload = {
       scanId: scan.scanId,
@@ -1040,20 +977,14 @@ describe("api app", () => {
     expect(executeResponse.json().scanInvalidated).toBe(true);
     expect(executeResponse.json().results.some((result: { ok: boolean }) => !result.ok)).toBe(true);
     expect(planAfterFailureResponse.statusCode).toBe(400);
-    expect(planAfterFailureResponse.json().message).toContain("请先运行扫描");
+    expect(planAfterFailureResponse.json().message).toContain("请先完成扫描并手动运行分析");
   });
 
   it("stops live execution after the first failed mutation", async () => {
     vi.mocked(service.scan).mockResolvedValue(createThreeItemScanResult());
     vi.mocked(service.archive).mockRejectedValue(new Error("archive failed"));
 
-    const scanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const scan = scanResponse.json();
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
     const group = scan.groups[0];
     const payload = {
       scanId: scan.scanId,

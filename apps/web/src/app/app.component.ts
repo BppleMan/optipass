@@ -2,6 +2,9 @@ import { CommonModule } from "@angular/common";
 import { Component, computed, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import {
+  DashboardCategory,
+  dashboardCategoryFor,
+  dashboardCategoryDefinitions,
   DuplicateGroup,
   DuplicateRule,
   ExecutionPlan,
@@ -10,7 +13,10 @@ import {
   ItemDecision,
   ItemSummary,
   PlanAction,
-  ScanResult
+  RevealCredentialsResponse,
+  ScanProgress,
+  ScanResult,
+  ScanSnapshot
 } from "@optimize-password/core";
 import { ApiService } from "./api.service";
 
@@ -60,10 +66,15 @@ interface VaultProgressView {
 }
 
 interface CategoryDistributionView {
-  category: ItemCategory;
+  category: DashboardCategory;
   label: string;
   count: number;
   icon: string;
+}
+
+interface RevealedCredentialView {
+  fields: RevealCredentialsResponse["fields"];
+  expiresAt: number;
 }
 
 interface GroupOverview {
@@ -106,6 +117,21 @@ const itemCategoryCatalog: Array<{ category: ItemCategory; label: string; icon: 
   { category: "unknown", label: "未知类型", icon: "?" }
 ];
 
+const dashboardCategoryIcons: Record<DashboardCategory, string> = {
+  login: "登",
+  "secure-note": "记",
+  "credit-card": "卡",
+  document: "文",
+  password: "密",
+  "api-credential": "证",
+  database: "库",
+  "ssh-key": "钥",
+  identity: "身",
+  server: "服",
+  "software-license": "软",
+  other: "其"
+};
+
 @Component({
   selector: "op-root",
   standalone: true,
@@ -113,9 +139,12 @@ const itemCategoryCatalog: Array<{ category: ItemCategory; label: string; icon: 
   templateUrl: "./app.component.html"
 })
 export class AppComponent implements OnInit {
+  readonly scanSnapshot = signal<ScanSnapshot | undefined>(undefined);
+  readonly scanProgress = signal<ScanProgress | undefined>(undefined);
   readonly scanResult = signal<ScanResult | undefined>(undefined);
   readonly selectedGroupId = signal<string | undefined>(undefined);
   readonly loading = signal(false);
+  readonly analyzing = signal(false);
   readonly error = signal<string | undefined>(undefined);
   readonly status = signal<string | undefined>(undefined);
   readonly plan = signal<ExecutionPlan | undefined>(undefined);
@@ -136,20 +165,29 @@ export class AppComponent implements OnInit {
   readonly groupSort = signal<"priority" | "size" | "confidence" | "rules">("priority");
   readonly activeCandidateTab = signal<CandidateTab>("similar-login");
   readonly activeVaultId = signal<string | undefined>(undefined);
+  readonly vaultQuery = signal("");
   readonly decisions = signal<Record<string, ItemDecision>>({});
+  readonly revealedCredentials = signal<Record<string, RevealedCredentialView>>({});
   readonly session = computed(() => this.api.session());
   readonly clientOrigin = typeof window === "undefined" ? "unknown" : window.location.origin;
 
+  readonly scanData = computed(() => this.scanResult() ?? this.scanSnapshot());
+  readonly workspaceActive = computed(() => this.loading() || this.analyzing() || Boolean(this.scanData()));
+  readonly scanComplete = computed(() => this.scanProgress()?.phase === "completed" || Boolean(this.scanSnapshot()));
+  readonly analysisReady = computed(() => Boolean(this.scanResult()));
   readonly groups = computed(() => this.filterAndSortGroups(this.scanResult()?.groups ?? []));
   readonly allGroups = computed(() => this.scanResult()?.groups ?? []);
   readonly groupOverview = computed(() => this.buildGroupOverview());
-  readonly vaults = computed(() => this.scanResult()?.vaults ?? []);
+  readonly vaults = computed(() => this.scanData()?.vaults ?? []);
   readonly workflowStep = computed(() => {
-    if (this.loading() && !this.scanResult()) {
+    if (this.loading()) {
       return 2;
     }
-    if (!this.scanResult()) {
+    if (!this.scanData()) {
       return 1;
+    }
+    if (this.analyzing() || !this.scanResult()) {
+      return 3;
     }
     if (this.plan() || this.executeResult()) {
       return 5;
@@ -185,52 +223,88 @@ export class AppComponent implements OnInit {
     ];
   });
   readonly vaultProgress = computed<VaultProgressView[]>(() => {
-    const result = this.scanResult();
-    if (!result) {
+    const progress = this.scanProgress();
+    if (progress?.vaults.length) {
+      return progress.vaults.map((vault) => ({
+        id: vault.id,
+        name: vault.name,
+        count: vault.itemCount
+      }));
+    }
+
+    const data = this.scanData();
+    if (!data) {
       return [];
     }
-    const counts = new Map(result.vaults.map((vault) => [vault.id, 0]));
-    for (const item of result.items) {
+    const counts = new Map(data.vaults.map((vault) => [vault.id, 0]));
+    for (const item of data.items) {
       counts.set(item.vaultId, (counts.get(item.vaultId) ?? 0) + 1);
     }
-    return result.vaults.map((vault) => ({
+    return data.vaults.map((vault) => ({
       id: vault.id,
       name: vault.name,
       count: counts.get(vault.id) ?? 0
     }));
   });
+  readonly filteredVaultProgress = computed<VaultProgressView[]>(() => {
+    const query = this.vaultQuery().trim().toLowerCase();
+    if (!query) {
+      return this.vaultProgress();
+    }
+    return this.vaultProgress().filter((vault) => vault.name.toLowerCase().includes(query));
+  });
   readonly activeVaultItemCount = computed(() => {
     const activeVaultId = this.activeVaultId();
-    const result = this.scanResult();
-    if (!result || !activeVaultId) {
-      return result?.items.length ?? 0;
+    const progressVault = this.scanProgress()?.vaults.find((vault) => vault.id === activeVaultId);
+    if (progressVault) {
+      return progressVault.itemCount;
     }
-    return result.items.filter((item) => item.vaultId === activeVaultId).length;
+    const data = this.scanData();
+    if (!data || !activeVaultId) {
+      return data?.items.length ?? 0;
+    }
+    return data.items.filter((item) => item.vaultId === activeVaultId).length;
   });
   readonly categoryDistribution = computed<CategoryDistributionView[]>(() => {
-    const result = this.scanResult();
-    if (!result) {
-      return [];
-    }
     const activeVaultId = this.activeVaultId();
-    const items = activeVaultId ? result.items.filter((item) => item.vaultId === activeVaultId) : result.items;
-    const counts = new Map<ItemCategory, number>();
-    for (const item of items) {
-      counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
+    const progressVault = this.scanProgress()?.vaults.find((vault) => vault.id === activeVaultId);
+    if (progressVault) {
+      return dashboardCategoryDefinitions.map((definition) => ({
+        category: definition.id,
+        label: definition.label,
+        icon: dashboardCategoryIcons[definition.id],
+        count: progressVault.categoryCounts[definition.id] ?? 0
+      }));
     }
-    return itemCategoryCatalog.map(({ category, label, icon }) => ({
-      category,
+
+    const data = this.scanData();
+    if (!data) {
+      return dashboardCategoryDefinitions.map((definition) => ({
+        category: definition.id,
+        label: definition.label,
+        icon: dashboardCategoryIcons[definition.id],
+        count: 0
+      }));
+    }
+    const items = activeVaultId ? data.items.filter((item) => item.vaultId === activeVaultId) : data.items;
+    const counts = new Map<DashboardCategory, number>();
+    for (const item of items) {
+      const category = dashboardCategoryFor(item.category);
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    return dashboardCategoryDefinitions.map(({ id, label }) => ({
+      category: id,
       label,
-      icon,
-      count: counts.get(category) ?? 0
+      icon: dashboardCategoryIcons[id],
+      count: counts.get(id) ?? 0
     }));
   });
   readonly categories = computed(() => {
-    const result = this.scanResult();
-    if (!result) {
+    const data = this.scanData();
+    if (!data) {
       return [];
     }
-    return Array.from(new Set(result.items.map((item) => item.category))).sort();
+    return Array.from(new Set(data.items.map((item) => item.category))).sort();
   });
   readonly completedGroupCount = computed(() => Math.max(0, this.initialGroupCount() - this.allGroups().length));
   readonly currentPlanRequiresDryRun = computed(() => this.activeScanMode() === "live");
@@ -316,24 +390,92 @@ export class AppComponent implements OnInit {
     this.loading.set(true);
     this.error.set(undefined);
     this.status.set(undefined);
+    this.scanSnapshot.set(undefined);
+    this.scanProgress.set(undefined);
+    this.scanResult.set(undefined);
     this.plan.set(undefined);
     this.executeResult.set(undefined);
     this.approvedDryRunKey.set(undefined);
     this.scanStale.set(false);
+    this.selectedGroupId.set(undefined);
+    this.initialGroupCount.set(0);
+    this.restorableSkippedGroupCount.set(0);
+    this.decisions.set({});
+    this.revealedCredentials.set({});
     try {
-      const result = await this.api.scan({ accountName: this.accountName().trim(), mode: this.scanMode() });
-      this.scanResult.set(result);
-      this.activeScanMode.set(this.scanMode());
-      this.initialGroupCount.set(result.groups.length);
-      this.restorableSkippedGroupCount.set(0);
-      this.activeCandidateTab.set(this.firstAvailableCandidateTab(result));
-      this.activeVaultId.set(result.vaults[0]?.id);
-      this.selectedGroupId.set(this.filterAndSortGroups(result.groups)[0]?.id);
-      this.decisions.set(this.initialDecisions(result));
+      const start = await this.api.startScan({ accountName: this.accountName().trim(), mode: this.scanMode() });
+      this.activeScanMode.set(start.mode);
+      this.scanProgress.set(start.progress);
+
+      let completedScan: ScanSnapshot | undefined;
+      await this.api.streamScanEvents(start.scanId, (event) => {
+        this.scanProgress.set(event.progress);
+        const firstProgressVault = event.progress.vaults[0]?.id;
+        if (!this.activeVaultId() && firstProgressVault) {
+          this.activeVaultId.set(firstProgressVault);
+        }
+        if (event.scan) {
+          completedScan = event.scan;
+          this.scanSnapshot.set(event.scan);
+          this.activeVaultId.set(this.activeVaultId() ?? event.scan.vaults[0]?.id);
+        }
+        if (event.type === "failed") {
+          this.error.set(event.error || event.progress.error || "扫描失败，请查看本地 API 日志。");
+        }
+      });
+
+      if (!completedScan && this.scanProgress()?.phase === "completed") {
+        completedScan = await this.api.loadScan();
+        this.scanSnapshot.set(completedScan);
+      }
+      if (completedScan) {
+        this.activeVaultId.set(this.activeVaultId() ?? completedScan.vaults[0]?.id);
+        this.status.set("扫描完成。分析不会自动开始，请按需运行分析。");
+      } else if (this.scanProgress()?.phase === "failed") {
+        throw new Error(this.scanProgress()?.error || "扫描失败，请查看本地 API 日志。");
+      }
     } catch (error) {
       this.error.set(this.messageFor(error));
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  async analyze(): Promise<void> {
+    const scan = this.scanSnapshot() ?? this.scanResult();
+    if (!scan) {
+      this.error.set("请先完成扫描，再运行分析。");
+      return;
+    }
+
+    this.analyzing.set(true);
+    this.error.set(undefined);
+    this.status.set(undefined);
+    this.plan.set(undefined);
+    this.executeResult.set(undefined);
+    this.approvedDryRunKey.set(undefined);
+    this.scanStale.set(false);
+    this.revealedCredentials.set({});
+    try {
+      const result = await this.api.analyze(scan.scanId);
+      this.scanResult.set(result);
+      this.scanSnapshot.set({
+        scanId: result.scanId,
+        scannedAt: result.scannedAt,
+        vaults: result.vaults,
+        items: result.items
+      });
+      this.initialGroupCount.set(result.groups.length);
+      this.restorableSkippedGroupCount.set(0);
+      this.activeCandidateTab.set(this.firstAvailableCandidateTab(result));
+      this.activeVaultId.set(this.activeVaultId() ?? result.vaults[0]?.id);
+      this.selectedGroupId.set(this.filterAndSortGroups(result.groups)[0]?.id);
+      this.decisions.set(this.initialDecisions(result));
+      this.status.set(result.groups.length ? `分析完成，发现 ${result.groups.length} 个候选组。` : "分析完成，没有发现需要处理的候选组。");
+    } catch (error) {
+      this.error.set(this.messageFor(error));
+    } finally {
+      this.analyzing.set(false);
     }
   }
 
@@ -418,6 +560,10 @@ export class AppComponent implements OnInit {
 
   setActiveVault(vaultId: string): void {
     this.activeVaultId.set(vaultId);
+  }
+
+  updateVaultQuery(value: string): void {
+    this.vaultQuery.set(value);
   }
 
   decisionFor(item: ItemSummary): ItemDecision {
@@ -569,7 +715,7 @@ export class AppComponent implements OnInit {
   }
 
   async clearScan(): Promise<void> {
-    if (!this.scanResult()) {
+    if (!this.scanData() && !this.scanProgress()) {
       return;
     }
     if (!window.confirm("清空当前扫描结果和本地缓存？这不会改动 1Password 数据。")) {
@@ -581,13 +727,17 @@ export class AppComponent implements OnInit {
     this.status.set(undefined);
     try {
       await this.api.clearScan();
+      this.scanSnapshot.set(undefined);
+      this.scanProgress.set(undefined);
       this.scanResult.set(undefined);
       this.activeScanMode.set(undefined);
       this.initialGroupCount.set(0);
       this.restorableSkippedGroupCount.set(0);
       this.selectedGroupId.set(undefined);
       this.activeVaultId.set(undefined);
+      this.vaultQuery.set("");
       this.decisions.set({});
+      this.revealedCredentials.set({});
       this.plan.set(undefined);
       this.executeResult.set(undefined);
       this.approvedDryRunKey.set(undefined);
@@ -746,8 +896,151 @@ export class AppComponent implements OnInit {
   }
 
   itemLabel(itemId: string): string {
-    const item = this.scanResult()?.items.find((candidate) => candidate.id === itemId);
+    const item = this.scanData()?.items.find((candidate) => candidate.id === itemId);
     return item ? `${item.title} · ${item.vaultName}` : itemId;
+  }
+
+  activeVaultName(): string {
+    const activeVaultId = this.activeVaultId();
+    if (!activeVaultId) {
+      return this.vaultProgress()[0]?.name ?? "Dashboard";
+    }
+    return this.vaultProgress().find((vault) => vault.id === activeVaultId)?.name ?? this.vaultLabel(activeVaultId);
+  }
+
+  scanProgressPercent(): number {
+    const progress = this.scanProgress();
+    if (!progress) {
+      return this.scanData() ? 100 : 0;
+    }
+    if (progress.totalItems <= 0) {
+      return progress.phase === "completed" ? 100 : 0;
+    }
+    return Math.max(0, Math.min(100, Math.round((progress.scannedItems / progress.totalItems) * 100)));
+  }
+
+  scanProgressLabel(): string {
+    const progress = this.scanProgress();
+    if (!progress) {
+      const data = this.scanData();
+      return data ? `${data.items.length}/${data.items.length}` : "0/0";
+    }
+    return `${progress.scannedItems}/${progress.totalItems}`;
+  }
+
+  scanPhaseLabel(): string {
+    const progress = this.scanProgress();
+    if (this.analyzing()) {
+      return "正在分析";
+    }
+    if (!progress) {
+      return "等待扫描";
+    }
+    if (progress.phase === "completed") {
+      return "扫描完成";
+    }
+    if (progress.phase === "failed") {
+      return "扫描失败";
+    }
+    return "扫描中";
+  }
+
+  scanProgressMessage(): string {
+    const progress = this.scanProgress();
+    if (progress?.message) {
+      return progress.message;
+    }
+    if (this.scanComplete() && !this.analysisReady()) {
+      return "扫描完成，等待手动分析。";
+    }
+    return "扫描期间只读取 1Password 数据，不做重复分析。";
+  }
+
+  analysisEmptyTitle(): string {
+    if (this.loading()) {
+      return "等待分析";
+    }
+    if (this.analyzing()) {
+      return "正在分析";
+    }
+    if (this.scanComplete() && !this.analysisReady()) {
+      return "扫描完成，尚未分析";
+    }
+    return "暂无分析结果";
+  }
+
+  analysisEmptyMessage(): string {
+    if (this.loading()) {
+      return "扫描期间这里保持空态；读取完成后可以手动运行分析。";
+    }
+    if (this.analyzing()) {
+      return "正在根据重复语义生成候选组。";
+    }
+    if (this.scanComplete() && !this.analysisReady()) {
+      return "点击左侧重新分析后，候选组会出现在这里。";
+    }
+    return "先完成扫描，再运行分析。";
+  }
+
+  revealedCredentialFields(item: ItemSummary): RevealCredentialsResponse["fields"] | undefined {
+    const revealed = this.revealedCredentials()[item.id];
+    if (!revealed || revealed.expiresAt <= Date.now()) {
+      return undefined;
+    }
+    return revealed.fields;
+  }
+
+  credentialMaterialDisplay(item: ItemSummary): string {
+    const fields = this.revealedCredentialFields(item);
+    if (fields?.length) {
+      return fields.map((field) => field.value).join(" / ");
+    }
+    return this.credentialMaterialLabel(item) === "缺少凭据材料" ? "缺少凭据材料" : "••••••••";
+  }
+
+  credentialMaterialMeta(item: ItemSummary): string {
+    const fields = this.revealedCredentialFields(item);
+    if (fields?.length) {
+      return fields.map((field) => field.label).join(" / ");
+    }
+    return this.credentialMaterialLabel(item);
+  }
+
+  async toggleCredentialReveal(item: ItemSummary): Promise<void> {
+    if (this.revealedCredentialFields(item)) {
+      this.removeRevealedCredential(item.id);
+      return;
+    }
+    if (this.credentialMaterialLabel(item) === "缺少凭据材料") {
+      return;
+    }
+
+    const scan = this.scanData();
+    if (!scan) {
+      this.error.set("请先完成扫描。");
+      return;
+    }
+
+    this.error.set(undefined);
+    try {
+      const response = await this.api.revealCredentials(scan.scanId, item.id);
+      const expiresAt = Date.now() + response.expiresInSeconds * 1000;
+      this.revealedCredentials.update((credentials) => ({
+        ...credentials,
+        [item.id]: {
+          fields: response.fields,
+          expiresAt
+        }
+      }));
+      globalThis.setTimeout(() => {
+        const current = this.revealedCredentials()[item.id];
+        if (current?.expiresAt === expiresAt) {
+          this.removeRevealedCredential(item.id);
+        }
+      }, response.expiresInSeconds * 1000);
+    } catch (error) {
+      this.error.set(this.messageFor(error));
+    }
   }
 
   actionLabel(action: PlanAction): string {
@@ -914,6 +1207,14 @@ export class AppComponent implements OnInit {
       groupId: group.id,
       items: this.selectedItems().map((item) => this.decisionFor(item))
     };
+  }
+
+  private removeRevealedCredential(itemId: string): void {
+    this.revealedCredentials.update((credentials) => {
+      const next = { ...credentials };
+      delete next[itemId];
+      return next;
+    });
   }
 
   private patchDecision(item: ItemSummary, patch: Partial<ItemDecision>): void {

@@ -5,7 +5,12 @@ import {
   findDuplicateGroups,
   GroupDecision,
   ItemSummary,
-  ScanResult
+  RevealCredentialsResponse,
+  ScanProgress,
+  ScanProgressEvent,
+  ScanResult,
+  ScanSnapshot,
+  summarizeVaults
 } from "@optimize-password/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiService } from "./api.service";
@@ -35,11 +40,37 @@ class MockApiService {
   private readonly skippedGroups: ScanResult["groups"] = [];
 
   readonly loadSession = vi.fn(async () => this.session()!);
-  readonly scan = vi.fn(async () => {
+  readonly startScan = vi.fn(async (options: { accountName?: string; mode?: "live" | "mock" }) => {
     this.scanState = createScanFixture();
     this.skippedGroups.length = 0;
-    return this.scanState;
+    return {
+      scanId: this.scanState.scanId,
+      mode: options.mode ?? "live",
+      progress: scanProgressFor(this.scanState, "scanning", [])
+    };
   });
+  readonly streamScanEvents = vi.fn(async (_scanId: string, onEvent: (event: ScanProgressEvent) => void) => {
+    onEvent({ type: "started", progress: scanProgressFor(this.scanState, "scanning", []) });
+    onEvent({
+      type: "completed",
+      progress: scanProgressFor(this.scanState, "completed", this.scanState.items),
+      scan: scanSnapshotFor(this.scanState)
+    });
+  });
+  readonly loadScan = vi.fn(async () => scanSnapshotFor(this.scanState));
+  readonly analyze = vi.fn(async () => this.scanState);
+  readonly revealCredentials = vi.fn(async (scanId: string, itemId: string): Promise<RevealCredentialsResponse> => ({
+    scanId,
+    itemId,
+    expiresInSeconds: 30,
+    fields: [
+      {
+        label: "password",
+        value: `secret-for-${itemId}`,
+        fieldType: "concealed"
+      }
+    ]
+  }));
   readonly createPlan = vi.fn(async (decision: GroupDecision) =>
     createExecutionPlan(decision.groupId, decision, this.scanState.items)
   );
@@ -124,7 +155,15 @@ describe("AppComponent interaction state", () => {
   it("initializes a mock scan with recommended keep decisions and group filters", async () => {
     await component.scan();
 
-    expect(api.scan).toHaveBeenCalledWith({ accountName: "", mode: "mock" });
+    expect(api.startScan).toHaveBeenCalledWith({ accountName: "", mode: "mock" });
+    expect(api.streamScanEvents).toHaveBeenCalled();
+    expect(component.scanSnapshot()?.items).toHaveLength(4);
+    expect(component.scanResult()).toBeUndefined();
+    expect(component.groups()).toHaveLength(0);
+
+    await component.analyze();
+
+    expect(api.analyze).toHaveBeenCalledWith("scan-web-test");
     expect(component.scanResult()?.groups).toHaveLength(2);
     expect(component.activeCandidateTab()).toBe("similar-login");
     expect(component.groups()).toHaveLength(1);
@@ -144,7 +183,7 @@ describe("AppComponent interaction state", () => {
 
     await component.scan();
 
-    expect(api.scan).not.toHaveBeenCalled();
+    expect(api.startScan).not.toHaveBeenCalled();
     expect(component.error()).toContain("真实扫描需要填写 Desktop App 账户标识");
   });
 
@@ -167,6 +206,7 @@ describe("AppComponent interaction state", () => {
 
   it("skips and restores the selected duplicate group without changing decisions for kept items", async () => {
     await component.scan();
+    await component.analyze();
     const skippedGroupId = component.selectedGroupId();
     const keptItemId = component.selectedItems().find((item) => component.decisionFor(item).keep)?.id;
 
@@ -198,6 +238,7 @@ describe("AppComponent interaction state", () => {
     component.scanMode.set("live");
     component.accountName.set("BppleMan");
     await component.scan();
+    await component.analyze();
 
     await component.dryRunPlan();
 
@@ -214,6 +255,7 @@ describe("AppComponent interaction state", () => {
 
   it("executes a mock plan, advances the selected group, and clears restore state", async () => {
     await component.scan();
+    await component.analyze();
     const completedGroupId = component.selectedGroupId();
 
     await component.skipSelectedGroup();
@@ -234,6 +276,23 @@ describe("AppComponent interaction state", () => {
     expect(component.executeResult()).toBeUndefined();
     expect(component.restorableSkippedGroupCount()).toBe(0);
     expect(component.status()).toContain("已完成 1 个重复组");
+  });
+
+  it("reveals credential material temporarily on demand", async () => {
+    await component.scan();
+    await component.analyze();
+    const item = component.selectedItems()[0];
+
+    expect(component.credentialMaterialDisplay(item)).toBe("••••••••");
+
+    await component.toggleCredentialReveal(item);
+
+    expect(api.revealCredentials).toHaveBeenCalledWith("scan-web-test", item.id);
+    expect(component.credentialMaterialDisplay(item)).toBe(`secret-for-${item.id}`);
+
+    await component.toggleCredentialReveal(item);
+
+    expect(component.credentialMaterialDisplay(item)).toBe("••••••••");
   });
 });
 
@@ -311,6 +370,7 @@ function createScanFixture(): ScanResult {
   return {
     scanId: "scan-web-test",
     scannedAt: "2026-06-28T00:00:00.000Z",
+    analyzedAt: "2026-06-28T00:00:01.000Z",
     vaults: [
       { id: "vault-personal", name: "Personal" },
       { id: "vault-work", name: "Work" },
@@ -318,6 +378,28 @@ function createScanFixture(): ScanResult {
     ],
     items,
     groups: findDuplicateGroups(items)
+  };
+}
+
+function scanSnapshotFor(scan: ScanResult): ScanSnapshot {
+  return {
+    scanId: scan.scanId,
+    scannedAt: scan.scannedAt,
+    vaults: scan.vaults,
+    items: scan.items
+  };
+}
+
+function scanProgressFor(scan: ScanResult, phase: ScanProgress["phase"], items: ItemSummary[]): ScanProgress {
+  return {
+    scanId: scan.scanId,
+    phase,
+    totalVaults: scan.vaults.length,
+    scannedVaults: phase === "completed" ? scan.vaults.length : 0,
+    totalItems: scan.items.length,
+    scannedItems: items.length,
+    vaults: summarizeVaults(scan.vaults, items),
+    message: phase === "completed" ? "扫描完成，等待手动分析。" : "正在读取 1Password 数据。"
   };
 }
 

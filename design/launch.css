@@ -1,0 +1,1773 @@
+/* Optipass / FINAL / 02 Launch */
+
+position: relative;
+width: 1440px;
+height: 900px;
+
+background: linear-gradient(0deg, #0C0E12, #0C0E12), #F5F7FB;
+
+
+/* Background pattern decorative */
+
+position: absolute;
+width: 768px;
+height: 768px;
+left: calc(50% - 768px/2);
+top: -264px;
+
+
+
+/* Mask */
+
+position: absolute;
+width: 768px;
+height: 768px;
+left: calc(50% - 768px/2);
+top: 0px;
+
+
+
+/* _Background mask */
+
+position: absolute;
+width: 768px;
+height: 768px;
+left: calc(50% - 768px/2);
+top: 0px;
+
+background: radial-gradient(50% 50% at 50% 50%, #000000 0%, rgba(0, 0, 0, 0) 100%);
+
+
+/* Content */
+
+position: absolute;
+width: 768px;
+height: 768px;
+left: calc(50% - 768px/2);
+top: 0px;
+
+
+
+/* Lines */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 0px;
+isolation: isolate;
+
+position: absolute;
+width: 768px;
+height: 768px;
+left: 0px;
+top: 0px;
+
+
+
+/* Vertical */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: flex-start;
+padding: 0px;
+gap: 48px;
+
+width: 768px;
+height: 768px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+z-index: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 2;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 3;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 4;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 5;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 6;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 7;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 8;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 9;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 10;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 11;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 12;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 13;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 14;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 15;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+transform: rotate(90deg);
+
+/* Inside auto layout */
+flex: none;
+order: 16;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Horizontal */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 0px;
+gap: 48px;
+
+position: absolute;
+width: 768px;
+height: 768px;
+left: 0px;
+top: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+flex-grow: 0;
+z-index: 1;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 2;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 3;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 4;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 5;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 6;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 7;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 8;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 9;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 10;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 11;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 12;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 13;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 14;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 15;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Line */
+
+width: 768px;
+height: 0px;
+
+border: 1px solid #22262F;
+
+/* Inside auto layout */
+flex: none;
+order: 16;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0 / header.app-chrome */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: space-between;
+align-items: flex-start;
+padding: 0px;
+gap: 117px;
+
+position: absolute;
+width: 1440px;
+height: 58px;
+left: 0px;
+top: 0px;
+
+background: #0C0E12;
+border-bottom: 1px solid #373A41;
+box-shadow: 0px 1px 0px rgba(16, 24, 40, 0.04);
+
+
+/* dom-0-0-0 / div.brand */
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: center;
+padding: 10px 16px;
+gap: 9px;
+
+width: 288px;
+height: 58px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 1;
+
+
+/* dom-0-0-0-0 / span.brand-mark / OP */
+
+width: 28px;
+height: 28px;
+
+background: #1167D8;
+border-radius: 7px;
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* text / OP */
+
+position: absolute;
+width: 28px;
+height: 28px;
+left: 0px;
+top: 0px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 11px;
+line-height: 13px;
+display: flex;
+align-items: center;
+text-align: center;
+
+color: #FFFFFF;
+
+
+
+/* dom-0-0-0-1 / div */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 0px;
+gap: 3px;
+
+width: 113.53px;
+height: 35px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+flex-grow: 0;
+
+
+/* dom-0-0-0-1-0 / strong / Optipass */
+
+width: 113.53px;
+height: 19px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 16px;
+line-height: 19px;
+
+color: #FFFFFF;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-0-1-1 / span / 1Password 本地整理台 */
+
+width: 116px;
+height: 13px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 11px;
+line-height: 13px;
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+flex-grow: 0;
+
+
+/* Vector 5 */
+
+width: 0px;
+height: 58px;
+
+border: 1px solid #373A41;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-0 / div */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 10px 18px;
+gap: 5px;
+
+width: 288px;
+height: 58px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 2;
+flex-grow: 1;
+
+
+/* dom-0-0-1-0-0 / span / 本地会话 */
+
+width: 252px;
+height: 15px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 12px;
+line-height: 15px;
+/* identical to box height */
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-0-1 / strong / 开发代理模式 */
+
+width: 252px;
+height: 18px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / 开发代理模式 */
+
+position: absolute;
+width: 78px;
+height: 16px;
+left: 0px;
+top: 0px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 13px;
+line-height: 16px;
+/* identical to box height */
+
+color: #CECFD2;
+
+
+
+/* Vector 6 */
+
+width: 0px;
+height: 58px;
+
+border: 1px solid #373A41;
+
+/* Inside auto layout */
+flex: none;
+order: 3;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-1 / div */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 11px 18px;
+gap: 5px;
+
+width: 288px;
+height: 58px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 4;
+flex-grow: 1;
+
+
+/* dom-0-0-1-1-0 / span / Desktop App 账号 */
+
+width: 252px;
+height: 15px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 12px;
+line-height: 15px;
+/* identical to box height */
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-1-1 / strong / bppleman */
+
+width: 252px;
+height: 16px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / bppleman */
+
+position: absolute;
+width: 64px;
+height: 16px;
+left: 0px;
+top: 0px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 13px;
+line-height: 16px;
+/* identical to box height */
+
+color: #CECFD2;
+
+
+
+/* Vector 7 */
+
+width: 0px;
+height: 58px;
+
+border: 1px solid #373A41;
+
+/* Inside auto layout */
+flex: none;
+order: 5;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-2 / div */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 10px 18px;
+gap: 5px;
+
+width: 288px;
+height: 58px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 6;
+flex-grow: 1;
+
+
+/* dom-0-0-1-2-0 / span / 扫描模式 */
+
+width: 252px;
+height: 15px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 12px;
+line-height: 15px;
+/* identical to box height */
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-2-1 / strong / 真实扫描 */
+
+width: 252px;
+height: 18px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / 真实扫描 */
+
+position: absolute;
+width: 52px;
+height: 16px;
+left: 0px;
+top: 0px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 13px;
+line-height: 16px;
+/* identical to box height */
+
+color: #CECFD2;
+
+
+
+/* Vector 8 */
+
+width: 0px;
+height: 58px;
+
+border: 1px solid #373A41;
+
+/* Inside auto layout */
+flex: none;
+order: 7;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-3 / div */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 10px 18px;
+gap: 5px;
+
+width: 288px;
+height: 58px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 8;
+flex-grow: 1;
+
+
+/* dom-0-0-1-3-0 / span / 变更安全 */
+
+width: 252px;
+height: 15px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 12px;
+line-height: 15px;
+/* identical to box height */
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-0-1-3-1 / strong / 已禁用（开发保护） */
+
+width: 252px;
+height: 18px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / 已禁用（开发保护） */
+
+position: absolute;
+width: 117px;
+height: 16px;
+left: 0px;
+top: 0px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 13px;
+line-height: 16px;
+/* identical to box height */
+
+color: #CECFD2;
+
+
+
+/* dom-0-1-1 / form.launch-panel.ng-untouched.ng-pristine.ng-valid */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: center;
+padding: 0px;
+gap: 32px;
+
+position: absolute;
+width: 400px;
+height: 500px;
+left: calc(50% - 400px/2);
+top: calc(50% - 500px/2 + 1px);
+
+border-radius: 12px;
+
+
+/* Frame 4 */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: center;
+padding: 0px;
+gap: 24px;
+
+width: 400px;
+height: 206px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Logomark */
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: flex-start;
+padding: 0px;
+
+width: 48px;
+height: 48px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* Content */
+
+box-sizing: border-box;
+
+width: 48px;
+height: 48px;
+
+background: linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(10, 13, 18, 0.2) 100%), #FFFFFF;
+border: 0.3px solid rgba(10, 13, 18, 0.12);
+box-shadow: 0px 1.5px 1.5px -0.75px rgba(10, 13, 18, 0.13), 0px 1.5px 4.5px rgba(10, 13, 18, 0.1), 0px 1.5px 3px rgba(10, 13, 18, 0.06), inset 0px -0.75px 0.75px rgba(10, 13, 18, 0.1);
+border-radius: 12px;
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* Grid */
+
+position: absolute;
+left: 0%;
+right: 0%;
+top: 0%;
+bottom: 0%;
+
+opacity: 0.14;
+
+
+/* Vector */
+
+position: absolute;
+left: 0%;
+right: 0%;
+top: 0%;
+bottom: 0%;
+
+background: #0A0D12;
+
+
+/* Palantir */
+
+position: absolute;
+left: 25%;
+right: 25%;
+top: 25%;
+bottom: 25%;
+
+background: radial-gradient(43.75% 43.75% at 50% 28.75%, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0) 100%), radial-gradient(50% 50% at 50% 50%, rgba(255, 255, 255, 0) 74.66%, rgba(255, 255, 255, 0.18) 100%), radial-gradient(75% 75% at 50% 0%, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0) 50%, rgba(255, 255, 255, 0.08) 99%, rgba(255, 255, 255, 0) 100%), linear-gradient(26.57deg, #53389E 8.33%, #6941C6 91.67%);
+box-shadow: 0px 1.5px 4.5px rgba(10, 13, 18, 0.1), 0px 1.5px 3px rgba(10, 13, 18, 0.06);
+border-radius: 1498.5px;
+
+
+/* Reflection */
+
+position: absolute;
+width: 14.4px;
+height: 4.8px;
+left: 4.8px;
+top: 2.4px;
+
+background: linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0.04) 100%);
+
+
+/* Blur */
+
+position: absolute;
+left: 0%;
+right: 0%;
+top: 50%;
+bottom: 0%;
+
+background: rgba(255, 255, 255, 0.2);
+backdrop-filter: blur(3.75px);
+/* Note: backdrop-filter has minimal browser support */
+border-radius: 0px 0px 12px 12px;
+
+
+/* Text and supporting text */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 0px;
+gap: 12px;
+
+width: 400px;
+height: 74px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Text */
+
+width: 400px;
+height: 38px;
+
+/* Display sm/Semibold */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 600;
+font-size: 30px;
+line-height: 38px;
+/* identical to box height, or 127% */
+text-align: center;
+
+color: #F7F7F7;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Supporting text */
+
+width: 400px;
+height: 24px;
+
+/* Text md/Regular */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 400;
+font-size: 16px;
+line-height: 24px;
+/* identical to box height, or 150% */
+text-align: center;
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* Horizontal tabs */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 0px;
+gap: 2px;
+
+width: 400px;
+height: 36px;
+
+background: #0C0E12;
+border: 1px solid #22262F;
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 2;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* _Tab button base */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 8px 12px;
+gap: 8px;
+
+width: 199px;
+height: 36px;
+
+background: #13161B;
+border: 1px solid #373A41;
+/* Shadows/shadow-xs
+
+Shadows allow you to add depth and realism to designs by positioning elements on a z-axis.
+*/
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 1;
+
+
+/* Text */
+
+width: 56px;
+height: 20px;
+
+/* Text sm/Semibold */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 600;
+font-size: 14px;
+line-height: 20px;
+/* identical to box height, or 143% */
+
+color: #CECFD2;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* Badge */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: center;
+padding: 2px 8px;
+
+display: none;
+width: 24px;
+height: 22px;
+
+background: #13161B;
+border: 1px solid #373A41;
+border-radius: 9999px;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+flex-grow: 0;
+
+
+/* _Tab button base */
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 8px 12px;
+gap: 8px;
+
+width: 199px;
+height: 36px;
+
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+flex-grow: 1;
+
+
+/* Text */
+
+width: 56px;
+height: 20px;
+
+/* Text sm/Semibold */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 600;
+font-size: 14px;
+line-height: 20px;
+/* identical to box height, or 143% */
+
+color: #94979C;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* Badge */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: center;
+padding: 2px 8px;
+
+display: none;
+width: 24px;
+height: 22px;
+
+background: #13161B;
+border: 1px solid #373A41;
+border-radius: 9999px;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+flex-grow: 0;
+
+
+/* _Tab button base */
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 8px 12px;
+gap: 8px;
+
+display: none;
+width: 254.4px;
+height: 36px;
+
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 2;
+flex-grow: 1;
+
+
+/* _Tab button base */
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 8px 12px;
+gap: 8px;
+
+display: none;
+width: 254.4px;
+height: 36px;
+
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 3;
+flex-grow: 1;
+
+
+/* _Tab button base */
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 8px 12px;
+gap: 8px;
+
+display: none;
+width: 254.4px;
+height: 36px;
+
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 4;
+flex-grow: 1;
+
+
+/* Frame 1 */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+justify-content: center;
+align-items: flex-start;
+padding: 0px;
+gap: 9px;
+
+width: 400px;
+height: 73px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-1-1-0-0 / span / Desktop App 账户标识 */
+
+width: 400px;
+height: 20px;
+
+/* Text sm/Medium */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 500;
+font-size: 14px;
+line-height: 20px;
+/* identical to box height, or 143% */
+
+color: #CECFD2;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-1-1-0-1 / input.ng-untouched.ng-pristine.ng-valid / bppleman */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: center;
+padding: 10px 14px;
+gap: 8px;
+
+width: 400px;
+height: 44px;
+
+background: #0C0E12;
+border: 1px solid #373A41;
+/* Shadows/shadow-xs
+
+Shadows allow you to add depth and realism to designs by positioning elements on a z-axis.
+*/
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / bppleman */
+
+width: 75px;
+height: 24px;
+
+/* Text md/Regular */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 400;
+font-size: 16px;
+line-height: 24px;
+/* identical to box height, or 150% */
+
+color: #85888E;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* Frame 3 */
+
+/* Auto layout */
+display: flex;
+flex-direction: column;
+align-items: flex-start;
+padding: 0px;
+gap: 9px;
+
+width: 400px;
+height: 73px;
+
+
+/* Inside auto layout */
+flex: none;
+order: 2;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-1-1-1-0 / span / 扫描模式 */
+
+width: 400px;
+height: 20px;
+
+/* Text sm/Medium */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 500;
+font-size: 14px;
+line-height: 20px;
+/* identical to box height, or 143% */
+
+color: #CECFD2;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* dom-0-1-1-1-1 / select.ng-untouched.ng-pristine.ng-valid / 真实扫描 */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+align-items: center;
+padding: 10px 14px;
+gap: 8px;
+
+width: 400px;
+height: 44px;
+
+background: #0C0E12;
+border: 1px solid #373A41;
+/* Shadows/shadow-xs
+
+Shadows allow you to add depth and realism to designs by positioning elements on a z-axis.
+*/
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 1;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / 真实扫描 */
+
+width: 150px;
+height: 24px;
+
+/* Text md/Regular */
+font-family: 'Inter';
+font-style: normal;
+font-weight: 400;
+font-size: 16px;
+line-height: 24px;
+/* identical to box height, or 150% */
+
+color: #85888E;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;
+
+
+/* dom-0-1-1-2 / button / 开始扫描 */
+
+box-sizing: border-box;
+
+/* Auto layout */
+display: flex;
+flex-direction: row;
+justify-content: center;
+align-items: center;
+padding: 10px 16px;
+gap: 6px;
+
+width: 400px;
+height: 52px;
+
+background: #7F56D9;
+/* Shadows/shadow-xs-skeuomorphic
+
+Used to create a subtle skeuomorphic effect in components such as buttons and tabs.
+
+This can be removed or replaced with shadow-xs if you prefer a flat style.
+*/
+box-shadow: inset 0px 0px 0px 1px rgba(12, 14, 18, 0.18), inset 0px -2px 0px rgba(12, 14, 18, 0.05);
+border-radius: 8px;
+
+/* Inside auto layout */
+flex: none;
+order: 3;
+align-self: stretch;
+flex-grow: 0;
+
+
+/* text / 开始扫描 */
+
+width: 454px;
+height: 32px;
+
+font-family: 'Inter';
+font-style: normal;
+font-weight: 700;
+font-size: 16px;
+line-height: 19px;
+display: flex;
+align-items: center;
+text-align: center;
+
+color: #FFFFFF;
+
+
+/* Inside auto layout */
+flex: none;
+order: 0;
+flex-grow: 0;

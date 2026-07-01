@@ -1,6 +1,14 @@
 import { HttpClient, HttpErrorResponse, HttpHeaders } from "@angular/common/http";
 import { Injectable, signal } from "@angular/core";
-import { ExecutionPlan, GroupDecision, ScanResult } from "@optimize-password/core";
+import {
+  ExecutionPlan,
+  GroupDecision,
+  RevealCredentialsResponse,
+  ScanProgress,
+  ScanProgressEvent,
+  ScanResult,
+  ScanSnapshot
+} from "@optimize-password/core";
 import { firstValueFrom } from "rxjs";
 
 interface SessionResponse {
@@ -11,6 +19,12 @@ interface SessionResponse {
   forceDryRun: boolean;
   hasServiceAccountToken: boolean;
   supportsDesktopAuth: boolean;
+}
+
+interface ScanStartResponse {
+  scanId: string;
+  mode: "live" | "mock";
+  progress: ScanProgress;
 }
 
 @Injectable({ providedIn: "root" })
@@ -25,14 +39,69 @@ export class ApiService {
     return session;
   }
 
-  async scan(options: { accountName?: string; mode?: "live" | "mock" }): Promise<ScanResult> {
+  async startScan(options: { accountName?: string; mode?: "live" | "mock" }): Promise<ScanStartResponse> {
     return this.request(firstValueFrom(
-      this.http.post<ScanResult>(
+      this.http.post<ScanStartResponse>(
         "/api/scan",
         { accountName: options.accountName || undefined, mode: options.mode ?? "live" },
         { headers: this.headers() }
       )
     ));
+  }
+
+  async loadScan(): Promise<ScanSnapshot> {
+    return this.request(firstValueFrom(this.http.get<ScanSnapshot>("/api/scan", { headers: this.headers() })));
+  }
+
+  async analyze(scanId: string): Promise<ScanResult> {
+    return this.request(firstValueFrom(this.http.post<ScanResult>("/api/analyze", { scanId }, { headers: this.headers() })));
+  }
+
+  async revealCredentials(scanId: string, itemId: string): Promise<RevealCredentialsResponse> {
+    return this.request(firstValueFrom(
+      this.http.post<RevealCredentialsResponse>(
+        `/api/items/${encodeURIComponent(itemId)}/reveal`,
+        { scanId },
+        { headers: this.headers() }
+      )
+    ));
+  }
+
+  async streamScanEvents(scanId: string, onEvent: (event: ScanProgressEvent) => void): Promise<void> {
+    const response = await fetch(`/api/scan/events?scanId=${encodeURIComponent(scanId)}`, {
+      headers: this.fetchHeaders(),
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      throw new Error(await this.fetchErrorMessage(response));
+    }
+    if (!response.body) {
+      throw new Error("当前浏览器不支持扫描进度流。");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() ?? "";
+      for (const chunk of chunks) {
+        const data = chunk
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (data) {
+          onEvent(JSON.parse(data) as ScanProgressEvent);
+        }
+      }
+    }
   }
 
   async createPlan(decision: GroupDecision): Promise<ExecutionPlan> {
@@ -77,6 +146,11 @@ export class ApiService {
     return token ? new HttpHeaders({ "x-session-token": token }) : new HttpHeaders();
   }
 
+  private fetchHeaders(): HeadersInit {
+    const token = this.session()?.token;
+    return token ? { "x-session-token": token } : {};
+  }
+
   private async request<T>(request: Promise<T>): Promise<T> {
     try {
       return await request;
@@ -106,6 +180,19 @@ export class ApiService {
       return error.message || "操作失败，请稍后重试。";
     }
     return "操作失败，请稍后重试。";
+  }
+
+  private async fetchErrorMessage(response: Response): Promise<string> {
+    const text = await response.text();
+    if (!text.trim()) {
+      return this.httpStatusMessage(response.status);
+    }
+    try {
+      const body = JSON.parse(text) as { message?: string; error?: string };
+      return body.message || body.error || this.httpStatusMessage(response.status);
+    } catch {
+      return text;
+    }
   }
 
   private httpStatusMessage(status: number): string {

@@ -3,10 +3,12 @@ import sdk from "@1password/sdk";
 import type { FileAttributes, Item, ItemCreateParams, ItemField, ItemFile, ItemSection, Website } from "@1password/sdk";
 import {
   ComparableField,
-  findDuplicateGroups,
   ItemCategory,
   ItemSummary,
-  ScanResult,
+  RevealedCredentialField,
+  ScanProgressEvent,
+  ScanSnapshot,
+  summarizeVaults,
   VaultSummary
 } from "@optimize-password/core";
 
@@ -21,8 +23,10 @@ interface CachedRawItem {
 }
 
 export interface ScanOptions {
+  scanId?: string;
   serviceAccountToken?: string;
   accountName?: string;
+  onProgress?: (event: ScanProgressEvent) => void;
 }
 
 export class OnePasswordService {
@@ -30,14 +34,40 @@ export class OnePasswordService {
   private authCacheKey?: string;
   private rawItems = new Map<string, CachedRawItem>();
 
-  async scan(options: ScanOptions): Promise<ScanResult> {
+  async scan(options: ScanOptions): Promise<ScanSnapshot> {
+    const scanId = options.scanId ?? randomUUID();
+    const scannedAt = new Date().toISOString();
     const client = await this.getClient(options);
-    const vaults = await collectAsync(await client.vaults.list({ decryptDetails: true }), (vault) => ({
+    let vaults: VaultSummary[] = [];
+    const summaries: ItemSummary[] = [];
+    let totalItems = 0;
+    let scannedVaults = 0;
+
+    const emit = (type: ScanProgressEvent["type"], message?: string, scan?: ScanSnapshot): void => {
+      options.onProgress?.({
+        type,
+        scan,
+        progress: {
+          scanId,
+          phase: type === "completed" ? "completed" : type === "failed" ? "failed" : "scanning",
+          totalVaults: vaults.length,
+          scannedVaults,
+          totalItems,
+          scannedItems: summaries.length,
+          vaults: summarizeVaults(vaults, summaries),
+          message
+        }
+      });
+    };
+
+    emit("started", "正在连接 1Password Desktop App。");
+
+    vaults = await collectAsync(await client.vaults.list({ decryptDetails: true }), (vault) => ({
       id: String(readAny(vault, "id") ?? ""),
       name: String(readAny(vault, "title", "name") ?? "Untitled vault")
     }));
 
-    const summaries: ItemSummary[] = [];
+    const itemIdsByVault = new Map<string, string[]>();
     this.rawItems.clear();
 
     for (const vault of vaults) {
@@ -47,6 +77,16 @@ export class OnePasswordService {
 
       const overviews = await client.items.list(vault.id);
       const itemIds = overviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean);
+      itemIdsByVault.set(vault.id, itemIds);
+      totalItems += itemIds.length;
+      emit("progress", `已发现 ${vault.name} 中的 ${itemIds.length} 个项目。`);
+    }
+
+    for (const vault of vaults) {
+      const itemIds = itemIdsByVault.get(vault.id) ?? [];
+      if (!vault.id) {
+        continue;
+      }
 
       for (const batch of chunks(itemIds, maxGetAllBatchSize)) {
         const response = await client.items.getAll(vault.id, batch);
@@ -64,17 +104,21 @@ export class OnePasswordService {
             vaultId: vault.id
           });
           summaries.push(toItemSummary(item, vault, rawItemId, appItemId));
+          emit("progress", `正在读取 ${vault.name}。`);
         }
       }
+      scannedVaults += 1;
+      emit("progress", `已读取 ${vault.name}。`);
     }
 
-    return {
-      scanId: randomUUID(),
-      scannedAt: new Date().toISOString(),
+    const scan = {
+      scanId,
+      scannedAt,
       vaults,
-      items: summaries,
-      groups: findDuplicateGroups(summaries)
+      items: summaries
     };
+    emit("completed", "扫描完成，等待手动分析。", scan);
+    return scan;
   }
 
   async archive(vaultId: string, onePasswordItemId: string): Promise<void> {
@@ -133,6 +177,22 @@ export class OnePasswordService {
     };
     await client.items.create(createParams);
     await client.items.archive(sourceVaultId, rawItemId);
+  }
+
+  async revealCredentials(appItemId: string): Promise<RevealedCredentialField[]> {
+    const cached = this.rawItems.get(appItemId);
+    if (!cached) {
+      throw new Error(`无法显示凭据材料：扫描缓存中没有 ${appItemId} 的完整项目数据。`);
+    }
+
+    return readArray<ItemField>(cached.item, "fields")
+      .filter((field) => isCredentialField(field))
+      .map((field) => ({
+        label: String(readAny(field, "title", "label", "id") ?? "credential"),
+        value: String(readAny(field, "value") ?? ""),
+        fieldType: fieldType(field)
+      }))
+      .filter((field) => field.value.length > 0);
   }
 
   clearCache(): void {
@@ -337,6 +397,17 @@ function isPasswordField(field: ItemField): boolean {
       label === "password" ||
       label === "密码"
     )
+  );
+}
+
+function isCredentialField(field: ItemField): boolean {
+  const type = fieldType(field);
+  return (
+    isPasswordField(field) ||
+    type.includes("concealed") ||
+    type.includes("totp") ||
+    type.includes("secret") ||
+    isSignInWithField(field)
   );
 }
 

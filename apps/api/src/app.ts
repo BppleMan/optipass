@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { extname, join, normalize, relative, resolve } from "node:path";
@@ -6,9 +6,16 @@ import cors from "@fastify/cors";
 import Fastify, { FastifyInstance } from "fastify";
 import {
   createExecutionPlan,
+  findDuplicateGroups,
   GroupDecision,
   PlanAction,
+  RevealedCredentialField,
+  RevealCredentialsResponse,
+  ScanProgress,
+  ScanProgressEvent,
+  ScanSnapshot,
   ScanResult,
+  summarizeVaults,
   validateDecisionItemSet
 } from "@optimize-password/core";
 import { z, ZodError } from "zod";
@@ -16,7 +23,13 @@ import { ApiConfig } from "./config.js";
 import { createMockScanResult } from "./mock-data.js";
 
 export interface PasswordService {
-  scan(options: { serviceAccountToken?: string; accountName?: string }): Promise<ScanResult>;
+  scan(options: {
+    scanId?: string;
+    serviceAccountToken?: string;
+    accountName?: string;
+    onProgress?: (event: ScanProgressEvent) => void;
+  }): Promise<ScanSnapshot>;
+  revealCredentials(appItemId: string): Promise<RevealedCredentialField[]>;
   archive(vaultId: string, onePasswordItemId: string): Promise<void>;
   delete(vaultId: string, onePasswordItemId: string): Promise<void>;
   copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<void>;
@@ -31,6 +44,7 @@ export interface CreateApiServerOptions {
 
 type ScanMode = "live" | "mock";
 const permanentDeleteConfirmationPhrase = "永久删除";
+const revealExpiresInSeconds = 30;
 type DecisionBody = GroupDecision & {
   confirmPermanentDelete?: boolean;
   permanentDeleteConfirmationPhrase?: string;
@@ -38,13 +52,30 @@ type DecisionBody = GroupDecision & {
   dryRun?: boolean;
 };
 
+interface ScanStartResponse {
+  scanId: string;
+  mode: ScanMode;
+  progress: ScanProgress;
+}
+
+interface ScanJob {
+  scanId: string;
+  mode: ScanMode;
+  progress: ScanProgress;
+  events: ScanProgressEvent[];
+  subscribers: Set<(event: ScanProgressEvent) => void>;
+  done: boolean;
+}
+
 export async function createApiServer(options: CreateApiServerOptions): Promise<FastifyInstance> {
   const { config, onePassword } = options;
-  let latestScan: ScanResult | undefined;
+  let latestScan: ScanSnapshot | undefined;
+  let latestAnalysis: ScanResult | undefined;
   let latestScanMode: ScanMode | undefined;
   let activeMutationScanId: string | undefined;
   let latestDryRunKey: string | undefined;
   let latestSkippedGroups: ScanResult["groups"] = [];
+  const scanJobs = new Map<string, ScanJob>();
 
   const server = Fastify({
     logger: options.logger ?? {
@@ -109,7 +140,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (!latestScan) {
       throw new ClientInputError("还没有扫描结果，请先运行一次扫描。");
     }
-    return redactScanResultForClient(latestScan);
+    return redactScanSnapshotForClient(latestScan);
+  });
+
+  server.get("/api/analysis", async () => {
+    if (!latestAnalysis) {
+      throw new ClientInputError("还没有分析结果，请先完成扫描并手动运行分析。");
+    }
+    return redactScanResultForClient(latestAnalysis);
   });
 
   server.post("/api/scan/clear", async (_request, reply) => {
@@ -121,15 +159,17 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     latestScan = undefined;
+    latestAnalysis = undefined;
     latestScanMode = undefined;
     latestDryRunKey = undefined;
     latestSkippedGroups = [];
+    scanJobs.clear();
     onePassword.clearCache();
 
     return { ok: true };
   });
 
-  server.post("/api/scan", async (request, reply) => {
+  server.post("/api/scan", async (request, reply): Promise<ScanStartResponse | unknown> => {
     if (activeMutationScanId) {
       return reply.code(409).send({
         error: "冲突",
@@ -138,35 +178,100 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const body = scanBodySchema.parse(request.body ?? {});
+    const scanId = createScanId();
+    latestScan = undefined;
+    latestAnalysis = undefined;
+    latestScanMode = body.mode;
+    latestDryRunKey = undefined;
+    latestSkippedGroups = [];
+
+    const job = createScanJob(scanId, body.mode);
+    scanJobs.set(scanId, job);
+
     if (body.mode === "mock") {
-      latestScan = createMockScanResult();
-      latestScanMode = "mock";
-      latestDryRunKey = undefined;
-      latestSkippedGroups = [];
-      return redactScanResultForClient(latestScan);
+      void runMockScanJob(job);
+      return { scanId, mode: body.mode, progress: job.progress };
     }
 
     const accountName = body.accountName || config.accountName;
     if (!config.serviceAccountToken && !accountName) {
+      scanJobs.delete(scanId);
       throw new ClientInputError("官方 1Password SDK 的 Desktop App 授权需要账户名或 account_uuid 来定位账户。它不是密码或 token；请在页面顶部填写，或用 OP_ACCOUNT_NAME 设置默认值。");
     }
-    try {
-      latestScan = await onePassword.scan({
-        serviceAccountToken: config.serviceAccountToken,
-        accountName
-      });
-    } catch (error) {
-      throw new ClientInputError(formatOnePasswordError(error));
+
+    void runLiveScanJob(job, accountName);
+    return { scanId, mode: body.mode, progress: job.progress };
+  });
+
+  server.get("/api/scan/events", async (request, reply) => {
+    const query = scanEventsQuerySchema.parse(request.query ?? {});
+    const job = scanJobs.get(query.scanId);
+    if (!job) {
+      throw new ClientInputError("找不到扫描任务，请重新开始扫描。");
     }
-    latestScanMode = "live";
+
+    reply
+      .header("content-type", "text/event-stream; charset=utf-8")
+      .header("cache-control", "no-store")
+      .header("connection", "keep-alive");
+
+    for (const event of job.events) {
+      reply.raw.write(toSseMessage(event));
+    }
+
+    if (job.done) {
+      reply.raw.end();
+      return reply;
+    }
+
+    const subscriber = (event: ScanProgressEvent): void => {
+      reply.raw.write(toSseMessage(event));
+      if (event.type === "completed" || event.type === "failed") {
+        reply.raw.end();
+        job.subscribers.delete(subscriber);
+      }
+    };
+
+    job.subscribers.add(subscriber);
+    request.raw.on("close", () => {
+      job.subscribers.delete(subscriber);
+    });
+
+    return reply;
+  });
+
+  server.post("/api/analyze", async (request) => {
+    const body = analyzeBodySchema.parse(request.body ?? {});
+    const scan = currentScanSnapshotFor(body.scanId, latestScan);
+    latestAnalysis = analyzeScan(scan);
     latestDryRunKey = undefined;
     latestSkippedGroups = [];
-    return redactScanResultForClient(latestScan);
+    return redactScanResultForClient(latestAnalysis);
+  });
+
+  server.post("/api/items/:itemId/reveal", async (request): Promise<RevealCredentialsResponse> => {
+    const params = itemParamsSchema.parse(request.params);
+    const body = revealBodySchema.parse(request.body ?? {});
+    const scan = currentScanSnapshotFor(body.scanId, latestScan);
+    if (!scan.items.some((item) => item.id === params.itemId)) {
+      throw new ClientInputError(`找不到项目：${params.itemId}`);
+    }
+
+    const fields = latestScanMode === "mock"
+      ? mockRevealCredentials(params.itemId)
+      : await onePassword.revealCredentials(params.itemId);
+
+    return {
+      scanId: scan.scanId,
+      itemId: params.itemId,
+      fields,
+      expiresInSeconds: revealExpiresInSeconds
+    };
   });
 
   server.post("/api/plan", async (request) => {
     const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
-    const plan = createPlanFromLatestScan(decision, latestScan);
+    const plan = createPlanFromLatestScan(decision, latestAnalysis);
     return plan;
   });
 
@@ -180,20 +285,20 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     const params = groupParamsSchema.parse(request.params);
     const body = skipGroupBodySchema.parse(request.body ?? {});
-    const scan = currentScanFor(body.scanId, latestScan);
+    const scan = currentAnalysisFor(body.scanId, latestAnalysis);
     const skippedGroup = scan.groups.find((group) => group.id === params.groupId);
     if (!skippedGroup) {
       throw new ClientInputError(`找不到重复组：${params.groupId}`);
     }
 
     latestSkippedGroups.push(skippedGroup);
-    latestScan = removeCompletedGroup(scan, params.groupId);
+    latestAnalysis = removeCompletedGroup(scan, params.groupId);
     latestDryRunKey = undefined;
 
     return {
       skippedGroupId: params.groupId,
       restorableSkippedGroupCount: latestSkippedGroups.length,
-      scan: redactScanResultForClient(latestScan)
+      scan: redactScanResultForClient(latestAnalysis)
     };
   });
 
@@ -206,13 +311,13 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const body = restoreSkippedBodySchema.parse(request.body ?? {});
-    const scan = currentScanFor(body.scanId, latestScan);
+    const scan = currentAnalysisFor(body.scanId, latestAnalysis);
     const restoredGroup = latestSkippedGroups.pop();
     if (!restoredGroup) {
       throw new ClientInputError("没有可恢复的已跳过重复组。");
     }
 
-    latestScan = {
+    latestAnalysis = {
       ...scan,
       groups: [restoredGroup, ...scan.groups]
     };
@@ -221,13 +326,13 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     return {
       restoredGroupId: restoredGroup.id,
       restorableSkippedGroupCount: latestSkippedGroups.length,
-      scan: redactScanResultForClient(latestScan)
+      scan: redactScanResultForClient(latestAnalysis)
     };
   });
 
   server.post("/api/execute", async (request) => {
     const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
-    const plan = createPlanFromLatestScan(decision, latestScan);
+    const plan = createPlanFromLatestScan(decision, latestAnalysis);
 
     if (plan.blockers.length > 0) {
       return { plan, results: [], blocked: true };
@@ -235,7 +340,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (decision.dryRun || latestScanMode === "mock") {
       const shouldAdvanceMockScan = !decision.dryRun && latestScanMode === "mock";
       if (shouldAdvanceMockScan) {
-        latestScan = removeCompletedGroup(latestScan!, decision.groupId);
+        latestAnalysis = removeCompletedGroup(latestAnalysis!, decision.groupId);
         latestDryRunKey = undefined;
         latestSkippedGroups = [];
       } else if (decision.dryRun) {
@@ -253,7 +358,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         dryRun: true,
         dryRunKey: decision.dryRun ? latestDryRunKey : undefined,
         completedGroupId: shouldAdvanceMockScan ? decision.groupId : undefined,
-        scan: shouldAdvanceMockScan && latestScan ? redactScanResultForClient(latestScan) : undefined
+        scan: shouldAdvanceMockScan && latestAnalysis ? redactScanResultForClient(latestAnalysis) : undefined
       };
     }
 
@@ -299,25 +404,26 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     activeMutationScanId = decision.scanId;
     try {
-      const results = await executePlanActions(plan.actions, latestScan!, onePassword);
+      const results = await executePlanActions(plan.actions, latestAnalysis!, onePassword);
       const hasFailure = results.some((result) => !result.ok);
       const hasMutation = results.some((result) => result.ok && result.action !== "keep");
       if (hasFailure) {
         latestScan = undefined;
+        latestAnalysis = undefined;
         latestScanMode = undefined;
         latestDryRunKey = undefined;
         latestSkippedGroups = [];
         return { plan, results, scanInvalidated: true };
       }
 
-      latestScan = removeCompletedGroup(latestScan!, decision.groupId);
+      latestAnalysis = removeCompletedGroup(latestAnalysis!, decision.groupId);
       latestDryRunKey = undefined;
       latestSkippedGroups = [];
       return {
         plan,
         results,
         completedGroupId: decision.groupId,
-        scan: redactScanResultForClient(latestScan),
+        scan: redactScanResultForClient(latestAnalysis),
         scanInvalidated: false,
         mutated: hasMutation
       };
@@ -325,6 +431,81 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       activeMutationScanId = undefined;
     }
   });
+
+  function runMockScanJob(job: ScanJob): void {
+    const mockResult = createMockScanResult();
+    const snapshot: ScanSnapshot = {
+      scanId: job.scanId,
+      scannedAt: mockResult.scannedAt,
+      vaults: mockResult.vaults,
+      items: []
+    };
+
+    job.progress = progressFor(job.scanId, "scanning", snapshot.vaults, snapshot.items, mockResult.items.length, 0, "正在读取演示数据。");
+    emitScanEvent(job, { type: "progress", progress: job.progress });
+
+    for (const item of mockResult.items) {
+      snapshot.items.push(item);
+      job.progress = progressFor(job.scanId, "scanning", snapshot.vaults, snapshot.items, mockResult.items.length, 0, "正在读取演示数据。");
+      emitScanEvent(job, { type: "progress", progress: job.progress });
+    }
+
+    latestScan = snapshot;
+    job.progress = progressFor(job.scanId, "completed", snapshot.vaults, snapshot.items, mockResult.items.length, snapshot.vaults.length, "扫描完成，等待手动分析。");
+    emitScanEvent(job, {
+      type: "completed",
+      progress: job.progress,
+      scan: redactScanSnapshotForClient(snapshot)
+    });
+  }
+
+  async function runLiveScanJob(job: ScanJob, accountName: string | undefined): Promise<void> {
+    try {
+      const scan = await onePassword.scan({
+        scanId: job.scanId,
+        serviceAccountToken: config.serviceAccountToken,
+        accountName,
+        onProgress: (event) => {
+          emitScanEvent(job, redactScanProgressEvent(event));
+        }
+      });
+      const normalizedScan: ScanSnapshot = {
+        ...scan,
+        scanId: job.scanId
+      };
+      latestScan = normalizedScan;
+      latestScanMode = "live";
+      if (!job.done) {
+        job.progress = progressFor(
+          job.scanId,
+          "completed",
+          normalizedScan.vaults,
+          normalizedScan.items,
+          normalizedScan.items.length,
+          normalizedScan.vaults.length,
+          "扫描完成，等待手动分析。"
+        );
+        emitScanEvent(job, {
+          type: "completed",
+          progress: job.progress,
+          scan: redactScanSnapshotForClient(normalizedScan)
+        });
+      }
+    } catch (error) {
+      const message = formatOnePasswordError(error);
+      job.progress = {
+        ...job.progress,
+        phase: "failed",
+        message,
+        error: message
+      };
+      emitScanEvent(job, {
+        type: "failed",
+        progress: job.progress,
+        error: message
+      });
+    }
+  }
 
   await registerStaticUi(server, config.webDistDir);
 
@@ -336,8 +517,24 @@ const scanBodySchema = z.object({
   mode: z.enum(["live", "mock"]).default("live")
 });
 
+const scanEventsQuerySchema = z.object({
+  scanId: z.string().min(1)
+});
+
+const analyzeBodySchema = z.object({
+  scanId: z.string().min(1)
+});
+
 const groupParamsSchema = z.object({
   groupId: z.string().min(1)
+});
+
+const itemParamsSchema = z.object({
+  itemId: z.string().min(1)
+});
+
+const revealBodySchema = z.object({
+  scanId: z.string().min(1)
 });
 
 const skipGroupBodySchema = z.object({
@@ -365,8 +562,96 @@ const decisionSchema = z.object({
   )
 });
 
+function createScanId(): string {
+  return randomUUID();
+}
+
+function createScanJob(scanId: string, mode: ScanMode): ScanJob {
+  const progress: ScanProgress = {
+    scanId,
+    phase: "scanning",
+    totalVaults: 0,
+    scannedVaults: 0,
+    totalItems: 0,
+    scannedItems: 0,
+    vaults: [],
+    message: mode === "mock" ? "正在准备演示数据。" : "正在等待 1Password 授权。"
+  };
+  const job: ScanJob = {
+    scanId,
+    mode,
+    progress,
+    events: [],
+    subscribers: new Set(),
+    done: false
+  };
+  emitScanEvent(job, { type: "started", progress });
+  return job;
+}
+
+function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
+  job.progress = event.progress;
+  job.events.push(event);
+  for (const subscriber of job.subscribers) {
+    subscriber(event);
+  }
+  if (event.type === "completed" || event.type === "failed") {
+    job.done = true;
+  }
+}
+
+function progressFor(
+  scanId: string,
+  phase: ScanProgress["phase"],
+  vaults: ScanSnapshot["vaults"],
+  items: ScanSnapshot["items"],
+  totalItems: number,
+  scannedVaults: number,
+  message?: string
+): ScanProgress {
+  return {
+    scanId,
+    phase,
+    totalVaults: vaults.length,
+    scannedVaults,
+    totalItems,
+    scannedItems: items.length,
+    vaults: summarizeVaults(vaults, items),
+    message
+  };
+}
+
+function redactScanProgressEvent(event: ScanProgressEvent): ScanProgressEvent {
+  return {
+    ...event,
+    scan: event.scan ? redactScanSnapshotForClient(event.scan) : undefined
+  };
+}
+
+function toSseMessage(event: ScanProgressEvent): string {
+  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+function analyzeScan(scan: ScanSnapshot): ScanResult {
+  return {
+    ...scan,
+    analyzedAt: new Date().toISOString(),
+    groups: findDuplicateGroups(scan.items)
+  };
+}
+
+function mockRevealCredentials(itemId: string): RevealedCredentialField[] {
+  return [
+    {
+      label: "凭据材料",
+      value: `mock-secret-for-${itemId.split(":").at(-1) ?? "item"}`,
+      fieldType: "mock-concealed"
+    }
+  ];
+}
+
 function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResult | undefined) {
-  const scan = currentScanFor(decision.scanId, latestScan);
+  const scan = currentAnalysisFor(decision.scanId, latestScan);
 
   const group = scan.groups.find((candidate) => candidate.id === decision.groupId);
   if (!group) {
@@ -388,9 +673,9 @@ function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResul
   };
 }
 
-function currentScanFor(scanId: string, latestScan: ScanResult | undefined): ScanResult {
+function currentScanSnapshotFor(scanId: string, latestScan: ScanSnapshot | undefined): ScanSnapshot {
   if (!latestScan) {
-    throw new ClientInputError("请先运行扫描，再创建计划、跳过重复组或执行计划。");
+    throw new ClientInputError("请先运行扫描。");
   }
 
   if (scanId !== latestScan.scanId) {
@@ -398,6 +683,18 @@ function currentScanFor(scanId: string, latestScan: ScanResult | undefined): Sca
   }
 
   return latestScan;
+}
+
+function currentAnalysisFor(scanId: string, latestAnalysis: ScanResult | undefined): ScanResult {
+  if (!latestAnalysis) {
+    throw new ClientInputError("请先完成扫描并手动运行分析。");
+  }
+
+  if (scanId !== latestAnalysis.scanId) {
+    throw new ClientInputError("当前分析结果已过期，请重新扫描并重新分析后再继续。");
+  }
+
+  return latestAnalysis;
 }
 
 function validateTargetVaults(decision: GroupDecision, scan: ScanResult): string[] {
@@ -508,13 +805,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function redactScanResultForClient(scan: ScanResult): ScanResult {
+function redactScanSnapshotForClient(scan: ScanSnapshot): ScanSnapshot {
   return {
     ...scan,
     items: scan.items.map((item) => ({
       ...item,
       comparableFields: []
-    })),
+    }))
+  };
+}
+
+function redactScanResultForClient(scan: ScanResult): ScanResult {
+  return {
+    ...redactScanSnapshotForClient(scan),
+    analyzedAt: scan.analyzedAt,
     groups: scan.groups.map((group) => ({
       ...group,
       reasons: group.reasons.map((reason) => ({
