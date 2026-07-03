@@ -22,16 +22,16 @@
         <em class="danger-text">{{ wf.decisionStats().delete }}</em> · 迁移
         <em class="info-text">{{ wf.decisionStats().move }}</em>
       </div>
-      <op-button size="sm" variant="ghost" [label]="wf.reveal() ? '隐藏密码' : '显示密码'" (pressed)="wf.toggleReveal()"></op-button>
       <op-button size="sm" variant="ghost" label="全部采纳推荐" (pressed)="wf.acceptAllRecommendations()"></op-button>
       <op-button size="sm" [label]="'生成计划 (' + wf.planOperationCount() + ' 项操作) →'" (pressed)="wf.goPreview()"></op-button>
     </div>
 
     <op-tabs [tabs]="wf.kindTabs()" [active]="wf.activeKind()" (activeChange)="setKind($event)"></op-tabs>
 
-    <div class="group-list">
-      @for (group of wf.visibleGroups(); track group.id) {
-        <div class="group-card" [style.border-color]="group.cardBorder" [style.opacity]="group.opacity">
+    <div class="scroll-list-panel">
+      <div class="group-list">
+        @for (group of wf.visibleGroups(); track group.id) {
+          <div class="group-card" [style.border-color]="group.cardBorder" [style.opacity]="group.opacity">
           <div class="group-head">
             <span class="kind-badge" [style.background]="group.badgeBg" [style.color]="group.badgeColor">{{ group.kindLabel }}</span>
             <span class="mono group-username">{{ group.username }}</span>
@@ -52,27 +52,48 @@
                   [disabled]="group.skipped"
                   [attr.aria-label]="'保留 ' + item.title"
                 >
-                <div class="item-identity">
-                  <div class="item-title-line">
-                    <span>{{ item.title }}</span>
-                    @if (item.recommended) {
-                      <strong>推荐保留 · 最新</strong>
-                    }
-                  </div>
+                <div class="username-cell">
+                  <strong>{{ item.username }}</strong>
+                </div>
+                <div class="site-cell">
+                  <strong>{{ item.title }}</strong>
                   <small>{{ item.url }}</small>
+                </div>
+                <div class="recommend-cell">
+                  @if (item.recommendationLabel) {
+                    <span class="recommend-pill">{{ item.recommendationLabel }}</span>
+                  } @else {
+                    <span class="recommend-empty">—</span>
+                  }
                 </div>
                 <div class="credential-stack">
                   @for (chip of item.credChips; track chip.label) {
                     <div class="cred-line">
                       <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
                       <em [style.color]="chip.textColor">{{ chip.text }}</em>
+                      @if (chip.kind === 'password') {
+                        <button
+                          type="button"
+                          class="reveal-button"
+                          [class.active]="item.secretVisible"
+                          [disabled]="item.secretLoading"
+                          [attr.aria-label]="item.secretVisible ? '隐藏密码' : '显示密码'"
+                          [attr.title]="item.secretVisible ? '隐藏密码' : '显示密码'"
+                          (click)="wf.toggleItemReveal(item.id)"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
+                            <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="2"></circle>
+                          </svg>
+                        </button>
+                      }
                     </div>
                   }
                 </div>
                 <div class="strength-cell">
                   <span [style.background]="item.strengthBg" [style.color]="item.strengthColor">{{ item.strength }}</span>
-                  <em>{{ item.updated }}</em>
                 </div>
+                <div class="updated-cell">{{ item.updated }}</div>
                 <div class="vault-name">📁 {{ item.vaultName }}</div>
                 <div class="action-cell">
                   @if (item.keep) {
@@ -101,11 +122,12 @@
               </div>
             }
           </div>
-        </div>
-      }
-      @if (wf.visibleGroups().length === 0) {
-        <div class="empty-box">此分类下没有疑似重复组</div>
-      }
+          </div>
+        }
+        @if (wf.visibleGroups().length === 0) {
+          <div class="empty-box">此分类下没有疑似重复组</div>
+        }
+      </div>
     </div>
   }
 </section>

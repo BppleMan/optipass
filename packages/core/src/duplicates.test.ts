@@ -122,7 +122,7 @@ describe("findDuplicateGroups", () => {
     expect(groups).toHaveLength(0);
   });
 
-  it("groups only non-login items with the same title as miscellaneous candidates", () => {
+  it("does not create miscellaneous candidate groups for non-login items", () => {
     const groups = findDuplicateGroups([
       item({
         id: "vault-a:note-1",
@@ -138,6 +138,24 @@ describe("findDuplicateGroups", () => {
         category: "document"
       }),
       item({
+        id: "vault-a:card-1",
+        title: "Visa",
+        category: "credit-card"
+      }),
+      item({
+        id: "vault-a:ssh-1",
+        title: "One-off SSH key",
+        category: "ssh-key"
+      }),
+      item({
+        id: "vault-b:card-2",
+        onePasswordItemId: "card-2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "Visa",
+        category: "credit-card"
+      }),
+      item({
         id: "vault-c:login-1",
         onePasswordItemId: "login-1",
         vaultId: "vault-c",
@@ -150,12 +168,7 @@ describe("findDuplicateGroups", () => {
       })
     ]);
 
-    expect(groups).toHaveLength(1);
-    expect(groups[0]).toMatchObject({
-      candidateClass: "misc-title",
-      confidence: "low"
-    });
-    expect(groups[0].itemIds.sort()).toEqual(["vault-a:note-1", "vault-b:note-2"]);
+    expect(groups).toHaveLength(0);
   });
 
   it("emits delete suggestions as advisory single-item candidates", () => {

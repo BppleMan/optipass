@@ -2,7 +2,6 @@ import {
   DuplicateCandidateClass,
   DuplicateGroup,
   DuplicateReason,
-  DuplicateRule,
   ItemSummary,
   RecommendedKeepReason
 } from "./model.js";
@@ -26,19 +25,16 @@ interface LoginAnchorBucket {
   itemIds: string[];
 }
 
-export interface DuplicateOptions {
-  minTitleLength?: number;
-}
+export interface DuplicateOptions {}
 
 export function findDuplicateGroups(items: ItemSummary[], options: DuplicateOptions = {}): DuplicateGroup[] {
-  const minTitleLength = options.minTitleLength ?? 1;
+  void options;
   const deleteSuggestionItemIds = new Set(
     items.filter((item) => isDeleteSuggestionItem(item)).map((item) => item.id)
   );
 
   const drafts = [
     ...buildLoginIdentityGroups(items.filter((item) => item.category === "login" && !deleteSuggestionItemIds.has(item.id))),
-    ...buildMiscTitleGroups(items.filter((item) => item.category !== "login"), minTitleLength),
     ...buildDeleteSuggestionGroups(items.filter((item) => deleteSuggestionItemIds.has(item.id)))
   ];
 
@@ -143,38 +139,6 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
   }
 
   return removeStrictSubsetGroups(Array.from(byItemSet.values()));
-}
-
-function buildMiscTitleGroups(items: ItemSummary[], minTitleLength: number): DuplicateDraft[] {
-  const buckets = new Map<string, ItemSummary[]>();
-
-  for (const item of items) {
-    const title = item.title.trim();
-    if (title.length < minTitleLength) {
-      continue;
-    }
-    const bucket = buckets.get(title) ?? [];
-    bucket.push(item);
-    buckets.set(title, bucket);
-  }
-
-  return Array.from(buckets.entries()).flatMap(([title, bucket]) => {
-    if (bucket.length < 2) {
-      return [];
-    }
-    const itemIds = uniqueSorted(bucket.map((item) => item.id));
-    return [{
-      candidateClass: "misc-title" as const,
-      itemIds,
-      reasons: [{
-        rule: "title" as const,
-        key: `misc-title:${title}`,
-        label: `非登录标题相同：${title}`,
-        itemIds
-      }],
-      confidence: "low" as const
-    }];
-  });
 }
 
 function buildDeleteSuggestionGroups(items: ItemSummary[]): DuplicateDraft[] {

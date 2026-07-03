@@ -11,6 +11,8 @@ import { WorkflowService } from '../../workflow.service';
   templateUrl: './scan-page.html'
 })
 export class ScanPageComponent {
+  errorDialogOpen = false;
+
   constructor(readonly wf: WorkflowService) {}
 
   scanButtonLabel(): string {
@@ -28,5 +30,73 @@ export class ScanPageComponent {
 
   scanControlsDisabled(): boolean {
     return this.wf.loading() || this.wf.authState() === 'authorizing' || this.wf.authState() === 'authorized';
+  }
+
+  rescanDisabled(): boolean {
+    return this.scanInProgress() || (!this.wf.scanRows().length && !this.wf.scanDone() && !this.wf.scanFailed());
+  }
+
+  scanInProgress(): boolean {
+    const phase = this.wf.scanProgress()?.phase;
+    return this.wf.loading() || phase === 'scanning';
+  }
+
+  scanStatusLabel(): string {
+    if (this.wf.scanDone()) {
+      return '扫描完成';
+    }
+    if (this.scanInProgress()) {
+      return '扫描中';
+    }
+    if (this.wf.scanFailed()) {
+      return '扫描失败';
+    }
+    return '等待扫描';
+  }
+
+  scanStatusTone(): 'waiting' | 'scanning' | 'done' | 'failed' {
+    if (this.wf.scanDone()) {
+      return 'done';
+    }
+    if (this.scanInProgress()) {
+      return 'scanning';
+    }
+    if (this.wf.scanFailed()) {
+      return 'failed';
+    }
+    return 'waiting';
+  }
+
+  scanProgressColor(): string {
+    switch (this.scanStatusTone()) {
+      case 'done':
+        return '#c3e88d';
+      case 'scanning':
+        return '#82aaff';
+      case 'failed':
+        return '#ff5370';
+      case 'waiting':
+        return '#616161';
+    }
+  }
+
+  openErrorDialog(): void {
+    if (this.wf.error()) {
+      this.errorDialogOpen = true;
+    }
+  }
+
+  closeErrorDialog(): void {
+    this.errorDialogOpen = false;
+  }
+
+  scanStatusDetail(): string {
+    if (this.wf.scanDone()) {
+      return ` · 已将 ${this.wf.totalItems()} 个 item 读入本地内存`;
+    }
+    if (this.wf.scanFailed()) {
+      return ' · 请检查授权状态后重新扫描';
+    }
+    return '';
   }
 }

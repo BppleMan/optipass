@@ -21,6 +21,7 @@ import {
   type ApplyOperationRowView,
   type ApplyOperationView,
   type ApplyStatus,
+  type CredentialChipView,
   type DecisionStatsView,
   type DuplicateGroupView,
   type DuplicateItemView,
@@ -38,12 +39,11 @@ import {
 const accountNameStorageKey = 'optipass.accountName';
 const deleteConfirmationPhrase = '永久删除';
 
-const kindOrder: DuplicateKind[] = ['similar', 'identical', 'incomplete', 'misc'];
+const kindOrder: DuplicateKind[] = ['similar', 'identical', 'incomplete'];
 const kindMeta: Record<DuplicateKind, { label: string; color: string; bg: string }> = {
   similar: { label: '近似组', color: '#82aaff', bg: 'rgba(130,170,255,0.14)' },
   identical: { label: '全等组', color: '#89ddff', bg: 'rgba(137,221,255,0.14)' },
-  incomplete: { label: '建议删除', color: '#ffcb6b', bg: 'rgba(255,203,107,0.14)' },
-  misc: { label: '杂项组', color: '#c792ea', bg: 'rgba(199,146,234,0.14)' }
+  incomplete: { label: '建议删除', color: '#ffcb6b', bg: 'rgba(255,203,107,0.14)' }
 };
 
 const categoryDisplay: Record<string, { label: string; order: number }> = {
@@ -76,6 +76,8 @@ export class WorkflowService {
   readonly decisions = signal<Record<string, ItemDecision>>({});
   readonly skippedGroups = signal<Record<string, boolean>>({});
   readonly reveal = signal(false);
+  readonly visibleSecretItems = signal<Record<string, boolean>>({});
+  readonly revealingItems = signal<Record<string, boolean>>({});
   readonly revealedSecrets = signal<Record<string, string>>({});
   readonly activeKind = signal<DuplicateKind>('similar');
   readonly previewKind = signal<DuplicateKind>('similar');
@@ -102,7 +104,7 @@ export class WorkflowService {
   });
   readonly authHint = computed(() => {
     if (this.error() && this.authState() === 'failed') {
-      return this.error();
+      return '';
     }
     if (this.authState() === 'authorizing') {
       if (this.activeScanMode() === 'mock') {
@@ -120,7 +122,7 @@ export class WorkflowService {
     return '';
   });
   readonly authHintClass = computed(() => this.authState() === 'failed' ? 'danger-text' : this.authState() === 'authorizing' ? 'warn-text' : 'ok-text');
-  readonly groups = computed(() => this.scanResult()?.groups ?? []);
+  readonly groups = computed(() => (this.scanResult()?.groups ?? []).filter((group) => group.candidateClass !== 'misc-title'));
   readonly kindTabs = computed<KindTabView[]>(() => this.buildKindTabs());
   readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.buildVisibleGroups());
   readonly decisionStats = computed<DecisionStatsView>(() => this.buildDecisionStats());
@@ -133,7 +135,7 @@ export class WorkflowService {
     const session = this.session();
     return this.activeScanMode() === 'live' && session ? !session.enableMutations : false;
   });
-  readonly canApply = computed(() => this.allPreviewGroups().length > 0 && !this.loading() && !this.applying() && !this.liveExecutionDisabled());
+  readonly canApply = computed(() => this.planOperationCount() > 0 && !this.loading() && !this.applying() && !this.liveExecutionDisabled());
   readonly operationRows = computed<ApplyOperationRowView[]>(() => this.operations().map((operation) => toOperationRow(operation)));
   readonly applyPct = computed(() => {
     const operations = this.operations();
@@ -258,6 +260,8 @@ export class WorkflowService {
       });
       this.decisions.set(this.defaultDecisions(result));
       this.skippedGroups.set({});
+      this.visibleSecretItems.set({});
+      this.revealingItems.set({});
       this.revealedSecrets.set({});
       this.reveal.set(false);
       this.activeKind.set(firstAvailableKind(result.groups));
@@ -354,6 +358,38 @@ export class WorkflowService {
     }
   }
 
+  async toggleItemReveal(itemId: string): Promise<void> {
+    const visible = this.visibleSecretItems();
+    if (visible[itemId]) {
+      this.visibleSecretItems.set({ ...visible, [itemId]: false });
+      return;
+    }
+
+    this.visibleSecretItems.set({ ...visible, [itemId]: true });
+    if (this.revealedSecrets()[itemId]) {
+      return;
+    }
+
+    const result = this.scanResult();
+    if (!result || this.revealingItems()[itemId]) {
+      return;
+    }
+
+    this.revealingItems.set({ ...this.revealingItems(), [itemId]: true });
+    try {
+      const response = await this.api.revealCredentials(result.scanId, itemId);
+      const field = response.fields.find((candidate) => candidate.value.trim()) ?? response.fields[0];
+      this.revealedSecrets.set({
+        ...this.revealedSecrets(),
+        [itemId]: field?.value || '无可显示密码'
+      });
+    } catch {
+      this.revealedSecrets.set({ ...this.revealedSecrets(), [itemId]: '显示失败' });
+    } finally {
+      this.revealingItems.set({ ...this.revealingItems(), [itemId]: false });
+    }
+  }
+
   async goPreview(): Promise<void> {
     this.phase.set('preview');
     this.previewKind.set(this.activeKind());
@@ -441,6 +477,8 @@ export class WorkflowService {
     this.decisions.set({});
     this.skippedGroups.set({});
     this.reveal.set(false);
+    this.visibleSecretItems.set({});
+    this.revealingItems.set({});
     this.revealedSecrets.set({});
     this.activeKind.set('similar');
     this.previewKind.set('similar');
@@ -543,7 +581,7 @@ export class WorkflowService {
       return [];
     }
     const itemById = new Map(result.items.map((item) => [item.id, item]));
-    return result.groups
+    return this.groups()
       .filter((group) => kindFromCandidateClass(group.candidateClass) === this.activeKind())
       .map((group) => this.toGroupView(group, itemById, result.vaults));
   }
@@ -583,7 +621,9 @@ export class WorkflowService {
     return {
       id: item.id,
       title: item.title,
+      username: item.usernames.find(Boolean) ?? '（无 username）',
       url: item.urls[0] || '—',
+      recommendationLabel: recommendationLabel(group, item.id),
       updated: itemUpdatedDate(item),
       strength,
       vaultName: item.vaultName,
@@ -597,7 +637,9 @@ export class WorkflowService {
       rowBg: decision.keep && !skipped ? 'rgba(130,170,255,0.04)' : 'transparent',
       strengthBg: strengthBackground(strength),
       strengthColor: strengthColor(strength),
-      credChips: credentialChips(item, this.reveal(), this.revealedSecrets()[item.id]),
+      secretVisible: Boolean(this.visibleSecretItems()[item.id]),
+      secretLoading: Boolean(this.revealingItems()[item.id]),
+      credChips: credentialChips(item, Boolean(this.visibleSecretItems()[item.id]), this.revealedSecrets()[item.id]),
       vaultOptions: vaults.map((vault) => ({
         id: vault.id,
         label: vault.id === item.vaultId ? `${vault.name}（原）` : `迁移至 ${vault.name}`
@@ -612,7 +654,7 @@ export class WorkflowService {
     }
     const itemById = new Map(result.items.map((item) => [item.id, item]));
     const stats = { groups: 0, keep: 0, archive: 0, delete: 0, move: 0 };
-    for (const group of result.groups) {
+    for (const group of this.groups()) {
       if (this.skippedGroups()[group.id]) {
         continue;
       }
@@ -644,7 +686,7 @@ export class WorkflowService {
       return [];
     }
     const itemById = new Map(result.items.map((item) => [item.id, item]));
-    return result.groups
+    return this.groups()
       .filter((group) => !this.skippedGroups()[group.id])
       .map((group) => {
         const kind = kindFromCandidateClass(group.candidateClass);
@@ -701,7 +743,7 @@ export class WorkflowService {
 
   private groupDecisionById(groupId: string): GroupDecision | undefined {
     const result = this.scanResult();
-    const group = result?.groups.find((candidate) => candidate.id === groupId);
+    const group = this.groups().find((candidate) => candidate.id === groupId);
     if (!result || !group) {
       return undefined;
     }
@@ -863,9 +905,6 @@ function groupSite(group: DuplicateGroup, items: ItemSummary[]): string {
   if (group.candidateClass === 'delete-suggestion') {
     return '—';
   }
-  if (group.candidateClass === 'misc-title') {
-    return '（无法归纳）';
-  }
   const url = items.flatMap((item) => item.urls).find(Boolean);
   if (!url) {
     return '—';
@@ -877,13 +916,23 @@ function groupSite(group: DuplicateGroup, items: ItemSummary[]): string {
   }
 }
 
-function credentialChips(item: ItemSummary, reveal: boolean, revealedValue: string | undefined) {
-  const chips = [];
+function recommendationLabel(group: DuplicateGroup, itemId: string): string {
+  const reason = group.recommendedKeepReasons.find((candidate) => candidate.itemId === itemId);
+  if (!reason) {
+    return '';
+  }
+  const label = reason.labels.includes('最近更新') ? '最新' : reason.labels[0];
+  return label ? `推荐保留 · ${label}` : '推荐保留';
+}
+
+function credentialChips(item: ItemSummary, reveal: boolean, revealedValue: string | undefined): CredentialChipView[] {
+  const chips: CredentialChipView[] = [];
   if (item.hasPasskey) {
-    chips.push({ label: '通行密钥', bg: 'rgba(137,221,255,0.14)', color: '#89ddff', text: '已创建', textColor: '#B0BEC5' });
+    chips.push({ kind: 'passkey', label: 'Passkey', bg: 'rgba(137,221,255,0.14)', color: '#89ddff', text: '已创建', textColor: '#B0BEC5' });
   }
   if (item.hasPassword) {
     chips.push({
+      kind: 'password',
       label: '密码',
       bg: 'rgba(130,170,255,0.12)',
       color: '#82aaff',
@@ -892,10 +941,10 @@ function credentialChips(item: ItemSummary, reveal: boolean, revealedValue: stri
     });
   }
   if (item.hasTotp) {
-    chips.push({ label: 'OTP', bg: 'rgba(255,203,107,0.14)', color: '#ffcb6b', text: '动态 6 位 · 30s', textColor: '#B0BEC5' });
+    chips.push({ kind: 'totp', label: '一次性密码', bg: 'rgba(255,203,107,0.14)', color: '#ffcb6b', text: 'TOTP', textColor: '#B0BEC5' });
   }
   if (chips.length === 0) {
-    chips.push({ label: '缺失', bg: 'rgba(255,83,112,0.14)', color: '#ff5370', text: '（无 password）', textColor: '#ff5370' });
+    chips.push({ kind: 'missing', label: '缺失', bg: 'rgba(255,83,112,0.14)', color: '#ff5370', text: '（无 password）', textColor: '#ff5370' });
   }
   return chips;
 }

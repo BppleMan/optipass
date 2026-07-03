@@ -23,12 +23,13 @@
 
     <op-tabs [tabs]="wf.previewTabs()" [active]="wf.previewKind()" (activeChange)="setKind($event)"></op-tabs>
 
-    <div class="preview-list">
-      @if (wf.previewEmpty()) {
-        <div class="empty-box">此分类下没有待执行的变更</div>
-      }
-      @for (group of wf.visiblePreviewGroups(); track group.id) {
-        <div class="preview-card">
+    <div class="scroll-list-panel">
+      <div class="preview-list">
+        @if (wf.previewEmpty()) {
+          <div class="empty-box">此分类下没有待执行的变更</div>
+        }
+        @for (group of wf.visiblePreviewGroups(); track group.id) {
+          <div class="preview-card">
           <div class="preview-group-head">
             <span class="kind-badge" [style.background]="group.badgeBg" [style.color]="group.badgeColor">{{ group.kindLabel }}</span>
             <span class="mono">{{ group.username }}</span>
@@ -73,8 +74,9 @@
               </div>
             </div>
           </div>
-        </div>
-      }
+          </div>
+        }
+      </div>
     </div>
   } @else if (wf.phase() === 'applying') {
     <div class="apply-panel">

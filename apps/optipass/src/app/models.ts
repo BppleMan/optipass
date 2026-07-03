@@ -2,7 +2,7 @@ import type { DuplicateCandidateClass, ExecutionPlan, ItemDecision, ItemSummary 
 
 export type AppStep = 'scan' | 'analysis' | 'preview' | 'applying' | 'summary';
 export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
-export type DuplicateKind = 'similar' | 'identical' | 'incomplete' | 'misc';
+export type DuplicateKind = 'similar' | 'identical' | 'incomplete';
 export type RemoveAction = 'archive' | 'delete';
 export type ApplyStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
@@ -37,6 +37,7 @@ export interface KindTabView {
 }
 
 export interface CredentialChipView {
+  kind: 'password' | 'totp' | 'passkey' | 'missing';
   label: string;
   bg: string;
   color: string;
@@ -52,7 +53,9 @@ export interface VaultOptionView {
 export interface DuplicateItemView {
   id: string;
   title: string;
+  username: string;
   url: string;
+  recommendationLabel: string;
   updated: string;
   strength: string;
   vaultName: string;
@@ -66,6 +69,8 @@ export interface DuplicateItemView {
   rowBg: string;
   strengthBg: string;
   strengthColor: string;
+  secretVisible: boolean;
+  secretLoading: boolean;
   credChips: CredentialChipView[];
   vaultOptions: VaultOptionView[];
 }
@@ -152,7 +157,7 @@ export function kindFromCandidateClass(candidateClass: DuplicateCandidateClass):
     case 'delete-suggestion':
       return 'incomplete';
     case 'misc-title':
-      return 'misc';
+      return 'incomplete';
     case 'similar-login':
       return 'similar';
   }

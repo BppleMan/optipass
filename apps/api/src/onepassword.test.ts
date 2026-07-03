@@ -149,6 +149,93 @@ describe("OnePasswordService", () => {
     );
   });
 
+  it("reads vaults concurrently with a bounded worker pool", async () => {
+    const vaults = Array.from({ length: 4 }, (_, index) => ({
+      id: `vault-${index}`,
+      title: `Vault ${index}`
+    }));
+    let inFlightGetAll = 0;
+    let maxInFlightGetAll = 0;
+    const getAll = vi.fn(async (vaultId: string, batch: string[]) => {
+      inFlightGetAll += 1;
+      maxInFlightGetAll = Math.max(maxInFlightGetAll, inFlightGetAll);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlightGetAll -= 1;
+      return {
+        individualResponses: batch.map((id) => ({
+          content: {
+            id,
+            category: "Login",
+            title: `${vaultId}:${id}`,
+            fields: [],
+            websites: [],
+            tags: []
+          }
+        }))
+      };
+    });
+    sdkMock.createClient.mockResolvedValue({
+      vaults: {
+        list: vi.fn(() => vaults)
+      },
+      items: {
+        list: vi.fn((vaultId: string) => [{ id: `${vaultId}-item` }]),
+        getAll
+      }
+    });
+
+    const service = new OnePasswordService();
+    const scan = await service.scan({ serviceAccountToken: "ops-test" });
+
+    expect(scan.items).toHaveLength(4);
+    expect(getAll).toHaveBeenCalledTimes(4);
+    expect(maxInFlightGetAll).toBeGreaterThan(1);
+    expect(maxInFlightGetAll).toBeLessThanOrEqual(3);
+  });
+
+  it("reads Desktop-auth vaults serially to avoid IPC contention", async () => {
+    const vaults = Array.from({ length: 3 }, (_, index) => ({
+      id: `desktop-vault-${index}`,
+      title: `Desktop Vault ${index}`
+    }));
+    let inFlightGetAll = 0;
+    let maxInFlightGetAll = 0;
+    const getAll = vi.fn(async (vaultId: string, batch: string[]) => {
+      inFlightGetAll += 1;
+      maxInFlightGetAll = Math.max(maxInFlightGetAll, inFlightGetAll);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlightGetAll -= 1;
+      return {
+        individualResponses: batch.map((id) => ({
+          content: {
+            id,
+            category: "Login",
+            title: `${vaultId}:${id}`,
+            fields: [],
+            websites: [],
+            tags: []
+          }
+        }))
+      };
+    });
+    sdkMock.createClient.mockResolvedValue({
+      vaults: {
+        list: vi.fn(() => vaults)
+      },
+      items: {
+        list: vi.fn((vaultId: string) => [{ id: `${vaultId}-item` }]),
+        getAll
+      }
+    });
+
+    const service = new OnePasswordService();
+    const scan = await service.scan({ accountName: "example-account" });
+
+    expect(scan.items).toHaveLength(3);
+    expect(getAll).toHaveBeenCalledTimes(3);
+    expect(maxInFlightGetAll).toBe(1);
+  });
+
   it("falls back to single item reads when batch retrieval fails", async () => {
     const itemIds = ["item-ok", "item-bad", "item-later"];
     const getAll = vi.fn(async () => {

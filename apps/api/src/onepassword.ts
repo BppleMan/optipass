@@ -20,6 +20,7 @@ type RawItem = Item;
 const maxGetAllBatchSize = 50;
 const sdkSlowLogMs = readPositiveInteger(process.env.OP_SDK_SLOW_LOG_MS, 15_000);
 const execFileAsync = promisify(execFile);
+const maxConcurrentVaultScans = 3;
 
 interface CachedRawItem {
   item: RawItem;
@@ -79,15 +80,14 @@ export class OnePasswordService {
     }));
 
     const itemIdsByVault = new Map<string, string[]>();
+    const scanVaults = vaults.filter((vault) => vault.id);
     this.rawItems.clear();
     let skippedItems = 0;
     let skippedVaultItemLists = 0;
 
-    for (const vault of vaults) {
-      if (!vault.id) {
-        continue;
-      }
+    const vaultConcurrency = options.serviceAccountToken ? maxConcurrentVaultScans : 1;
 
+    await mapConcurrent(scanVaults, vaultConcurrency, async (vault) => {
       emit("progress", `正在读取 ${vault.name} 的项目列表。`);
       const itemIds = await this.readItemIds(client, vault, (message) => {
         skippedVaultItemLists += 1;
@@ -97,17 +97,14 @@ export class OnePasswordService {
       discoveredItemCounts.set(vault.id, itemIds.length);
       totalItems += itemIds.length;
       emit("progress", `已发现 ${vault.name} 中的 ${itemIds.length} 个项目。`);
-    }
+    });
 
     if (skippedVaultItemLists > 0 && totalItems === 0) {
       throw new Error(`已发现 ${vaults.length} 个保险库，但无法读取任何项目列表。请确认 1Password Desktop App 已解锁并允许 Optipass 读取数据。`);
     }
 
-    for (const vault of vaults) {
+    await mapConcurrent(scanVaults, vaultConcurrency, async (vault) => {
       const itemIds = itemIdsByVault.get(vault.id) ?? [];
-      if (!vault.id) {
-        continue;
-      }
 
       const batches = chunks(itemIds, maxGetAllBatchSize);
       for (const [batchIndex, batch] of batches.entries()) {
@@ -130,7 +127,7 @@ export class OnePasswordService {
       }
       scannedVaults += 1;
       emit("progress", `已读取 ${vault.name}。`);
-    }
+    });
 
     const scan = {
       scanId,
@@ -337,7 +334,8 @@ export class OnePasswordService {
 
 export const onePasswordLimits = {
   maxGetAllBatchSize,
-  sdkSlowLogMs
+  sdkSlowLogMs,
+  maxConcurrentVaultScans
 };
 
 function completionMessage(skippedItems: number, skippedVaultItemLists: number): string {
@@ -665,4 +663,23 @@ function chunks<T>(items: T[], size: number): T[][] {
     out.push(items.slice(index, index + size));
   }
   return out;
+}
+
+async function mapConcurrent<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    })
+  );
 }
