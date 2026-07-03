@@ -1,12 +1,18 @@
-import { Component, signal } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
+import { OpHeaderComponent } from './components/op-header/op-header';
+import { WorkflowService } from './workflow.service';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet],
+  imports: [RouterOutlet, OpHeaderComponent],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
-export class App {
-  protected readonly title = signal('optipass');
+export class App implements OnInit {
+  constructor(readonly wf: WorkflowService) {}
+
+  ngOnInit(): void {
+    void this.wf.loadSession();
+  }
 }

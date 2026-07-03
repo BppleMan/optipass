@@ -1,0 +1,11 @@
+<button
+  [type]="type()"
+  class="op-button"
+  [class.op-button-primary]="variant() === 'primary'"
+  [class.op-button-ghost]="variant() === 'ghost'"
+  [class.op-button-sm]="size() === 'sm'"
+  [disabled]="disabled()"
+  (click)="pressed.emit($event)"
+>
+  {{ label() }}
+</button>

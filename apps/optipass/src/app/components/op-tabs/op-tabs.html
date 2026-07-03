@@ -1,0 +1,28 @@
+<div class="op-tabs" role="tablist" aria-label="重复类型">
+  <div
+    class="op-tabs-indicator"
+    [style.left.px]="indicator().left"
+    [style.width.px]="indicator().width"
+    [style.opacity]="indicator().visible ? 1 : 0"
+  ></div>
+  @for (tab of tabs(); track tab.kind) {
+    <button
+      #tabButton
+      type="button"
+      role="tab"
+      class="op-tab"
+      [class.active]="tab.kind === active()"
+      [style.color]="tab.kind === active() ? tab.color : '#B0BEC5'"
+      [attr.aria-selected]="tab.kind === active()"
+      (click)="selectTab(tab.kind)"
+    >
+      <span>{{ tab.label }}</span>
+      <strong
+        [style.background]="tab.kind === active() ? tab.bg : '#292929'"
+        [style.color]="tab.kind === active() ? tab.color : '#727272'"
+      >
+        {{ tab.count }}
+      </strong>
+    </button>
+  }
+</div>

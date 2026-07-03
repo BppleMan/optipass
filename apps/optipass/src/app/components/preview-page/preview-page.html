@@ -1,0 +1,113 @@
+<section data-screen-label="page3-预览与应用" class="preview-page">
+  @if (!wf.scanResult()) {
+    <div class="analysis-running">
+      <h2>尚未生成计划</h2>
+      <p>请先完成扫描和分析。</p>
+      <op-button size="sm" variant="ghost" label="← 返回扫描" (pressed)="wf.rescan()"></op-button>
+    </div>
+  } @else if (wf.phase() === 'preview') {
+    <div class="preview-head">
+      <div>
+        <h1>计划预览</h1>
+        <p>以下变更尚未写入 1Password，点击「应用计划」后才会实际执行</p>
+      </div>
+      <div class="preview-actions">
+        <op-button size="sm" variant="ghost" label="← 返回调整" (pressed)="wf.backToAnalysis()"></op-button>
+        <op-button size="sm" [label]="'应用计划 (' + wf.operations().length + ' 项操作)'" [disabled]="!wf.canApply()" (pressed)="wf.applyPlan()"></op-button>
+      </div>
+    </div>
+
+    @if (wf.liveExecutionDisabled()) {
+      <div class="page-notice warn-text">真实 1Password 变更当前被后端保护禁用，请使用已启用变更的 API 配置后再应用计划。</div>
+    }
+
+    <op-tabs [tabs]="wf.previewTabs()" [active]="wf.previewKind()" (activeChange)="setKind($event)"></op-tabs>
+
+    <div class="preview-list">
+      @if (wf.previewEmpty()) {
+        <div class="empty-box">此分类下没有待执行的变更</div>
+      }
+      @for (group of wf.visiblePreviewGroups(); track group.id) {
+        <div class="preview-card">
+          <div class="preview-group-head">
+            <span class="kind-badge" [style.background]="group.badgeBg" [style.color]="group.badgeColor">{{ group.kindLabel }}</span>
+            <span class="mono">{{ group.username }}</span>
+            <span class="muted">@</span>
+            <span class="mono muted">{{ group.site }}</span>
+          </div>
+          @if ((group.plan?.blockers ?? []).length) {
+            <div class="blocker-list">
+              @for (blocker of group.plan?.blockers ?? []; track blocker) {
+                <p>{{ blocker }}</p>
+              }
+            </div>
+          }
+          <div class="diff-grid">
+            <div>
+              <div class="diff-label">BEFORE</div>
+              <div class="diff-stack">
+                @for (line of group.before; track line.title + line.vaultName) {
+                  <div class="diff-line before">
+                    <span>{{ line.title }}</span>
+                    <em>📁 {{ line.vaultName }}</em>
+                  </div>
+                }
+              </div>
+            </div>
+            <div class="diff-arrow">→</div>
+            <div>
+              <div class="diff-label">AFTER</div>
+              <div class="diff-stack">
+                @for (line of group.after; track line.title + line.tag) {
+                  <div
+                    class="diff-line after"
+                    [style.background]="line.bg"
+                    [style.border-color]="line.border"
+                    [style.text-decoration]="line.deco"
+                    [style.color]="line.color"
+                  >
+                    <span>{{ line.title }}</span>
+                    <em [style.color]="line.tagColor">{{ line.tag }}</em>
+                  </div>
+                }
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+    </div>
+  } @else if (wf.phase() === 'applying') {
+    <div class="apply-panel">
+      <h1>正在应用计划…</h1>
+      <p>通过 SDK 逐条写入 1Password，请勿关闭窗口</p>
+      <op-progress [value]="wf.applyPct()" color="#f07178"></op-progress>
+      <div class="op-list">
+        @for (operation of wf.operationRows(); track operation.id) {
+          <div class="op-row" [style.border-color]="operation.border" [style.opacity]="operation.opacity">
+            <span [style.color]="operation.iconColor" [style.animation]="operation.anim">{{ operation.icon }}</span>
+            <strong>{{ operation.label }}</strong>
+            <em [style.color]="operation.statusColor">{{ operation.statusText }}</em>
+          </div>
+        }
+      </div>
+    </div>
+  } @else {
+    <div class="summary-panel">
+      <div class="summary-check">✓</div>
+      <h1>去重完成</h1>
+      <p>{{ wf.summaryLine() }}</p>
+      <div class="summary-grid">
+        @for (card of wf.summaryCards(); track card.label) {
+          <div class="summary-card">
+            <strong [style.color]="card.color">{{ card.value }}</strong>
+            <span>{{ card.label }}</span>
+          </div>
+        }
+      </div>
+      @if (wf.hasFailed()) {
+        <div class="page-notice danger-text">{{ wf.applyMessage() || '部分操作失败。对应 item 未被改动，可重新扫描后重试。' }}</div>
+      }
+      <button type="button" class="reset-button" (click)="wf.resetAll()">重新扫描</button>
+    </div>
+  }
+</section>

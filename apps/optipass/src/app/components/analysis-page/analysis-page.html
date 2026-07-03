@@ -1,0 +1,111 @@
+<section data-screen-label="page2-分析结果" class="analysis-page">
+  @if (wf.analyzing()) {
+    <div class="analysis-running">
+      <div class="spinner"></div>
+      <h2>正在本地分析…</h2>
+      <p>仅比对内存中的数据，不会再次访问 1Password<br>规则：URL 全等或 domain 相同 × username 全等</p>
+      <div class="analysis-progress"><op-progress [value]="wf.analysisPct()" color="#82aaff"></op-progress></div>
+    </div>
+  } @else if (!wf.scanResult()) {
+    <div class="analysis-running">
+      <h2>尚未生成分析结果</h2>
+      <p>请先完成扫描，再从扫描页进入分析。</p>
+      <op-button size="sm" variant="ghost" label="← 返回扫描" (pressed)="wf.rescan()"></op-button>
+    </div>
+  } @else {
+    <div class="action-bar">
+      <op-button size="sm" variant="ghost" label="← 重新扫描" (pressed)="wf.rescan()"></op-button>
+      <div class="stats-line">
+        <span>{{ wf.decisionStats().groups }} 组疑似重复</span> · 保留
+        <em class="ok-text">{{ wf.decisionStats().keep }}</em> · 归档
+        <em class="warn-text">{{ wf.decisionStats().archive }}</em> · 删除
+        <em class="danger-text">{{ wf.decisionStats().delete }}</em> · 迁移
+        <em class="info-text">{{ wf.decisionStats().move }}</em>
+      </div>
+      <op-button size="sm" variant="ghost" [label]="wf.reveal() ? '隐藏密码' : '显示密码'" (pressed)="wf.toggleReveal()"></op-button>
+      <op-button size="sm" variant="ghost" label="全部采纳推荐" (pressed)="wf.acceptAllRecommendations()"></op-button>
+      <op-button size="sm" [label]="'生成计划 (' + wf.planOperationCount() + ' 项操作) →'" (pressed)="wf.goPreview()"></op-button>
+    </div>
+
+    <op-tabs [tabs]="wf.kindTabs()" [active]="wf.activeKind()" (activeChange)="setKind($event)"></op-tabs>
+
+    <div class="group-list">
+      @for (group of wf.visibleGroups(); track group.id) {
+        <div class="group-card" [style.border-color]="group.cardBorder" [style.opacity]="group.opacity">
+          <div class="group-head">
+            <span class="kind-badge" [style.background]="group.badgeBg" [style.color]="group.badgeColor">{{ group.kindLabel }}</span>
+            <span class="mono group-username">{{ group.username }}</span>
+            <span class="muted">@</span>
+            <span class="mono group-site">{{ group.site }}</span>
+            <span class="head-spacer"></span>
+            <span class="item-count">{{ group.count }} 个 item</span>
+            <button type="button" class="skip-button" [style.color]="group.skipColor" (click)="wf.toggleGroupSkip(group.id)">{{ group.skipLabel }}</button>
+          </div>
+
+          <div class="item-rows">
+            @for (item of group.items; track item.id) {
+              <div class="decision-row" [style.background]="item.rowBg">
+                <input
+                  type="checkbox"
+                  [ngModel]="item.keep"
+                  (ngModelChange)="wf.updateKeep(item.id, $event)"
+                  [disabled]="group.skipped"
+                  [attr.aria-label]="'保留 ' + item.title"
+                >
+                <div class="item-identity">
+                  <div class="item-title-line">
+                    <span>{{ item.title }}</span>
+                    @if (item.recommended) {
+                      <strong>推荐保留 · 最新</strong>
+                    }
+                  </div>
+                  <small>{{ item.url }}</small>
+                </div>
+                <div class="credential-stack">
+                  @for (chip of item.credChips; track chip.label) {
+                    <div class="cred-line">
+                      <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
+                      <em [style.color]="chip.textColor">{{ chip.text }}</em>
+                    </div>
+                  }
+                </div>
+                <div class="strength-cell">
+                  <span [style.background]="item.strengthBg" [style.color]="item.strengthColor">{{ item.strength }}</span>
+                  <em>{{ item.updated }}</em>
+                </div>
+                <div class="vault-name">📁 {{ item.vaultName }}</div>
+                <div class="action-cell">
+                  @if (item.keep) {
+                    <select
+                      [ngModel]="item.targetVault"
+                      (ngModelChange)="wf.updateTargetVault(item.id, $event)"
+                      [disabled]="group.skipped"
+                    >
+                      @for (vault of item.vaultOptions; track vault.id) {
+                        <option [value]="vault.id">{{ vault.label }}</option>
+                      }
+                    </select>
+                  } @else {
+                    <select
+                      [ngModel]="item.removeAction"
+                      (ngModelChange)="wf.updateRemoveAction(item.id, $event)"
+                      [disabled]="group.skipped"
+                      [style.border-color]="item.removeBorder"
+                      [style.color]="item.removeColor"
+                    >
+                      <option value="archive">归档（可恢复）</option>
+                      <option value="delete">删除</option>
+                    </select>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+      }
+      @if (wf.visibleGroups().length === 0) {
+        <div class="empty-box">此分类下没有疑似重复组</div>
+      }
+    </div>
+  }
+</section>
