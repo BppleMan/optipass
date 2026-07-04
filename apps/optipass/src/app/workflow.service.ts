@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import {
   createExecutionPlan,
   dashboardCategoryDefinitions,
+  normalizeUrlHost,
   type DashboardCategory,
   type DuplicateGroup,
   type ExecutionPlan,
@@ -18,6 +19,11 @@ import {
 } from '@optimize-password/core';
 import { ApiService, type ExecuteResponse } from './api.service';
 import {
+  type AnalysisFilterChipView,
+  type AnalysisFilterKey,
+  type AnalysisFilterSectionId,
+  type AnalysisFilterSectionView,
+  type AnalysisFilterSummaryView,
   type ApplyOperationRowView,
   type ApplyOperationView,
   type ApplyStatus,
@@ -26,6 +32,7 @@ import {
   type DuplicateGroupView,
   type DuplicateItemView,
   type DuplicateKind,
+  type FilterCredentialKind,
   type KindTabView,
   type PreviewGroupView,
   type RemoveAction,
@@ -38,6 +45,7 @@ import {
 
 const accountNameStorageKey = 'optipass.accountName';
 const deleteConfirmationPhrase = '永久删除';
+const missingYearId = '__missing_year__';
 
 const kindOrder: DuplicateKind[] = ['similar', 'identical', 'incomplete'];
 const kindMeta: Record<DuplicateKind, { label: string; color: string; bg: string }> = {
@@ -60,6 +68,59 @@ const categoryDisplay: Record<string, { label: string; order: number }> = {
   other: { label: 'Other', order: 99 }
 };
 
+interface AnalysisFilterState {
+  years: string[];
+  vaultIds: string[];
+  domains: string[];
+  credentialKinds: FilterCredentialKind[];
+}
+
+interface AnalysisFilterOptionData {
+  id: string;
+  label: string;
+  count: number;
+}
+
+const filterSectionMeta: Record<AnalysisFilterSectionId, {
+  label: string;
+  searchable: boolean;
+  emptyText: string;
+}> = {
+  years: {
+    label: '年份',
+    searchable: false,
+    emptyText: '没有可筛选年份'
+  },
+  vaults: {
+    label: '保险库',
+    searchable: false,
+    emptyText: '没有可筛选保险库'
+  },
+  credentials: {
+    label: '凭据类型',
+    searchable: false,
+    emptyText: '没有可筛选凭据类型'
+  },
+  domains: {
+    label: 'Domain',
+    searchable: true,
+    emptyText: '没有匹配的 domain'
+  }
+};
+
+const credentialKindMeta: Record<FilterCredentialKind, { label: string; order: number }> = {
+  password: { label: '密码', order: 1 },
+  totp: { label: '一次性密码', order: 2 },
+  passkey: { label: 'Passkey', order: 3 }
+};
+
+const defaultFilterSectionsOpen: Record<AnalysisFilterSectionId, boolean> = {
+  years: true,
+  vaults: true,
+  domains: true,
+  credentials: true
+};
+
 @Injectable({ providedIn: 'root' })
 export class WorkflowService {
   readonly account = signal('');
@@ -80,6 +141,9 @@ export class WorkflowService {
   readonly revealingItems = signal<Record<string, boolean>>({});
   readonly revealedSecrets = signal<Record<string, string>>({});
   readonly activeKind = signal<DuplicateKind>('similar');
+  readonly analysisFilters = signal<AnalysisFilterState>(emptyAnalysisFilters());
+  readonly filterSectionsOpen = signal<Record<AnalysisFilterSectionId, boolean>>(defaultFilterSectionsOpen);
+  readonly domainFilterQuery = signal('');
   readonly previewKind = signal<DuplicateKind>('similar');
   readonly phase = signal<'preview' | 'applying' | 'summary'>('preview');
   readonly operations = signal<ApplyOperationView[]>([]);
@@ -90,7 +154,7 @@ export class WorkflowService {
   readonly accountChip = computed(() => {
     const account = this.account().trim();
     const authed = this.authState() === 'authorized' || Boolean(this.scanSnapshot()) || Boolean(this.scanResult());
-    return authed && account ? `● ${account}` : '';
+    return authed && account ? account : '';
   });
   readonly scanData = computed(() => this.scanResult() ?? this.scanSnapshot());
   readonly scanDone = computed(() => this.scanProgress()?.phase === 'completed' || Boolean(this.scanSnapshot()));
@@ -124,7 +188,10 @@ export class WorkflowService {
   readonly authHintClass = computed(() => this.authState() === 'failed' ? 'danger-text' : this.authState() === 'authorizing' ? 'warn-text' : 'ok-text');
   readonly groups = computed(() => (this.scanResult()?.groups ?? []).filter((group) => group.candidateClass !== 'misc-title'));
   readonly kindTabs = computed<KindTabView[]>(() => this.buildKindTabs());
-  readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.buildVisibleGroups());
+  readonly activeKindGroups = computed<DuplicateGroupView[]>(() => this.buildActiveKindGroups());
+  readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.filterGroups(this.activeKindGroups()));
+  readonly analysisFilterSections = computed<AnalysisFilterSectionView[]>(() => this.buildAnalysisFilterSections());
+  readonly analysisFilterSummary = computed<AnalysisFilterSummaryView>(() => this.buildAnalysisFilterSummary());
   readonly decisionStats = computed<DecisionStatsView>(() => this.buildDecisionStats());
   readonly allPreviewGroups = computed<PreviewGroupView[]>(() => this.buildPreviewGroups());
   readonly planOperationCount = computed(() => this.countPlanOperations());
@@ -266,6 +333,7 @@ export class WorkflowService {
       this.reveal.set(false);
       this.activeKind.set(firstAvailableKind(result.groups));
       this.previewKind.set(firstAvailableKind(result.groups));
+      this.clearAnalysisFilters();
       this.analysisPct.set(100);
       this.status.set(result.groups.length ? `分析完成，发现 ${result.groups.length} 组疑似重复。` : '分析完成，没有发现疑似重复。');
     } catch (error) {
@@ -277,16 +345,67 @@ export class WorkflowService {
   }
 
   async rescan(): Promise<void> {
-    this.resetForScan();
-    await this.router.navigateByUrl('/scan');
+    this.loading.set(true);
+    try {
+      await this.api.clearScan();
+      this.resetForScan();
+      await this.router.navigateByUrl('/scan');
+    } catch (error) {
+      this.error.set(messageFor(error));
+    } finally {
+      this.loading.set(false);
+    }
   }
 
   setActiveKind(kind: DuplicateKind): void {
+    if (this.activeKind() === kind) {
+      return;
+    }
     this.activeKind.set(kind);
+    this.clearAnalysisFilters();
   }
 
   setPreviewKind(kind: DuplicateKind): void {
     this.previewKind.set(kind);
+  }
+
+  toggleAnalysisFilter(sectionId: AnalysisFilterSectionId, optionId: string, selected: boolean): void {
+    const current = this.analysisFilters();
+    switch (sectionId) {
+      case 'years':
+        this.analysisFilters.set({ ...current, years: toggleStringValue(current.years, optionId, selected) });
+        return;
+      case 'vaults':
+        this.analysisFilters.set({ ...current, vaultIds: toggleStringValue(current.vaultIds, optionId, selected) });
+        return;
+      case 'domains':
+        this.analysisFilters.set({ ...current, domains: toggleStringValue(current.domains, optionId, selected) });
+        return;
+      case 'credentials':
+        if (isFilterCredentialKind(optionId)) {
+          this.analysisFilters.set({ ...current, credentialKinds: toggleCredentialKind(current.credentialKinds, optionId, selected) });
+        }
+        return;
+    }
+  }
+
+  removeAnalysisFilter(key: AnalysisFilterKey, optionId: string): void {
+    const section = sectionIdForFilterKey(key);
+    this.toggleAnalysisFilter(section, optionId, false);
+  }
+
+  clearAnalysisFilters(): void {
+    this.analysisFilters.set(emptyAnalysisFilters());
+    this.domainFilterQuery.set('');
+  }
+
+  toggleAnalysisFilterSection(sectionId: AnalysisFilterSectionId): void {
+    const open = this.filterSectionsOpen();
+    this.filterSectionsOpen.set({ ...open, [sectionId]: !open[sectionId] });
+  }
+
+  updateDomainFilterQuery(value: string): void {
+    this.domainFilterQuery.set(value);
   }
 
   toggleGroupSkip(groupId: string): void {
@@ -446,9 +565,8 @@ export class WorkflowService {
     this.applying.set(false);
   }
 
-  resetAll(): void {
-    this.resetForScan();
-    void this.router.navigateByUrl('/scan');
+  async resetAll(): Promise<void> {
+    await this.rescan();
   }
 
   planForPreviewGroup(groupId: string): ExecutionPlan | undefined {
@@ -481,6 +599,9 @@ export class WorkflowService {
     this.revealingItems.set({});
     this.revealedSecrets.set({});
     this.activeKind.set('similar');
+    this.analysisFilters.set(emptyAnalysisFilters());
+    this.filterSectionsOpen.set({ ...defaultFilterSectionsOpen });
+    this.domainFilterQuery.set('');
     this.previewKind.set('similar');
     this.phase.set('preview');
     this.operations.set([]);
@@ -575,7 +696,7 @@ export class WorkflowService {
     }));
   }
 
-  private buildVisibleGroups(): DuplicateGroupView[] {
+  private buildActiveKindGroups(): DuplicateGroupView[] {
     const result = this.scanResult();
     if (!result) {
       return [];
@@ -584,6 +705,75 @@ export class WorkflowService {
     return this.groups()
       .filter((group) => kindFromCandidateClass(group.candidateClass) === this.activeKind())
       .map((group) => this.toGroupView(group, itemById, result.vaults));
+  }
+
+  private filterGroups(groups: DuplicateGroupView[]): DuplicateGroupView[] {
+    const filters = this.analysisFilters();
+    return groups.filter((group) =>
+      matchesSelected(filters.years, group.filterYears) &&
+      matchesSelected(filters.vaultIds, group.filterVaultIds) &&
+      matchesSelected(filters.domains, group.filterDomains) &&
+      matchesSelected(filters.credentialKinds, group.filterCredentialKinds)
+    );
+  }
+
+  private buildAnalysisFilterSections(): AnalysisFilterSectionView[] {
+    const groups = this.activeKindGroups();
+    const filters = this.analysisFilters();
+    const open = this.filterSectionsOpen();
+    const optionData = {
+      years: yearOptions(groups),
+      vaults: vaultOptions(groups),
+      domains: domainOptions(groups),
+      credentials: credentialOptions(groups)
+    };
+
+    return (Object.keys(filterSectionMeta) as AnalysisFilterSectionId[]).map((id) => {
+      const meta = filterSectionMeta[id];
+      const selected = selectedFilterValues(filters, id);
+      const query = id === 'domains' ? this.domainFilterQuery().trim().toLowerCase() : '';
+      const rawOptions = optionData[id];
+      const options = id === 'domains' && query
+        ? rawOptions.filter((option) => option.label.toLowerCase().includes(query))
+        : rawOptions;
+      return {
+        id,
+        label: meta.label,
+        countLabel: selected.length ? `${selected.length} / ${rawOptions.length}` : `${rawOptions.length}`,
+        expanded: open[id],
+        searchable: meta.searchable,
+        query: id === 'domains' ? this.domainFilterQuery() : '',
+        emptyText: meta.emptyText,
+        options: options.map((option) => ({
+          ...option,
+          selected: selected.includes(option.id)
+        }))
+      };
+    });
+  }
+
+  private buildAnalysisFilterSummary(): AnalysisFilterSummaryView {
+    const groups = this.activeKindGroups();
+    const filters = this.analysisFilters();
+    const labels = {
+      years: optionLabelMap(yearOptions(groups)),
+      vaultIds: optionLabelMap(vaultOptions(groups)),
+      domains: optionLabelMap(domainOptions(groups)),
+      credentialKinds: optionLabelMap(credentialOptions(groups))
+    };
+    const chips: AnalysisFilterChipView[] = [
+      ...filters.years.map((id) => ({ key: 'year' as const, id, label: labels.years.get(id) ?? id })),
+      ...filters.vaultIds.map((id) => ({ key: 'vault' as const, id, label: labels.vaultIds.get(id) ?? id })),
+      ...filters.domains.map((id) => ({ key: 'domain' as const, id, label: labels.domains.get(id) ?? id })),
+      ...filters.credentialKinds.map((id) => ({ key: 'credential' as const, id, label: labels.credentialKinds.get(id) ?? id }))
+    ];
+
+    return {
+      total: groups.length,
+      visible: this.visibleGroups().length,
+      activeCount: chips.length,
+      chips
+    };
   }
 
   private toGroupView(group: DuplicateGroup, itemById: Map<string, ItemSummary>, vaults: VaultSummary[]): DuplicateGroupView {
@@ -605,6 +795,10 @@ export class WorkflowService {
       cardBorder: skipped ? '#3a3a3a' : '#3F3F3F',
       skipLabel: skipped ? '恢复此组' : '跳过此组',
       skipColor: skipped ? '#82aaff' : '#B0BEC5',
+      filterYears: groupYears(items),
+      filterVaultIds: uniqueSortedStrings(items.map((item) => item.vaultId).filter(Boolean)),
+      filterDomains: groupDomains(items),
+      filterCredentialKinds: groupCredentialKinds(items),
       items: items.map((item) => this.toItemView(group, item, vaults, skipped))
     };
   }
@@ -618,14 +812,19 @@ export class WorkflowService {
     };
     const removeAction = removeActionFromDecision(decision);
     const strength = strengthLabel(item, group);
+    const username = item.usernames.find(Boolean) ?? '（无 username）';
+    const url = item.urls[0] || '—';
+    const credChips = credentialChips(item, Boolean(this.visibleSecretItems()[item.id]), this.revealedSecrets()[item.id]);
     return {
       id: item.id,
       title: item.title,
-      username: item.usernames.find(Boolean) ?? '（无 username）',
-      url: item.urls[0] || '—',
+      username,
+      url,
+      categoryLabel: categoryDisplay[item.category]?.label ?? item.category,
       recommendationLabel: recommendationLabel(group, item.id),
       updated: itemUpdatedDate(item),
       strength,
+      vaultId: item.vaultId,
       vaultName: item.vaultName,
       keep: decision.keep,
       notKeep: !decision.keep,
@@ -639,7 +838,8 @@ export class WorkflowService {
       strengthColor: strengthColor(strength),
       secretVisible: Boolean(this.visibleSecretItems()[item.id]),
       secretLoading: Boolean(this.revealingItems()[item.id]),
-      credChips: credentialChips(item, Boolean(this.visibleSecretItems()[item.id]), this.revealedSecrets()[item.id]),
+      credChips,
+      detailRows: itemDetailRows(item),
       vaultOptions: vaults.map((vault) => ({
         id: vault.id,
         label: vault.id === item.vaultId ? `${vault.name}（原）` : `迁移至 ${vault.name}`
@@ -843,6 +1043,162 @@ export class WorkflowService {
   }
 }
 
+function emptyAnalysisFilters(): AnalysisFilterState {
+  return {
+    years: [],
+    vaultIds: [],
+    domains: [],
+    credentialKinds: []
+  };
+}
+
+function sectionIdForFilterKey(key: AnalysisFilterKey): AnalysisFilterSectionId {
+  switch (key) {
+    case 'year':
+      return 'years';
+    case 'vault':
+      return 'vaults';
+    case 'domain':
+      return 'domains';
+    case 'credential':
+      return 'credentials';
+  }
+}
+
+function selectedFilterValues(filters: AnalysisFilterState, sectionId: AnalysisFilterSectionId): string[] {
+  switch (sectionId) {
+    case 'years':
+      return filters.years;
+    case 'vaults':
+      return filters.vaultIds;
+    case 'domains':
+      return filters.domains;
+    case 'credentials':
+      return filters.credentialKinds;
+  }
+}
+
+function matchesSelected<T extends string>(selected: T[], values: T[]): boolean {
+  return selected.length === 0 || selected.some((value) => values.includes(value));
+}
+
+function toggleStringValue(values: string[], value: string, selected: boolean): string[] {
+  return selected
+    ? uniqueSortedStrings([...values, value])
+    : values.filter((candidate) => candidate !== value);
+}
+
+function toggleCredentialKind(values: FilterCredentialKind[], value: FilterCredentialKind, selected: boolean): FilterCredentialKind[] {
+  return selected
+    ? groupCredentialKindsFromValues([...values, value])
+    : values.filter((candidate) => candidate !== value);
+}
+
+function isFilterCredentialKind(value: string): value is FilterCredentialKind {
+  return value === 'password' || value === 'totp' || value === 'passkey';
+}
+
+function groupYears(items: ItemSummary[]): string[] {
+  return uniqueSortedStrings(items.map((item) => itemYearId(item)));
+}
+
+function itemYearId(item: ItemSummary): string {
+  if (!item.updatedAt) {
+    return missingYearId;
+  }
+  const timestamp = Date.parse(item.updatedAt);
+  if (!Number.isFinite(timestamp)) {
+    return missingYearId;
+  }
+  return String(new Date(timestamp).getUTCFullYear());
+}
+
+function groupDomains(items: ItemSummary[]): string[] {
+  return uniqueSortedStrings(items.flatMap((item) =>
+    item.urls.map((url) => normalizeUrlHost(url)).filter((domain): domain is string => Boolean(domain))
+  ));
+}
+
+function groupCredentialKinds(items: ItemSummary[]): FilterCredentialKind[] {
+  const kinds = new Set<FilterCredentialKind>();
+  for (const item of items) {
+    if (item.hasPassword) {
+      kinds.add('password');
+    }
+    if (item.hasTotp) {
+      kinds.add('totp');
+    }
+    if (item.hasPasskey) {
+      kinds.add('passkey');
+    }
+  }
+  return groupCredentialKindsFromValues(Array.from(kinds));
+}
+
+function groupCredentialKindsFromValues(values: FilterCredentialKind[]): FilterCredentialKind[] {
+  return Array.from(new Set(values)).sort((a, b) => credentialKindMeta[a].order - credentialKindMeta[b].order);
+}
+
+function yearOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
+  return countGroupValues(groups, (group) => group.filterYears, (id) => id === missingYearId ? '未记录' : id)
+    .sort((a, b) => {
+      if (a.id === missingYearId) {
+        return 1;
+      }
+      if (b.id === missingYearId) {
+        return -1;
+      }
+      return b.label.localeCompare(a.label);
+    });
+}
+
+function vaultOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
+  const labels = new Map<string, string>();
+  for (const group of groups) {
+    for (const item of group.items) {
+      labels.set(item.vaultId, item.vaultName);
+    }
+  }
+  return countGroupValues(groups, (group) => group.filterVaultIds, (id) => labels.get(id) ?? id)
+    .sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function domainOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
+  return countGroupValues(groups, (group) => group.filterDomains, (id) => id)
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+function credentialOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
+  return countGroupValues(groups, (group) => group.filterCredentialKinds, (id) => credentialKindMeta[id].label)
+    .sort((a, b) => credentialKindMeta[a.id as FilterCredentialKind].order - credentialKindMeta[b.id as FilterCredentialKind].order);
+}
+
+function countGroupValues<T extends string>(
+  groups: DuplicateGroupView[],
+  selectValues: (group: DuplicateGroupView) => T[],
+  labelFor: (id: T) => string
+): AnalysisFilterOptionData[] {
+  const counts = new Map<T, { label: string; count: number }>();
+  for (const group of groups) {
+    for (const id of uniqueSortedStrings(selectValues(group)) as T[]) {
+      const current = counts.get(id);
+      counts.set(id, {
+        label: current?.label ?? labelFor(id),
+        count: (current?.count ?? 0) + 1
+      });
+    }
+  }
+  return Array.from(counts, ([id, option]) => ({ id, label: option.label, count: option.count }));
+}
+
+function optionLabelMap(options: AnalysisFilterOptionData[]): Map<string, string> {
+  return new Map(options.map((option) => [option.id, option.label]));
+}
+
+function uniqueSortedStrings(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
+}
+
 function readStoredAccountName(): string | undefined {
   if (typeof localStorage === 'undefined') {
     return undefined;
@@ -1008,6 +1364,17 @@ function previewAfterLine(item: ItemSummary, decision: ItemDecision | undefined,
     deco: 'none',
     color: '#eeffff'
   };
+}
+
+function itemDetailRows(item: ItemSummary): Array<{ key: 'updated' | 'created' | 'tags'; label: string; value: string }> {
+  const rows: Array<{ key: 'updated' | 'created' | 'tags'; label: string; value: string }> = [
+    { key: 'updated', label: '更新时间', value: itemUpdatedDate(item) },
+    { key: 'created', label: '创建时间', value: item.createdAt ? item.createdAt.slice(0, 10) : '—' }
+  ];
+  if (item.tags.length > 0) {
+    rows.push({ key: 'tags', label: '标签', value: item.tags.join(', ') });
+  }
+  return rows;
 }
 
 function vaultName(vaults: VaultSummary[], vaultId: string): string {

@@ -385,4 +385,70 @@ describe("OnePasswordService", () => {
 
     await expect(service.scan({ serviceAccountToken: "ops-test" })).rejects.toThrow("无法读取任何项目列表");
   });
+
+  it("releases the cached SDK client when clearing local scan state", async () => {
+    sdkMock.createClient
+      .mockResolvedValueOnce(createMinimalClient("first-vault"))
+      .mockResolvedValueOnce(createMinimalClient("second-vault"));
+
+    const service = new OnePasswordService();
+    await service.scan({ accountName: "example-account" });
+    await service.scan({ accountName: "example-account" });
+
+    expect(sdkMock.createClient).toHaveBeenCalledTimes(1);
+
+    service.clearCache();
+    await service.scan({ accountName: "example-account" });
+
+    expect(sdkMock.createClient).toHaveBeenCalledTimes(2);
+  });
+
+  it("rebuilds the SDK client once when the desktop client id expires", async () => {
+    sdkMock.createClient
+      .mockResolvedValueOnce({
+        vaults: {
+          list: vi.fn(() => {
+            throw new Error("invalid client id");
+          })
+        },
+        items: {
+          list: vi.fn(),
+          getAll: vi.fn()
+        }
+      })
+      .mockResolvedValueOnce(createMinimalClient("fresh-vault"));
+
+    const service = new OnePasswordService();
+    const scan = await service.scan({ accountName: "example-account" });
+
+    expect(sdkMock.createClient).toHaveBeenCalledTimes(2);
+    expect(scan.scanId).toBeTruthy();
+    expect(scan.vaults).toEqual([{ id: "fresh-vault", name: "fresh-vault" }]);
+    expect(scan.items).toHaveLength(1);
+  });
 });
+
+function createMinimalClient(vaultId: string) {
+  return {
+    vaults: {
+      list: vi.fn(() => [{ id: vaultId, title: vaultId }])
+    },
+    items: {
+      list: vi.fn(() => [{ id: "item-1" }]),
+      getAll: vi.fn(async () => ({
+        individualResponses: [
+          {
+            content: {
+              id: "item-1",
+              category: "Login",
+              title: "Login",
+              fields: [],
+              websites: [],
+              tags: []
+            }
+          }
+        ]
+      }))
+    }
+  };
+}

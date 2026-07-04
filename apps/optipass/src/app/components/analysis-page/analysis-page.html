@@ -3,7 +3,7 @@
     <div class="analysis-running">
       <div class="spinner"></div>
       <h2>正在本地分析…</h2>
-      <p>仅比对内存中的数据，不会再次访问 1Password<br>规则：URL 全等或 domain 相同 × username 全等</p>
+      <p>仅比对内存中的数据，不会再次访问 1Password<br>规则：相同 URL × 相同登录身份</p>
       <div class="analysis-progress"><op-progress [value]="wf.analysisPct()" color="#82aaff"></op-progress></div>
     </div>
   } @else if (!wf.scanResult()) {
@@ -14,119 +14,320 @@
     </div>
   } @else {
     <div class="action-bar">
-      <op-button size="sm" variant="ghost" label="← 重新扫描" (pressed)="wf.rescan()"></op-button>
-      <div class="stats-line">
-        <span>{{ wf.decisionStats().groups }} 组疑似重复</span> · 保留
-        <em class="ok-text">{{ wf.decisionStats().keep }}</em> · 归档
-        <em class="warn-text">{{ wf.decisionStats().archive }}</em> · 删除
-        <em class="danger-text">{{ wf.decisionStats().delete }}</em> · 迁移
-        <em class="info-text">{{ wf.decisionStats().move }}</em>
+      <div class="action-left">
+        <op-button size="sm" variant="ghost" label="← 重新扫描" (pressed)="wf.rescan()"></op-button>
+        <div class="stats-line">
+          <span>{{ wf.decisionStats().groups }} 组疑似重复</span>
+          <span>保留 <em class="ok-text">{{ wf.decisionStats().keep }}</em></span>
+          <span>归档 <em class="warn-text">{{ wf.decisionStats().archive }}</em></span>
+          <span>删除 <em class="danger-text">{{ wf.decisionStats().delete }}</em></span>
+          <span>迁移 <em class="info-text">{{ wf.decisionStats().move }}</em></span>
+        </div>
       </div>
-      <op-button size="sm" variant="ghost" label="全部采纳推荐" (pressed)="wf.acceptAllRecommendations()"></op-button>
-      <op-button size="sm" [label]="'生成计划 (' + wf.planOperationCount() + ' 项操作) →'" (pressed)="wf.goPreview()"></op-button>
+      <div class="action-right">
+        <op-button size="sm" variant="ghost" label="全部采纳推荐" (pressed)="wf.acceptAllRecommendations()"></op-button>
+        <op-button size="sm" [label]="'生成计划 (' + wf.planOperationCount() + ' 项操作) →'" (pressed)="wf.goPreview()"></op-button>
+      </div>
     </div>
 
-    <op-tabs [tabs]="wf.kindTabs()" [active]="wf.activeKind()" (activeChange)="setKind($event)"></op-tabs>
+    <div class="analysis-control-row">
+      <op-tabs [tabs]="wf.kindTabs()" [active]="wf.activeKind()" (activeChange)="setKind($event)"></op-tabs>
 
-    <div class="scroll-list-panel">
-      <div class="group-list">
-        @for (group of wf.visibleGroups(); track group.id) {
-          <div class="group-card" [style.border-color]="group.cardBorder" [style.opacity]="group.opacity">
-          <div class="group-head">
-            <span class="kind-badge" [style.background]="group.badgeBg" [style.color]="group.badgeColor">{{ group.kindLabel }}</span>
-            <span class="mono group-username">{{ group.username }}</span>
-            <span class="muted">@</span>
-            <span class="mono group-site">{{ group.site }}</span>
-            <span class="head-spacer"></span>
-            <span class="item-count">{{ group.count }} 个 item</span>
-            <button type="button" class="skip-button" [style.color]="group.skipColor" (click)="wf.toggleGroupSkip(group.id)">{{ group.skipLabel }}</button>
-          </div>
+      <div class="filter-summary">
+        <div class="filter-total">显示 <strong>{{ wf.analysisFilterSummary().visible }}</strong> / {{ wf.analysisFilterSummary().total }} 组</div>
+        <div class="filter-chip-row" aria-label="当前筛选条件">
+          @if (wf.analysisFilterSummary().chips.length === 0) {
+            <span class="filter-empty">未筛选</span>
+          }
+          @for (chip of wf.analysisFilterSummary().chips; track chip.key + ':' + chip.id) {
+            <button
+              type="button"
+              class="filter-chip"
+              [attr.aria-label]="'移除筛选 ' + chip.label"
+              (click)="wf.removeAnalysisFilter(chip.key, chip.id)"
+            >
+              <span>{{ chip.label }}</span>
+              <em aria-hidden="true">×</em>
+            </button>
+          }
+        </div>
+        @if (wf.analysisFilterSummary().activeCount > 0) {
+          <button type="button" class="filter-clear" (click)="wf.clearAnalysisFilters()">清空筛选</button>
+        }
+      </div>
+    </div>
 
-          <div class="item-rows">
-            @for (item of group.items; track item.id) {
-              <div class="decision-row" [style.background]="item.rowBg">
-                <input
-                  type="checkbox"
-                  [ngModel]="item.keep"
-                  (ngModelChange)="wf.updateKeep(item.id, $event)"
-                  [disabled]="group.skipped"
-                  [attr.aria-label]="'保留 ' + item.title"
-                >
-                <div class="username-cell">
-                  <strong>{{ item.username }}</strong>
-                </div>
-                <div class="site-cell">
-                  <strong>{{ item.title }}</strong>
-                  <small>{{ item.url }}</small>
-                </div>
-                <div class="recommend-cell">
-                  @if (item.recommendationLabel) {
-                    <span class="recommend-pill">{{ item.recommendationLabel }}</span>
-                  } @else {
-                    <span class="recommend-empty">—</span>
-                  }
-                </div>
-                <div class="credential-stack">
-                  @for (chip of item.credChips; track chip.label) {
-                    <div class="cred-line">
-                      <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
-                      <em [style.color]="chip.textColor">{{ chip.text }}</em>
-                      @if (chip.kind === 'password') {
-                        <button
-                          type="button"
-                          class="reveal-button"
-                          [class.active]="item.secretVisible"
-                          [disabled]="item.secretLoading"
-                          [attr.aria-label]="item.secretVisible ? '隐藏密码' : '显示密码'"
-                          [attr.title]="item.secretVisible ? '隐藏密码' : '显示密码'"
-                          (click)="wf.toggleItemReveal(item.id)"
+    <div class="analysis-content">
+      <aside class="analysis-filter-sidebar" aria-label="筛选重复组">
+        @for (section of wf.analysisFilterSections(); track section.id) {
+          <div
+            class="filter-section"
+            [class.domain-section]="section.id === 'domains'"
+            [class.expanded]="section.expanded"
+            [class.collapsed]="!section.expanded"
+          >
+            <button
+              type="button"
+              class="filter-section-toggle"
+              [attr.aria-expanded]="section.expanded"
+              (click)="wf.toggleAnalysisFilterSection(section.id)"
+            >
+              <span>{{ section.label }}</span>
+              <em>{{ section.countLabel }}</em>
+              <b aria-hidden="true">▾</b>
+            </button>
+            <div
+              class="filter-section-body"
+              [class.expanded]="section.expanded"
+              [attr.aria-hidden]="!section.expanded"
+              [attr.inert]="section.expanded ? null : ''"
+            >
+              <div class="filter-section-body-inner">
+                @if (section.searchable) {
+                  <input
+                    type="search"
+                    class="filter-search"
+                    placeholder="搜索 domain"
+                    [ngModel]="section.query"
+                    (ngModelChange)="wf.updateDomainFilterQuery($event)"
+                  >
+                }
+                <div class="filter-option-clip">
+                  <div class="filter-option-list" [class.scrollable]="section.id === 'domains'">
+                    @for (option of section.options; track option.id) {
+                      <label class="filter-option">
+                        <input
+                          type="checkbox"
+                          [ngModel]="option.selected"
+                          (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
                         >
-                          <svg viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
-                            <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="2"></circle>
-                          </svg>
-                        </button>
-                      }
-                    </div>
-                  }
+                        <span>{{ option.label }}</span>
+                        <em>{{ option.count }}</em>
+                      </label>
+                    }
+                    @if (section.options.length === 0) {
+                      <div class="filter-option-empty">{{ section.emptyText }}</div>
+                    }
+                  </div>
                 </div>
-                <div class="strength-cell">
-                  <span [style.background]="item.strengthBg" [style.color]="item.strengthColor">{{ item.strength }}</span>
+              </div>
+            </div>
+          </div>
+        }
+      </aside>
+
+      <div class="scroll-list-panel">
+        <div class="group-list">
+          @for (group of wf.visibleGroups(); track group.id) {
+            <div
+              class="group-card"
+              [attr.data-detail-group-id]="group.id"
+              [class.detail-open]="activeDetailGroupId === group.id"
+              [style.border-color]="group.cardBorder"
+              [style.opacity]="group.opacity"
+            >
+            <div class="group-head">
+              <span class="mono group-username">{{ group.username }}</span>
+              <span class="muted">@</span>
+              <span class="mono group-site">{{ group.site }}</span>
+              <span class="head-spacer"></span>
+              <span class="item-count">{{ group.count }} 个 item</span>
+              <button type="button" class="skip-button" [style.color]="group.skipColor" (click)="wf.toggleGroupSkip(group.id)">{{ group.skipLabel }}</button>
+            </div>
+
+            <div class="item-rows">
+              @for (item of group.items; track item.id) {
+                <div class="decision-row" [class.recommended-row]="item.recommended" [style.background]="item.recommended ? null : item.rowBg">
+                  <input
+                    type="checkbox"
+                    [ngModel]="item.keep"
+                    (ngModelChange)="wf.updateKeep(item.id, $event)"
+                    [disabled]="group.skipped"
+                    [attr.aria-label]="'保留 ' + item.title + ' ' + item.username"
+                  >
+                  <div
+                    class="identity-cell"
+                    tabindex="0"
+                    [attr.aria-label]="'查看 item 详情：' + item.title + ' ' + item.username"
+                    (mouseenter)="openGroupDetail(group.id)"
+                    (mouseleave)="scheduleGroupDetailClose(group.id)"
+                    (focusin)="openGroupDetail(group.id)"
+                    (focusout)="scheduleGroupDetailClose(group.id)"
+                  >
+                    <strong class="identity-username">{{ item.username }}</strong>
+                    <small class="identity-title">{{ item.title }}</small>
+                  </div>
+                  <div class="url-cell">
+                    <span>{{ item.url }}</span>
+                  </div>
+                  <div class="credential-stack">
+                    @for (chip of item.credChips; track chip.label) {
+                      <div class="cred-line">
+                        <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
+                        <em [style.color]="chip.textColor">{{ chip.text }}</em>
+                        @if (chip.kind === 'password') {
+                          <button
+                            type="button"
+                            class="reveal-button"
+                            [class.active]="item.secretVisible"
+                            [disabled]="item.secretLoading"
+                            [attr.aria-label]="item.secretVisible ? '隐藏密码' : '显示密码'"
+                            [attr.title]="item.secretVisible ? '隐藏密码' : '显示密码'"
+                            (click)="wf.toggleItemReveal(item.id)"
+                          >
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
+                              <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="2"></circle>
+                            </svg>
+                          </button>
+                        }
+                      </div>
+                    }
+                  </div>
+                  <div class="strength-cell">
+                    <span [style.background]="item.strengthBg" [style.color]="item.strengthColor">{{ item.strength }}</span>
+                  </div>
+                  <div class="updated-cell">{{ item.updated }}</div>
+                  <div class="vault-name">📁 {{ item.vaultName }}</div>
+                  <div class="action-cell">
+                    @if (item.keep) {
+                      <select
+                        [ngModel]="item.targetVault"
+                        (ngModelChange)="wf.updateTargetVault(item.id, $event)"
+                        [disabled]="group.skipped"
+                      >
+                        @for (vault of item.vaultOptions; track vault.id) {
+                          <option [value]="vault.id">{{ vault.label }}</option>
+                        }
+                      </select>
+                    } @else {
+                      <select
+                        [ngModel]="item.removeAction"
+                        (ngModelChange)="wf.updateRemoveAction(item.id, $event)"
+                        [disabled]="group.skipped"
+                        [style.border-color]="item.removeBorder"
+                        [style.color]="item.removeColor"
+                      >
+                        <option value="archive">归档（可恢复）</option>
+                        <option value="delete">删除</option>
+                      </select>
+                    }
+                  </div>
                 </div>
-                <div class="updated-cell">{{ item.updated }}</div>
-                <div class="vault-name">📁 {{ item.vaultName }}</div>
-                <div class="action-cell">
-                  @if (item.keep) {
-                    <select
-                      [ngModel]="item.targetVault"
-                      (ngModelChange)="wf.updateTargetVault(item.id, $event)"
-                      [disabled]="group.skipped"
-                    >
-                      @for (vault of item.vaultOptions; track vault.id) {
-                        <option [value]="vault.id">{{ vault.label }}</option>
-                      }
-                    </select>
-                  } @else {
-                    <select
-                      [ngModel]="item.removeAction"
-                      (ngModelChange)="wf.updateRemoveAction(item.id, $event)"
-                      [disabled]="group.skipped"
-                      [style.border-color]="item.removeBorder"
-                      [style.color]="item.removeColor"
-                    >
-                      <option value="archive">归档（可恢复）</option>
-                      <option value="delete">删除</option>
-                    </select>
+              }
+            </div>
+            @if (activeDetailGroupId === group.id) {
+              <div
+                class="group-detail-popover"
+                role="tooltip"
+                aria-label="组内 item 详情对比"
+                (mouseenter)="openGroupDetail(group.id)"
+                (mouseleave)="scheduleGroupDetailClose(group.id)"
+              >
+                <div class="group-detail-toolbar">
+                  <strong>组内详情对比</strong>
+                  <span>{{ group.count }} 个 item</span>
+                </div>
+                <div class="group-detail-cards">
+                  @for (item of group.items; track item.id) {
+                    <article class="item-detail-card" [class.recommended]="item.recommended">
+                      <div class="item-detail-head">
+                        <div class="item-detail-orb" aria-hidden="true">{{ item.username.slice(0, 1).toUpperCase() }}</div>
+                        <div class="item-detail-heading">
+                          <strong
+                            class="detail-compare-field"
+                            [class.active]="activeDetailField === 'username'"
+                            (mouseenter)="setDetailField('username')"
+                            (mouseleave)="clearDetailField('username')"
+                          >{{ item.username }}</strong>
+                          <small
+                            class="detail-compare-field"
+                            [class.active]="activeDetailField === 'title'"
+                            (mouseenter)="setDetailField('title')"
+                            (mouseleave)="clearDetailField('title')"
+                          >{{ item.title }}</small>
+                        </div>
+                        <div class="item-detail-decision" [class.keep]="item.keep" [class.remove]="!item.keep">
+                          {{ item.keep ? '保留' : (item.removeAction === 'delete' ? '删除' : '归档') }}
+                        </div>
+                      </div>
+
+                      <div
+                        class="item-detail-url detail-compare-field"
+                        [class.active]="activeDetailField === 'url'"
+                        (mouseenter)="setDetailField('url')"
+                        (mouseleave)="clearDetailField('url')"
+                      >{{ item.url }}</div>
+
+                      <div
+                        class="item-detail-credentials detail-compare-field"
+                        [class.active]="activeDetailField === 'credentials'"
+                        (mouseenter)="setDetailField('credentials')"
+                        (mouseleave)="clearDetailField('credentials')"
+                      >
+                        <div class="item-detail-field-title">凭据材料</div>
+                        @for (chip of item.credChips; track chip.label) {
+                          <div class="item-detail-credential" [class.missing]="chip.kind === 'missing'">
+                            <span [style.color]="chip.color">{{ chip.label }}</span>
+                            <strong [style.color]="chip.textColor">{{ chip.text }}</strong>
+                          </div>
+                        }
+                      </div>
+
+                      <div class="item-detail-meta">
+                        <div
+                          class="item-detail-meta-item detail-compare-field"
+                          [class.active]="activeDetailField === 'strength'"
+                          (mouseenter)="setDetailField('strength')"
+                          (mouseleave)="clearDetailField('strength')"
+                        >
+                          <span>密码强度</span>
+                          <strong [style.color]="item.strengthColor">{{ item.strength }}</strong>
+                        </div>
+                        <div
+                          class="item-detail-meta-item detail-compare-field"
+                          [class.active]="activeDetailField === 'vault'"
+                          (mouseenter)="setDetailField('vault')"
+                          (mouseleave)="clearDetailField('vault')"
+                        >
+                          <span>保险库</span>
+                          <strong>{{ item.vaultName }}</strong>
+                        </div>
+                        <div
+                          class="item-detail-meta-item detail-compare-field"
+                          [class.active]="activeDetailField === 'category'"
+                          (mouseenter)="setDetailField('category')"
+                          (mouseleave)="clearDetailField('category')"
+                        >
+                          <span>类型</span>
+                          <strong>{{ item.categoryLabel }}</strong>
+                        </div>
+                        @for (detail of item.detailRows; track detail.key) {
+                          <div
+                            class="item-detail-meta-item detail-compare-field"
+                            [class.tags]="detail.key === 'tags'"
+                            [class.active]="activeDetailField === detail.key"
+                            (mouseenter)="setDetailField(detail.key)"
+                            (mouseleave)="clearDetailField(detail.key)"
+                          >
+                            <span>{{ detail.label }}</span>
+                            <strong>{{ detail.value }}</strong>
+                          </div>
+                        }
+                      </div>
+                    </article>
                   }
                 </div>
               </div>
             }
-          </div>
-          </div>
-        }
-        @if (wf.visibleGroups().length === 0) {
-          <div class="empty-box">此分类下没有疑似重复组</div>
-        }
+            </div>
+          }
+          @if (wf.visibleGroups().length === 0) {
+            <div class="empty-box">
+              {{ wf.analysisFilterSummary().activeCount > 0 ? '没有符合当前筛选条件的疑似重复组' : '此分类下没有疑似重复组' }}
+            </div>
+          }
+        </div>
       </div>
     </div>
   }

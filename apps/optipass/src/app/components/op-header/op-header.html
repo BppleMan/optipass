@@ -7,5 +7,10 @@
     </div>
   </div>
   <div class="header-spacer"></div>
-  <div class="account-chip">{{ accountChip() }}</div>
+  @if (accountChip()) {
+    <div class="account-chip">
+      <span aria-hidden="true"></span>
+      <strong>{{ accountChip() }}</strong>
+    </div>
+  }
 </header>
