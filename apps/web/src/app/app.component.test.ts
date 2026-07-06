@@ -136,12 +136,27 @@ class MockApiService {
 describe("AppComponent interaction state", () => {
   let api: MockApiService;
   let component: AppComponent;
+  let browserLocation: { origin: string; pathname: string };
+  let popstateHandler: (() => void) | undefined;
 
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    browserLocation = { origin: "http://127.0.0.1:4200", pathname: "/" };
+    popstateHandler = undefined;
     vi.stubGlobal("window", {
-      location: { origin: "http://127.0.0.1:4200" },
+      location: browserLocation,
+      history: {
+        pushState: vi.fn((_state: unknown, _title: string, url?: string | URL | null) => {
+          browserLocation.pathname = url ? String(url) : browserLocation.pathname;
+        })
+      },
+      addEventListener: vi.fn((event: string, handler: EventListenerOrEventListenerObject) => {
+        if (event === "popstate" && typeof handler === "function") {
+          popstateHandler = handler as () => void;
+        }
+      }),
+      removeEventListener: vi.fn(),
       confirm: vi.fn(() => true),
       prompt: vi.fn()
     });
@@ -150,6 +165,27 @@ describe("AppComponent interaction state", () => {
     api = new MockApiService();
     component = new AppComponent(api as unknown as ApiService);
     component.scanMode.set("mock");
+  });
+
+  it("pushes workspace route on scan and follows browser history", async () => {
+    expect(component.workspaceActive()).toBe(false);
+
+    await component.scan();
+
+    expect(window.history.pushState).toHaveBeenCalledWith({ page: "workspace" }, "", "/workspace");
+    expect(component.workspaceActive()).toBe(true);
+    expect(component.scanSnapshot()?.items).toHaveLength(4);
+
+    browserLocation.pathname = "/";
+    popstateHandler?.();
+
+    expect(component.workspaceActive()).toBe(false);
+
+    browserLocation.pathname = "/workspace";
+    popstateHandler?.();
+
+    expect(component.workspaceActive()).toBe(true);
+    expect(component.scanSnapshot()?.items).toHaveLength(4);
   });
 
   it("initializes a mock scan with recommended keep decisions and group filters", async () => {
@@ -185,6 +221,47 @@ describe("AppComponent interaction state", () => {
 
     expect(api.startScan).not.toHaveBeenCalled();
     expect(component.error()).toContain("真实扫描需要填写 Desktop App 账户标识");
+  });
+
+  it("keeps partial vault progress visible when a scan fails", async () => {
+    const failedProgress: ScanProgress = {
+      scanId: "scan-web-test",
+      phase: "failed",
+      totalVaults: 2,
+      scannedVaults: 0,
+      totalItems: 0,
+      scannedItems: 0,
+      vaults: summarizeVaults(
+        [
+          { id: "vault-personal", name: "Personal" },
+          { id: "vault-work", name: "Work" }
+        ],
+        []
+      ),
+      message: "已发现 2 个保险库，但无法读取任何项目列表。",
+      error: "1Password 扫描失败：Unexpected error when retrieving response contents"
+    };
+    api.streamScanEvents.mockImplementationOnce(async (_scanId, onEvent) => {
+      onEvent({
+        type: "failed",
+        progress: failedProgress,
+        error: failedProgress.error
+      });
+    });
+
+    await component.scan();
+
+    expect(component.workspaceActive()).toBe(true);
+    expect(component.scanFailed()).toBe(true);
+    expect(component.scanComplete()).toBe(false);
+    expect(component.vaults().map((vault) => vault.name)).toEqual(["Personal", "Work"]);
+    expect(component.analysisEmptyTitle()).toBe("扫描中断");
+    expect(component.error()).toContain("1Password 扫描失败");
+
+    await component.analyze();
+
+    expect(api.analyze).not.toHaveBeenCalled();
+    expect(component.error()).toBe("请先完成扫描，再运行分析。");
   });
 
   it("loads and persists the Desktop App account identifier locally", async () => {

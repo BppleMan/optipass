@@ -4,11 +4,104 @@
   [class.workspace-shell]="workspaceActive()"
   [class.has-resolution-bar]="analysisReady() && selectedGroup()"
 >
-  <header class="app-chrome">
-    <div class="brand">
-      <span class="brand-mark" aria-label="Optipass logo">
-        <span class="logo-mark-lock" aria-hidden="true"></span>
-        <span class="logo-mark-pass" aria-hidden="true"></span>
+  <svg class="icon-sprite" aria-hidden="true" focusable="false">
+    <symbol id="op-logo-mark" viewBox="0 0 32 32">
+      <rect width="32" height="32" rx="8" fill="#7A5AF8"></rect>
+      <circle cx="13.7" cy="16" r="6.7" fill="none" stroke="#F8FAFF" stroke-width="3.2"></circle>
+      <path d="M20.2 16H27M24.2 16v3.8M21.5 16v2.5" fill="none" stroke="#F8FAFF" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"></path>
+      <path d="M8.6 8.7a10.4 10.4 0 0 1 14.8 0" fill="none" stroke="#C9B2FF" stroke-width="1.6" stroke-linecap="round" opacity="0.55"></path>
+    </symbol>
+
+    <symbol id="op-icon-vault" viewBox="0 0 24 24">
+      <rect x="4" y="7" width="16" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M8 7V6a4 4 0 0 1 8 0v1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+      <circle cx="12" cy="13.5" r="2.2" fill="none" stroke="currentColor" stroke-width="1.6"></circle>
+      <path d="M12 11.3v1.3M12 14.4v1.3M9.8 13.5h1.3M12.9 13.5h1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path>
+    </symbol>
+
+    <symbol id="op-icon-analysis" viewBox="0 0 24 24">
+      <rect x="4" y="5" width="16" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M8 9h8M8 13h5M8 17h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+      <circle cx="17" cy="13" r="1.4" fill="currentColor"></circle>
+    </symbol>
+
+    <symbol id="op-icon-dashboard" viewBox="0 0 24 24">
+      <rect x="4" y="5" width="16" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M8 9h2.4M8 13h2.4M8 17h2.4M13.6 9H16M13.6 13H16M13.6 17H16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+
+    <symbol id="op-icon-search" viewBox="0 0 24 24">
+      <circle cx="10.8" cy="10.8" r="5.6" fill="none" stroke="currentColor" stroke-width="2"></circle>
+      <path d="m15.2 15.2 4.2 4.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+    </symbol>
+
+    <symbol id="op-icon-eye" viewBox="0 0 24 24">
+      <path d="M3.8 12s3-5.2 8.2-5.2S20.2 12 20.2 12s-3 5.2-8.2 5.2S3.8 12 3.8 12Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>
+      <circle cx="12" cy="12" r="2.4" fill="none" stroke="currentColor" stroke-width="1.8"></circle>
+    </symbol>
+
+    <symbol id="op-icon-login" viewBox="0 0 24 24">
+      <rect x="6" y="10" width="12" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M8.5 10V8a3.5 3.5 0 0 1 7 0v2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-note" viewBox="0 0 24 24">
+      <rect x="6" y="4" width="12" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M9 9h6M9 13h6M9 17h3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-card" viewBox="0 0 24 24">
+      <rect x="4" y="7" width="16" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M5 11h14M8 15h3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-document" viewBox="0 0 24 24">
+      <path d="M7 4h7l3 3v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path>
+      <path d="M14 4v4h4M9.5 12h5M9.5 16h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-password" viewBox="0 0 24 24">
+      <path d="M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+      <circle cx="7" cy="12" r="1.8" fill="currentColor"></circle>
+      <circle cx="12" cy="12" r="1.8" fill="currentColor"></circle>
+      <circle cx="17" cy="12" r="1.8" fill="currentColor"></circle>
+    </symbol>
+    <symbol id="op-icon-api" viewBox="0 0 24 24">
+      <circle cx="8" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"></circle>
+      <path d="M11.2 12H20M16.5 12v3M19 12v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-database" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="7" rx="6" ry="3" fill="none" stroke="currentColor" stroke-width="1.8"></ellipse>
+      <path d="M6 7v10c0 1.7 2.7 3 6 3s6-1.3 6-3V7M6 12c0 1.7 2.7 3 6 3s6-1.3 6-3" fill="none" stroke="currentColor" stroke-width="1.8"></path>
+    </symbol>
+    <symbol id="op-icon-ssh" viewBox="0 0 24 24">
+      <circle cx="8" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"></circle>
+      <path d="M10.5 12.5 17 19M15 17l2-2M17.2 19.2l2-2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+    </symbol>
+    <symbol id="op-icon-identity" viewBox="0 0 24 24">
+      <circle cx="12" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"></circle>
+      <path d="M6.5 19c.8-3.2 2.7-4.8 5.5-4.8s4.7 1.6 5.5 4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-server" viewBox="0 0 24 24">
+      <rect x="5" y="5" width="14" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <rect x="5" y="13" width="14" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M8 8h.1M8 16h.1M12 8h4M12 16h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+    </symbol>
+    <symbol id="op-icon-license" viewBox="0 0 24 24">
+      <rect x="6" y="4" width="12" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+      <path d="M9 9h6M9 13h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+      <path d="m14 16 1.2 1.2L18 14.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+    </symbol>
+    <symbol id="op-icon-other" viewBox="0 0 24 24">
+      <rect x="5" y="5" width="5" height="5" rx="1.5" fill="currentColor"></rect>
+      <rect x="14" y="5" width="5" height="5" rx="1.5" fill="currentColor"></rect>
+      <rect x="5" y="14" width="5" height="5" rx="1.5" fill="currentColor"></rect>
+      <rect x="14" y="14" width="5" height="5" rx="1.5" fill="currentColor"></rect>
+    </symbol>
+  </svg>
+
+  <header class="app-chrome" *ngIf="session() as activeSession">
+    <div class="status-cell brand">
+      <span class="brand-mark">
+        <svg class="op-logo" role="img" aria-label="Optipass logo">
+          <use href="#op-logo-mark"></use>
+        </svg>
       </span>
       <div>
         <strong>Optipass</strong>
@@ -16,24 +109,22 @@
       </div>
     </div>
 
-    <section *ngIf="session() as activeSession" class="session-strip" aria-label="当前会话">
-      <div>
-        <span>本地会话</span>
-        <strong>{{ appModeLabel() }}</strong>
-      </div>
-      <div>
-        <span>Desktop App 账号</span>
-        <strong>{{ accountName().trim() || activeSession.accountName || "待填写" }}</strong>
-      </div>
-      <div>
-        <span>扫描模式</span>
-        <strong>{{ scanMode() === "live" ? "真实扫描" : "模拟数据" }}</strong>
-      </div>
-      <div>
-        <span>变更安全</span>
-        <strong>{{ mutationModeLabel() }}</strong>
-      </div>
-    </section>
+    <div class="status-cell">
+      <span>本地会话</span>
+      <strong>{{ appModeLabel() }}</strong>
+    </div>
+    <div class="status-cell">
+      <span>Desktop App 账号</span>
+      <strong>{{ accountName().trim() || activeSession.accountName || "待填写" }}</strong>
+    </div>
+    <div class="status-cell">
+      <span>扫描模式</span>
+      <strong>{{ scanMode() === "live" ? "真实扫描" : "模拟数据" }}</strong>
+    </div>
+    <div class="status-cell">
+      <span>变更安全</span>
+      <strong>{{ mutationModeLabel() }}</strong>
+    </div>
   </header>
 
   <section *ngIf="error()" class="notice error">{{ error() }}</section>
@@ -45,8 +136,10 @@
 
   <section *ngIf="!workspaceActive()" class="launch-screen">
     <form class="launch-panel" (ngSubmit)="scan()">
-      <span class="launch-logo" aria-label="Optipass logo">
-        <span aria-hidden="true"></span>
+      <span class="launch-logo">
+        <svg class="op-logo" role="img" aria-label="Optipass logo">
+          <use href="#op-logo-mark"></use>
+        </svg>
       </span>
       <header class="launch-heading">
         <h1>整理 1Password 重复凭据</h1>
@@ -102,11 +195,18 @@
     <aside class="workspace-sidebar">
       <section class="sidebar-panel vault-panel">
         <div class="sidebar-heading">
-          <h2><span aria-hidden="true">⌂</span>保险库</h2>
+          <h2>
+            <svg class="panel-title-icon" aria-hidden="true">
+              <use href="#op-icon-vault"></use>
+            </svg>
+            保险库
+          </h2>
           <button type="button" class="danger-button" (click)="scan()" [disabled]="loading() || analyzing()">重新扫描</button>
         </div>
         <label class="search-box">
-          <span class="search-icon" aria-hidden="true"></span>
+          <svg class="search-icon" aria-hidden="true">
+            <use href="#op-icon-search"></use>
+          </svg>
           <input
             type="search"
             [ngModel]="vaultQuery()"
@@ -123,7 +223,9 @@
             [class.active]="vault.id === activeVaultId()"
             (click)="setActiveVault(vault.id)"
           >
-            <span class="row-icon vault-icon" aria-hidden="true"></span>
+            <svg class="row-icon vault-icon" aria-hidden="true">
+              <use href="#op-icon-vault"></use>
+            </svg>
             <strong>{{ vault.name }}</strong>
             <em>{{ vault.count }}</em>
           </button>
@@ -133,13 +235,20 @@
 
       <section class="sidebar-panel analysis-panel">
         <div class="sidebar-heading">
-          <h2><span aria-hidden="true">▥</span>分析结果</h2>
+          <h2>
+            <svg class="panel-title-icon" aria-hidden="true">
+              <use href="#op-icon-analysis"></use>
+            </svg>
+            分析结果
+          </h2>
           <button type="button" (click)="analyze()" [disabled]="!scanComplete() || loading() || analyzing()">
             {{ analysisReady() ? "重新分析" : "开始分析" }}
           </button>
         </div>
         <label class="search-box">
-          <span class="search-icon" aria-hidden="true"></span>
+          <svg class="search-icon" aria-hidden="true">
+            <use href="#op-icon-search"></use>
+          </svg>
           <input
             type="search"
             [ngModel]="groupQuery()"
@@ -149,7 +258,7 @@
             [disabled]="!analysisReady()"
           >
         </label>
-        <div class="candidate-tabs" *ngIf="analysisReady()" role="tablist" aria-label="候选类型">
+        <div class="candidate-tabs" role="tablist" aria-label="候选类型">
           <button
             *ngFor="let tab of candidateTabs()"
             type="button"
@@ -186,7 +295,9 @@
       <section class="vault-dashboard">
         <header class="dashboard-heading">
           <div class="dashboard-title">
-            <span class="section-icon dashboard-icon" aria-hidden="true"></span>
+            <svg class="section-icon dashboard-icon" aria-hidden="true">
+              <use href="#op-icon-dashboard"></use>
+            </svg>
             <h2>{{ activeVaultName() }}</h2>
           </div>
           <div class="dashboard-meter" aria-label="全局扫描进度">
@@ -204,7 +315,11 @@
             class="category-card"
             [class.empty]="category.count === 0"
           >
-            <span [class]="'category-icon category-icon-' + category.icon" aria-hidden="true"></span>
+            <span class="category-icon" aria-hidden="true">
+              <svg>
+                <use [attr.href]="'#op-icon-' + category.icon"></use>
+              </svg>
+            </span>
             <strong>{{ category.label }}</strong>
             <em>{{ category.count }}</em>
           </button>
@@ -250,7 +365,9 @@
                     [attr.aria-label]="revealedCredentialFields(item) ? '隐藏凭据材料：' + item.title : '显示凭据材料：' + item.title"
                   >
                     <span class="secret-value">{{ credentialMaterialDisplay(item) }}</span>
-                    <span class="secret-eye" aria-hidden="true"></span>
+                    <svg class="secret-eye" aria-hidden="true">
+                      <use href="#op-icon-eye"></use>
+                    </svg>
                   </button>
                 </div>
                 <span>{{ itemSiteLabel(item) }}</span>

@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import sdk from "@1password/sdk";
 import type { FileAttributes, Item, ItemCreateParams, ItemField, ItemFile, ItemSection, Website } from "@1password/sdk";
 import {
@@ -9,12 +11,15 @@ import {
   ScanProgressEvent,
   ScanSnapshot,
   summarizeVaults,
+  VaultScanSummary,
   VaultSummary
 } from "@optimize-password/core";
 
 type OnePasswordClient = Awaited<ReturnType<typeof sdk.createClient>>;
 type RawItem = Item;
 const maxGetAllBatchSize = 50;
+const sdkSlowLogMs = readPositiveInteger(process.env.OP_SDK_SLOW_LOG_MS, 15_000);
+const execFileAsync = promisify(execFile);
 
 interface CachedRawItem {
   item: RawItem;
@@ -37,9 +42,9 @@ export class OnePasswordService {
   async scan(options: ScanOptions): Promise<ScanSnapshot> {
     const scanId = options.scanId ?? randomUUID();
     const scannedAt = new Date().toISOString();
-    const client = await this.getClient(options);
     let vaults: VaultSummary[] = [];
     const summaries: ItemSummary[] = [];
+    const discoveredItemCounts = new Map<string, number>();
     let totalItems = 0;
     let scannedVaults = 0;
 
@@ -54,32 +59,48 @@ export class OnePasswordService {
           scannedVaults,
           totalItems,
           scannedItems: summaries.length,
-          vaults: summarizeVaults(vaults, summaries),
+          vaults:
+            type === "completed"
+              ? summarizeVaults(vaults, summaries)
+              : summarizeVaultProgress(vaults, summaries, discoveredItemCounts),
           message
         }
       });
     };
 
     emit("started", "正在连接 1Password Desktop App。");
+    const client = await this.getClient(options, (message) => emit("progress", message));
+    emit("progress", "正在读取保险库列表。");
 
-    vaults = await collectAsync(await client.vaults.list({ decryptDetails: true }), (vault) => ({
+    const vaultOverviews = await withSdkTrace(client.vaults.list({ decryptDetails: true }), "读取保险库列表");
+    vaults = await collectAsync(vaultOverviews, (vault) => ({
       id: String(readAny(vault, "id") ?? ""),
       name: String(readAny(vault, "title", "name") ?? "Untitled vault")
     }));
 
     const itemIdsByVault = new Map<string, string[]>();
     this.rawItems.clear();
+    let skippedItems = 0;
+    let skippedVaultItemLists = 0;
 
     for (const vault of vaults) {
       if (!vault.id) {
         continue;
       }
 
-      const overviews = await client.items.list(vault.id);
-      const itemIds = overviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean);
+      emit("progress", `正在读取 ${vault.name} 的项目列表。`);
+      const itemIds = await this.readItemIds(client, vault, (message) => {
+        skippedVaultItemLists += 1;
+        emit("progress", message);
+      });
       itemIdsByVault.set(vault.id, itemIds);
+      discoveredItemCounts.set(vault.id, itemIds.length);
       totalItems += itemIds.length;
       emit("progress", `已发现 ${vault.name} 中的 ${itemIds.length} 个项目。`);
+    }
+
+    if (skippedVaultItemLists > 0 && totalItems === 0) {
+      throw new Error(`已发现 ${vaults.length} 个保险库，但无法读取任何项目列表。请确认 1Password Desktop App 已解锁并允许 Optipass 读取数据。`);
     }
 
     for (const vault of vaults) {
@@ -88,14 +109,14 @@ export class OnePasswordService {
         continue;
       }
 
-      for (const batch of chunks(itemIds, maxGetAllBatchSize)) {
-        const response = await client.items.getAll(vault.id, batch);
-        for (const itemResponse of response.individualResponses) {
-          if (!itemResponse.content) {
-            continue;
-          }
-
-          const item = itemResponse.content;
+      const batches = chunks(itemIds, maxGetAllBatchSize);
+      for (const [batchIndex, batch] of batches.entries()) {
+        emit("progress", `正在读取 ${vault.name} 的项目详情（${batchIndex + 1}/${batches.length}）。`);
+        const items = await this.readItemsBatch(client, vault, batch, (message) => {
+          skippedItems += 1;
+          emit("progress", message);
+        });
+        for (const item of items) {
           const rawItemId = item.id;
           const appItemId = toAppItemId(vault.id, rawItemId);
           this.rawItems.set(appItemId, {
@@ -117,7 +138,7 @@ export class OnePasswordService {
       vaults,
       items: summaries
     };
-    emit("completed", "扫描完成，等待手动分析。", scan);
+    emit("completed", completionMessage(skippedItems, skippedVaultItemLists), scan);
     return scan;
   }
 
@@ -199,7 +220,7 @@ export class OnePasswordService {
     this.rawItems.clear();
   }
 
-  private async getClient(options: ScanOptions): Promise<OnePasswordClient> {
+  private async getClient(options: ScanOptions, onProgress?: (message: string) => void): Promise<OnePasswordClient> {
     const auth = options.serviceAccountToken
       ? options.serviceAccountToken
       : options.accountName
@@ -213,6 +234,12 @@ export class OnePasswordService {
     const authCacheKey = typeof auth === "string" ? `service:${auth}` : `desktop:${auth.accountName}`;
     if (this.client && this.authCacheKey === authCacheKey) {
       return this.client;
+    }
+
+    if (auth instanceof sdk.DesktopAuth) {
+      onProgress?.("正在唤起 1Password Desktop App。");
+      await openOnePasswordDesktopApp();
+      onProgress?.("正在等待 1Password 授权。");
     }
 
     this.authCacheKey = authCacheKey;
@@ -230,11 +257,110 @@ export class OnePasswordService {
     }
     return this.client;
   }
+
+  private async readItemIds(
+    client: OnePasswordClient,
+    vault: VaultSummary,
+    onSkipped: (message: string) => void
+  ): Promise<string[]> {
+    try {
+      const overviews = await withSdkTrace(client.items.list(vault.id), `读取 ${vault.name} 的项目列表`);
+      return overviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean);
+    } catch (error) {
+      onSkipped(`无法读取 ${vault.name} 的项目列表：${errorMessage(error)}`);
+      return [];
+    }
+  }
+
+  private async readItemsBatch(
+    client: OnePasswordClient,
+    vault: VaultSummary,
+    itemIds: string[],
+    onSkipped: (message: string) => void
+  ): Promise<RawItem[]> {
+    try {
+      const response = await withSdkTrace(
+        client.items.getAll(vault.id, itemIds),
+        `批量读取 ${vault.name} 的 ${itemIds.length} 个项目详情`
+      );
+      const items: RawItem[] = [];
+      for (const [index, itemId] of itemIds.entries()) {
+        const itemResponse = response.individualResponses[index];
+        if (itemResponse?.content) {
+          items.push(itemResponse.content);
+          continue;
+        }
+        const item = await this.readSingleItem(
+          client,
+          vault,
+          itemId,
+          itemResponse?.error ?? "批量响应缺少项目内容。",
+          onSkipped
+        );
+        if (item) {
+          items.push(item);
+        }
+      }
+      return items;
+    } catch (error) {
+      const items: RawItem[] = [];
+      for (const itemId of itemIds) {
+        const item = await this.readSingleItem(client, vault, itemId, error, onSkipped);
+        if (item) {
+          items.push(item);
+        }
+      }
+      return items;
+    }
+  }
+
+  private async readSingleItem(
+    client: OnePasswordClient,
+    vault: VaultSummary,
+    itemId: string | undefined,
+    batchError: unknown,
+    onSkipped: (message: string) => void
+  ): Promise<RawItem | undefined> {
+    if (!itemId) {
+      onSkipped(`跳过 ${vault.name} 中一个无法识别 ID 的项目：${errorMessage(batchError)}`);
+      return undefined;
+    }
+
+    try {
+      return await withSdkTrace(client.items.get(vault.id, itemId), `读取 ${vault.name} 项目 ${itemId}`);
+    } catch (error) {
+      onSkipped(`跳过 ${vault.name} 中一个无法读取的项目：${errorMessage(error) || errorMessage(batchError)}`);
+      return undefined;
+    }
+  }
 }
 
 export const onePasswordLimits = {
-  maxGetAllBatchSize
+  maxGetAllBatchSize,
+  sdkSlowLogMs
 };
+
+function completionMessage(skippedItems: number, skippedVaultItemLists: number): string {
+  const skippedParts = [];
+  if (skippedVaultItemLists > 0) {
+    skippedParts.push(`${skippedVaultItemLists} 个无法读取项目列表的保险库`);
+  }
+  if (skippedItems > 0) {
+    skippedParts.push(`${skippedItems} 个无法读取的项目`);
+  }
+  return skippedParts.length > 0 ? `扫描完成，跳过 ${skippedParts.join("、")}。` : "扫描完成，等待手动分析。";
+}
+
+function summarizeVaultProgress(
+  vaults: VaultSummary[],
+  items: ItemSummary[],
+  discoveredItemCounts: Map<string, number>
+): VaultScanSummary[] {
+  return summarizeVaults(vaults, items).map((summary) => ({
+    ...summary,
+    itemCount: discoveredItemCounts.get(summary.id) ?? summary.itemCount
+  }));
+}
 
 export function toAppItemId(vaultId: string, onePasswordItemId: string): string {
   return `${vaultId}:${onePasswordItemId}`;
@@ -459,6 +585,61 @@ function readOptionalString(source: unknown, ...keys: string[]): string | undefi
 function readArray<T>(source: unknown, key: string): T[] {
   const value = readAny(source, key);
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+async function withSdkTrace<T>(promise: Promise<T>, label: string): Promise<T> {
+  const started = Date.now();
+  let slowLog: ReturnType<typeof setInterval> | undefined;
+  if (sdkSlowLogMs > 0) {
+    slowLog = setInterval(() => {
+      console.warn(`[1Password SDK] ${label} 已等待 ${Math.round((Date.now() - started) / 1000)} 秒。`);
+    }, sdkSlowLogMs);
+  }
+
+  try {
+    return await promise;
+  } finally {
+    if (slowLog) {
+      clearInterval(slowLog);
+    }
+  }
+}
+
+async function openOnePasswordDesktopApp(): Promise<void> {
+  if (process.platform !== "darwin") {
+    return;
+  }
+
+  try {
+    await execFileAsync("open", ["-b", "com.1password.1password"], { timeout: 5_000 });
+  } catch (error) {
+    console.warn(`[1Password SDK] 无法自动唤起 1Password Desktop App：${errorMessage(error)}`);
+  }
+}
+
+function readPositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function collectAsync<T, TInput>(

@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #212121; }
+  * { box-sizing: border-box; }
+  @keyframes op-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes op-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @keyframes op-push { from { opacity: 0; transform: translateX(48px); } to { opacity: 1; transform: none; } }
+  @keyframes op-pop { from { opacity: 0; transform: translateX(-48px); } to { opacity: 1; transform: none; } }
+  input::placeholder { color: #727272; }
+</style>
+</helmet>
+
+<div style="height: 100vh; background: #212121; color: #eeffff; font-family: 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif; display: flex; flex-direction: column; overflow: hidden;">
+
+  <!-- Header -->
+  <header style="display: flex; align-items: center; gap: 32px; padding: 18px 36px; border-bottom: 1px solid #323232; background: #1A1A1A; position: sticky; top: 0; z-index: 100; flex-shrink: 0;">
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div style="width: 34px; height: 34px; border-radius: 9px; background: #f07178; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 17px; color: #fff;">O</div>
+      <div>
+        <div style="font-weight: 700; font-size: 17px; letter-spacing: 0.2px;">Optipass</div>
+        <div style="font-size: 11.5px; color: #B0BEC5;">1Password 疑似重复项去重工具</div>
+      </div>
+    </div>
+    <div style="flex: 1;"></div>
+    <div style="min-width: 90px; text-align: right; white-space: nowrap; font-size: 12px; color: #727272; font-family: 'IBM Plex Mono', monospace;">{{ accountChip }}</div>
+  </header>
+
+  <main style="flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; padding: 36px; width: 100%; overflow-y: auto;">
+
+    <!-- PAGE 1 连接 + 扫描结果（平铺一页） -->
+    <sc-if value="{{ isStep1 }}" hint-placeholder-val="{{ true }}">
+      <section data-screen-label="page1-连接与扫描" style="width: 640px; margin-top: 4px; display: flex; flex-direction: column; flex: 1; min-height: 440px;">
+        <div style="background: #292929; border: 1px solid #3a3a3a; border-radius: 16px; padding: 26px 28px; flex-shrink: 0;">
+          <h1 style="margin: 0 0 6px; font-size: 20px; font-weight: 700;">连接 1Password</h1>
+          <p style="margin: 0 0 20px; font-size: 13px; line-height: 1.7; color: #B0BEC5;">Optipass 通过 1Password SDK 读取本机数据。填写账户名并点击「扫描」，在 1Password 桌面端确认授权后自动开始扫描。</p>
+          <form onSubmit="{{ onConnectSubmit }}" style="display: flex; gap: 10px; margin: 0; align-items: stretch;">
+            <input type="text" value="{{ account }}" onChange="{{ onAccountChange }}" placeholder="you@example.com" disabled="{{ authBusy }}" style="flex: 1; padding: 6px 14px; border-radius: 9px; border: 1px solid #3F3F3F; background: #1A1A1A; color: #eeffff; font-size: 13px; outline: none; font-family: 'IBM Plex Mono', monospace;" style-focus="border-color: #82aaff;">
+            <dc-import name="OpButton" html-type="submit" size="sm" variant="primary" disabled="{{ authBusy }}" label="{{ scanBtnLabel }}" hint-size="96px,38px"></dc-import>
+          </form>
+          <div style="margin-top: 14px; font-size: 12.5px; line-height: 1.6; color: {{ authHintColor }};">{{ authHint }}</div>
+        </div>
+
+        <!-- 扫描结果（常驻区域） -->
+        <div style="margin-top: 24px; display: flex; flex-direction: column; flex: 1; min-height: 0;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px;">
+          <h2 style="margin: 0; font-size: 15px; font-weight: 700; color: #B0BEC5;">扫描结果</h2>
+          <span style="font-size: 12.5px; color: #B0BEC5; font-family: 'IBM Plex Mono', monospace;">{{ scannedTotal }} / {{ totalDisplay }}</span>
+        </div>
+        <div style="height: 5px; border-radius: 3px; background: #323232; overflow: hidden; margin-bottom: 16px;">
+          <div style="height: 100%; width: {{ overallPct }}%; background: #f07178; transition: width 0.15s;"></div>
+        </div>
+        <sc-if value="{{ noVaults }}" hint-placeholder-val="{{ false }}">
+          <div style="flex-shrink: 0; border: 1px dashed #3F3F3F; border-radius: 12px; padding: 40px 20px; text-align: center; font-size: 12.5px; color: #727272;">尚未连接 · 连接后将在此列出各 vault 及其 item 类型统计</div>
+        </sc-if>
+        <div style="display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 140px; overflow-y: auto; padding-right: 2px;">
+          <sc-for list="{{ scanRows }}" as="v" hint-placeholder-count="3">
+            <div style="background: #292929; border: 1px solid #3a3a3a; border-radius: 12px; padding: 16px 20px; display: flex; align-items: center; gap: 16px;">
+              <div style="width: 36px; height: 36px; border-radius: 9px; background: #323232; border: 1px solid #3a3a3a; display: flex; align-items: center; justify-content: center; font-size: 15px;">{{ v.icon }}</div>
+              <div style="flex: 1;">
+                <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;">
+                  <span style="font-size: 14px; font-weight: 600;">{{ v.name }}</span>
+                  <span style="font-size: 12px; color: #B0BEC5; font-family: 'IBM Plex Mono', monospace;">{{ v.scanned }} / {{ v.total }}</span>
+                </div>
+                <div style="height: 5px; border-radius: 3px; background: #1A1A1A; overflow: hidden;">
+                  <div style="height: 100%; width: {{ v.pct }}%; background: {{ v.barColor }}; transition: width 0.15s;"></div>
+                </div>
+                <sc-if value="{{ v.started }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;">
+                    <sc-for list="{{ v.typeRows }}" as="t" hint-placeholder-count="4">
+                      <div style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 7px; background: #1A1A1A; border: 1px solid #323232; font-size: 11.5px;">
+                        <span style="color: {{ t.color }};">{{ t.name }}</span>
+                        <span style="font-weight: 600; font-family: 'IBM Plex Mono', monospace; color: {{ t.countColor }};">{{ t.count }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+              <span style="font-size: 12px; width: 68px; text-align: right; color: {{ v.statusColor }};">{{ v.status }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <sc-if value="{{ scanDone }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top: 16px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; background: rgba(195, 232, 141, 0.08); border: 1px solid rgba(195, 232, 141, 0.35); border-radius: 12px; padding: 12px 16px;">
+            <div style="font-size: 13.5px;"><span style="color: #c3e88d; font-weight: 600;">扫描完成</span><span style="color: #B0BEC5;"> · 已将 {{ totalItems }} 个 item 读入本地内存</span></div>
+            <dc-import name="OpButton" size="sm" variant="primary" on-click="{{ goAnalyze }}" label="开始分析 →" hint-size="110px,38px"></dc-import>
+          </div>
+        </sc-if>
+        </div>
+        <p style="text-align: center; font-size: 12px; color: #727272; margin-top: 14px; margin-bottom: 0; flex-shrink: 0;">Optipass 仅在本机运行，凭据数据不会离开你的设备</p>
+      </section>
+    </sc-if>
+
+    <!-- PAGE 2 分析结果 -->
+    <sc-if value="{{ isStep2 }}" hint-placeholder-val="{{ false }}">
+      <section data-screen-label="page2-分析结果" style="width: 100%; max-width: 980px; animation: {{ pageAnim }} 0.28s ease; display: flex; flex-direction: column; flex: 1; min-height: 440px;">
+
+        <sc-if value="{{ analysisRunning }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top: 12vh; text-align: center;">
+            <div style="width: 44px; height: 44px; margin: 0 auto 20px; border: 3px solid #3a3a3a; border-top-color: #82aaff; border-radius: 50%; animation: op-spin 0.9s linear infinite;"></div>
+            <h2 style="margin: 0 0 8px; font-size: 19px;">正在本地分析…</h2>
+            <p style="margin: 0; font-size: 13px; color: #B0BEC5;">仅比对内存中的数据，不会再次访问 1Password<br>规则：URL 全等或 domain 相同 × username 全等</p>
+            <div style="width: 320px; margin: 24px auto 0; height: 5px; border-radius: 3px; background: #323232; overflow: hidden;">
+              <div style="height: 100%; width: {{ analysisPct }}%; background: #82aaff; transition: width 0.1s;"></div>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ analysisDone }}" hint-placeholder-val="{{ false }}">
+          <!-- Sticky action bar -->
+          <div style="display: flex; align-items: center; gap: 14px; background: #292929; border: 1px solid #3a3a3a; border-radius: 12px; padding: 9px 14px; margin-bottom: 12px;">
+            <dc-import name="OpButton" size="sm" variant="ghost" on-click="{{ rescan }}" label="← 重新扫描" hint-size="104px,34px"></dc-import>
+            <div style="flex: 1; font-size: 13px; color: #B0BEC5;">
+              <span style="color: #eeffff; font-weight: 600;">{{ statGroups }} 组疑似重复</span> · 保留 <span style="color: #c3e88d;">{{ statKeep }}</span> · 归档 <span style="color: #ffcb6b;">{{ statArchive }}</span> · 删除 <span style="color: #f07178;">{{ statDelete }}</span> · 迁移 <span style="color: #82aaff;">{{ statMove }}</span>
+            </div>
+            <dc-import name="OpButton" size="sm" variant="ghost" on-click="{{ toggleReveal }}" label="{{ revealLabel }}" hint-size="90px,34px"></dc-import>
+            <dc-import name="OpButton" size="sm" variant="ghost" on-click="{{ acceptAll }}" label="全部采纳推荐" hint-size="110px,34px"></dc-import>
+            <dc-import name="OpButton" size="sm" variant="primary" on-click="{{ goPreview }}" label="{{ genPlanLabel }}" hint-size="150px,34px"></dc-import>
+          </div>
+
+          <!-- Tabs -->
+          <div style="display: inline-flex; align-self: flex-start; gap: 3px; padding: 3px; margin-bottom: 14px; background: #1A1A1A; border: 1px solid #323232; border-radius: 11px; position: relative;">
+            <div style="position: absolute; top: 3px; bottom: 3px; left: {{ tabIndL }}px; width: {{ tabIndW }}px; opacity: {{ tabIndO }}; background: #323232; border-radius: 8px; transition: left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1);"></div>
+            <sc-for list="{{ kindTabs }}" as="tab" hint-placeholder-count="4">
+              <button onClick="{{ tab.onClick }}" ref="{{ tab.setRef }}" style="display: flex; align-items: center; gap: 7px; padding: 6px 13px; border: none; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; background: transparent; color: {{ tab.textColor }}; transition: color 0.18s ease; position: relative; z-index: 1;">
+                <span>{{ tab.label }}</span>
+                <span style="font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: {{ tab.countBg }}; color: {{ tab.countColor }}; font-family: 'IBM Plex Mono', monospace; transition: background 0.18s ease, color 0.18s ease;">{{ tab.count }}</span>
+              </button>
+            </sc-for>
+          </div>
+
+          <!-- Group cards -->
+          <div style="display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; padding-bottom: 8px;">
+            <sc-for list="{{ groups }}" as="g" hint-placeholder-count="4">
+              <div style="background: #292929; border: 1px solid {{ g.cardBorder }}; border-radius: 14px; overflow: hidden; opacity: {{ g.opacity }}; flex-shrink: 0;">
+                <div style="display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #323232; border-bottom: 1px solid #323232;">
+                  <span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px; padding: 4px 9px; border-radius: 6px; background: {{ g.badgeBg }}; color: {{ g.badgeColor }};">{{ g.kindLabel }}</span>
+                  <span style="font-size: 14px; font-weight: 600; font-family: 'IBM Plex Mono', monospace;">{{ g.username }}</span>
+                  <span style="color: #616161;">@</span>
+                  <span style="font-size: 14px; font-weight: 600; color: #B0BEC5; font-family: 'IBM Plex Mono', monospace;">{{ g.site }}</span>
+                  <span style="flex: 1;"></span>
+                  <span style="font-size: 12px; color: #727272;">{{ g.count }} 个 item</span>
+                  <button onClick="{{ g.onSkip }}" style="padding: 4px 10px; border-radius: 7px; border: 1px solid #3F3F3F; background: transparent; color: {{ g.skipColor }}; font-size: 12px; cursor: pointer; font-family: inherit;" style-hover="border-color: #B0BEC5;">{{ g.skipLabel }}</button>
+                </div>
+                <div style="display: flex; flex-direction: column;">
+                  <sc-for list="{{ g.items }}" as="it" hint-placeholder-count="2">
+                    <div style="display: grid; grid-template-columns: 32px 1.2fr 1.3fr 1fr 120px 175px; gap: 10px; align-items: center; padding: 7px 14px; border-bottom: 1px solid #323232; background: {{ it.rowBg }};">
+                      <input type="checkbox" checked="{{ it.keep }}" onChange="{{ it.onToggle }}" disabled="{{ g.skipped }}" style="width: 15px; height: 15px; accent-color: #f07178; cursor: pointer;">
+                      <div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                          <span style="font-size: 12.5px; font-weight: 600;">{{ it.title }}</span>
+                          <sc-if value="{{ it.recommended }}" hint-placeholder-val="{{ false }}">
+                            <span style="font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 5px; background: rgba(195,232,141,0.14); color: #c3e88d;">推荐保留 · 最新</span>
+                          </sc-if>
+                        </div>
+                        <div style="font-size: 11px; color: #727272; margin-top: 2px; font-family: 'IBM Plex Mono', monospace;">{{ it.url }}</div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; gap: 3px; min-width: 0;">
+                        <sc-for list="{{ it.credChips }}" as="c" hint-placeholder-count="1">
+                          <div style="display: flex; align-items: center; gap: 6px; min-width: 0;">
+                            <span style="font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: {{ c.bg }}; color: {{ c.color }}; white-space: nowrap; flex-shrink: 0;">{{ c.label }}</span>
+                            <span style="font-size: 11.5px; font-family: 'IBM Plex Mono', monospace; color: {{ c.textColor }}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ c.text }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                      <div style="font-size: 12px; color: #B0BEC5;">
+                        <span style="padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; background: {{ it.strengthBg }}; color: {{ it.strengthColor }};">{{ it.strength }}</span>
+                        <span style="margin-left: 8px; font-family: 'IBM Plex Mono', monospace;">{{ it.updated }}</span>
+                      </div>
+                      <div style="font-size: 12px; color: #B0BEC5;">📁 {{ it.vaultName }}</div>
+                      <div>
+                        <sc-if value="{{ it.keep }}" hint-placeholder-val="{{ true }}">
+                          <select value="{{ it.targetVault }}" onChange="{{ it.onTarget }}" disabled="{{ g.skipped }}" style="width: 100%; padding: 5px 8px; border-radius: 8px; border: 1px solid #3F3F3F; background: #1A1A1A; color: #eeffff; font-size: 12px; font-family: inherit; cursor: pointer;">
+                            <sc-for list="{{ it.vaultOptions }}" as="vo" hint-placeholder-count="3">
+                              <option value="{{ vo.id }}">{{ vo.label }}</option>
+                            </sc-for>
+                          </select>
+                        </sc-if>
+                        <sc-if value="{{ it.notKeep }}" hint-placeholder-val="{{ false }}">
+                          <select value="{{ it.removeAction }}" onChange="{{ it.onRemoveAction }}" disabled="{{ g.skipped }}" style="width: 100%; padding: 5px 8px; border-radius: 8px; border: 1px solid {{ it.removeBorder }}; background: #1A1A1A; color: {{ it.removeColor }}; font-size: 12px; font-family: inherit; cursor: pointer;">
+                            <option value="archive">归档（可恢复）</option>
+                            <option value="delete">删除</option>
+                          </select>
+                        </sc-if>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </section>
+    </sc-if>
+
+    <!-- PAGE 3 预览与应用 -->
+    <sc-if value="{{ isFinalStep }}" hint-placeholder-val="{{ false }}">
+      <section data-screen-label="page3-预览与应用" style="width: 100%; max-width: 880px; animation: op-push 0.28s ease; display: flex; flex-direction: column; flex: 1; min-height: 440px;">
+
+        <sc-if value="{{ phasePreview }}" hint-placeholder-val="{{ true }}" style="display: flex; flex-direction: column; min-height: 0; flex: 1;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-shrink: 0;">
+            <div>
+              <h1 style="margin: 0 0 4px; font-size: 22px; font-weight: 700;">计划预览</h1>
+              <p style="margin: 0; font-size: 13px; color: #B0BEC5;">以下变更尚未写入 1Password，点击「应用计划」后才会实际执行</p>
+            </div>
+            <div style="display: flex; gap: 10px;">
+              <dc-import name="OpButton" size="sm" variant="ghost" on-click="{{ backToDecide }}" label="← 返回调整" hint-size="96px,38px"></dc-import>
+              <dc-import name="OpButton" size="sm" variant="primary" on-click="{{ applyPlan }}" label="{{ applyPlanLabel }}" hint-size="150px,38px"></dc-import>
+            </div>
+          </div>
+
+          <div style="display: inline-flex; align-self: flex-start; gap: 3px; padding: 3px; margin-bottom: 14px; background: #1A1A1A; border: 1px solid #323232; border-radius: 11px; flex-shrink: 0; position: relative;">
+            <div style="position: absolute; top: 3px; bottom: 3px; left: {{ pTabIndL }}px; width: {{ pTabIndW }}px; opacity: {{ pTabIndO }}; background: #323232; border-radius: 8px; transition: left 0.25s cubic-bezier(0.4,0,0.2,1), width 0.25s cubic-bezier(0.4,0,0.2,1);"></div>
+            <sc-for list="{{ previewTabs }}" as="tab" hint-placeholder-count="4">
+              <button onClick="{{ tab.onClick }}" ref="{{ tab.setRef }}" style="display: flex; align-items: center; gap: 7px; padding: 6px 13px; border: none; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 600; background: transparent; color: {{ tab.textColor }}; transition: color 0.18s ease; position: relative; z-index: 1;">
+                <span>{{ tab.label }}</span>
+                <span style="font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: {{ tab.countBg }}; color: {{ tab.countColor }}; font-family: 'IBM Plex Mono', monospace; transition: background 0.18s ease, color 0.18s ease;">{{ tab.count }}</span>
+              </button>
+            </sc-for>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; padding-bottom: 8px;">
+            <sc-if value="{{ previewEmpty }}" hint-placeholder-val="{{ false }}">
+              <div style="flex-shrink: 0; border: 1px dashed #3F3F3F; border-radius: 12px; padding: 40px 20px; text-align: center; font-size: 12.5px; color: #727272;">此分类下没有待执行的变更</div>
+            </sc-if>
+            <sc-for list="{{ previewGroups }}" as="pg" hint-placeholder-count="3">
+              <div style="background: #292929; border: 1px solid #3a3a3a; border-radius: 14px; padding: 18px 22px; flex-shrink: 0;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+                  <span style="font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px; background: {{ pg.badgeBg }}; color: {{ pg.badgeColor }};">{{ pg.kindLabel }}</span>
+                  <span style="font-size: 13.5px; font-weight: 600; font-family: 'IBM Plex Mono', monospace;">{{ pg.username }}</span>
+                  <span style="color: #616161;">@</span>
+                  <span style="font-size: 13.5px; font-weight: 600; color: #B0BEC5; font-family: 'IBM Plex Mono', monospace;">{{ pg.site }}</span>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 40px 1fr; gap: 0; align-items: start;">
+                  <div>
+                    <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #727272; margin-bottom: 8px;">BEFORE</div>
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                      <sc-for list="{{ pg.before }}" as="b" hint-placeholder-count="2">
+                        <div style="padding: 9px 12px; border-radius: 8px; background: #1A1A1A; border: 1px solid #323232; font-size: 12.5px; display: flex; justify-content: space-between; gap: 10px;">
+                          <span>{{ b.title }}</span>
+                          <span style="color: #727272; font-size: 11.5px;">📁 {{ b.vaultName }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                  <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #616161; font-size: 17px; padding-top: 24px;">→</div>
+                  <div>
+                    <div style="font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #727272; margin-bottom: 8px;">AFTER</div>
+                    <div style="display: flex; flex-direction: column; gap: 6px;">
+                      <sc-for list="{{ pg.after }}" as="a" hint-placeholder-count="2">
+                        <div style="padding: 9px 12px; border-radius: 8px; background: {{ a.bg }}; border: 1px solid {{ a.border }}; font-size: 12.5px; display: flex; justify-content: space-between; gap: 10px; text-decoration: {{ a.deco }}; color: {{ a.color }};">
+                          <span>{{ a.title }}</span>
+                          <span style="font-size: 11.5px; font-weight: 600; color: {{ a.tagColor }};">{{ a.tag }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ phaseApplying }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 640px; margin: 4vh auto 0;">
+            <h1 style="margin: 0 0 6px; font-size: 22px; font-weight: 700;">正在应用计划…</h1>
+            <p style="margin: 0 0 20px; font-size: 13px; color: #B0BEC5;">通过 SDK 逐条写入 1Password，请勿关闭窗口</p>
+            <div style="height: 6px; border-radius: 3px; background: #323232; overflow: hidden; margin-bottom: 20px;">
+              <div style="height: 100%; width: {{ applyPct }}%; background: #f07178; transition: width 0.2s;"></div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <sc-for list="{{ opRows }}" as="op" hint-placeholder-count="5">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-radius: 10px; background: #292929; border: 1px solid {{ op.border }}; opacity: {{ op.opacity }};">
+                  <span style="width: 20px; text-align: center; font-size: 13px; color: {{ op.iconColor }}; animation: {{ op.anim }};">{{ op.icon }}</span>
+                  <span style="flex: 1; font-size: 13px;">{{ op.label }}</span>
+                  <span style="font-size: 12px; color: {{ op.statusColor }};">{{ op.statusText }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ phaseSummary }}" hint-placeholder-val="{{ false }}">
+          <div style="max-width: 560px; margin: 6vh auto 0; text-align: center;">
+            <div style="width: 60px; height: 60px; margin: 0 auto 20px; border-radius: 50%; background: rgba(195,232,141,0.12); border: 2px solid #c3e88d; display: flex; align-items: center; justify-content: center; font-size: 26px; color: #c3e88d;">✓</div>
+            <h1 style="margin: 0 0 8px; font-size: 24px; font-weight: 700;">去重完成</h1>
+            <p style="margin: 0 0 28px; font-size: 13.5px; color: #B0BEC5;">{{ summaryLine }}</p>
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 28px;">
+              <sc-for list="{{ summaryCards }}" as="sc" hint-placeholder-count="4">
+                <div style="background: #292929; border: 1px solid #3a3a3a; border-radius: 12px; padding: 18px 12px;">
+                  <div style="font-size: 26px; font-weight: 700; color: {{ sc.color }}; font-family: 'IBM Plex Mono', monospace;">{{ sc.value }}</div>
+                  <div style="font-size: 12px; color: #B0BEC5; margin-top: 4px;">{{ sc.label }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <sc-if value="{{ hasFailed }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-bottom: 24px; padding: 12px 16px; border-radius: 10px; background: rgba(255,83,112,0.08); border: 1px solid rgba(255,83,112,0.35); font-size: 12.5px; color: #ff5370; text-align: left;">{{ failNote }}</div>
+            </sc-if>
+            <button onClick="{{ reset }}" style="padding: 12px 26px; border-radius: 10px; border: 1px solid #3F3F3F; background: transparent; color: #eeffff; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;" style-hover="border-color: #82aaff;">重新扫描</button>
+          </div>
+        </sc-if>
+      </section>
+    </sc-if>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;simSpeed&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:1,&quot;min&quot;:0.5,&quot;max&quot;:3,&quot;step&quot;:0.5,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;模拟&quot;,&quot;unit&quot;:&quot;x&quot;},&quot;failDemo&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;模拟&quot;},&quot;defaultRemoveAction&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;archive&quot;,&quot;delete&quot;],&quot;default&quot;:&quot;archive&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;行为&quot;}}">
+class Component extends DCLogic {
+  VAULTS = [
+    { id: 'p', name: '个人', icon: '🔒', total: 126, types: { 'Login': 84, 'Password': 12, 'Secure Note': 15, 'Credit Card': 6, 'API Credential': 9 } },
+    { id: 'w', name: '工作', icon: '💼', total: 58, types: { 'Login': 30, 'Password': 5, 'Secure Note': 8, 'API Credential': 15 } },
+    { id: 'f', name: '家庭共享', icon: '🏠', total: 34, types: { 'Login': 22, 'Password': 2, 'Secure Note': 6, 'Credit Card': 4 } },
+  ];
+
+  GROUPS = [
+    { id: 'g1', kind: 'similar', site: 'github.com', username: 'dev@lin.dev', items: [
+      { id: 'i1', title: 'GitHub', vaultId: 'p', url: 'https://github.com/login', username: 'dev@lin.dev', password: 'ghp_K2n#82jdQz', updated: '2026-05-12', strength: '强', creds: [{ type: 'password' }, { type: 'totp' }] },
+      { id: 'i2', title: 'github.com', vaultId: 'w', url: 'https://github.com', username: 'dev@lin.dev', password: 'summer2019!', updated: '2024-11-03', strength: '中' },
+      { id: 'i3', title: 'GitHub（旧）', vaultId: 'p', url: 'https://github.com/session', username: 'dev@lin.dev', password: 'summer2019!', updated: '2023-02-18', strength: '中' },
+    ]},
+    { id: 'g2', kind: 'similar', site: 'google.com', username: 'zhang.wei@gmail.com', items: [
+      { id: 'i4', title: 'Google', vaultId: 'p', url: 'https://accounts.google.com', username: 'zhang.wei@gmail.com', password: 'V9$mQx!27rTe', updated: '2026-01-20', strength: '强', creds: [{ type: 'passkey', note: '已创建 · 本机 Touch ID' }, { type: 'password' }] },
+      { id: 'i5', title: 'Google 账号', vaultId: 'f', url: 'https://google.com', username: 'zhang.wei@gmail.com', password: 'zhangwei123', updated: '2022-08-30', strength: '弱' },
+    ]},
+    { id: 'g3', kind: 'similar', site: 'amazon.cn', username: 'lin.dev@163.com', items: [
+      { id: 'i6', title: '亚马逊', vaultId: 'p', url: 'https://www.amazon.cn', username: 'lin.dev@163.com', password: 'Amz#2025!kx', updated: '2025-09-14', strength: '强' },
+      { id: 'i7', title: 'Amazon 中国', vaultId: 'p', url: 'https://amazon.cn/ap/signin', username: 'lin.dev@163.com', password: 'amazon2018', updated: '2021-04-02', strength: '弱' },
+    ]},
+    { id: 'g12', kind: 'similar', site: 'figma.com', username: 'dev@lin.dev', items: [
+      { id: 'i26', title: 'Figma', vaultId: 'p', url: 'https://figma.com', username: 'dev@lin.dev', password: '', updated: '2026-04-30', strength: '—', creds: [{ type: 'passkey', note: '已创建 · iCloud 钥匙串' }] },
+      { id: 'i27', title: 'Figma 登录', vaultId: 'p', url: 'https://www.figma.com/login', username: 'dev@lin.dev', password: 'figma2022!', updated: '2022-10-05', strength: '中', creds: [{ type: 'password' }] },
+    ]},
+    { id: 'g8', kind: 'similar', site: 'aliyun.com', username: 'ops@lin.dev', items: [
+      { id: 'i17', title: '阿里云', vaultId: 'w', url: 'https://signin.aliyun.com', username: 'ops@lin.dev', password: 'Aly!2026#mZ8', updated: '2026-03-02', strength: '强' },
+      { id: 'i18', title: 'Aliyun 控制台', vaultId: 'w', url: 'https://aliyun.com', username: 'ops@lin.dev', password: 'aliyun2020', updated: '2022-12-09', strength: '弱' },
+    ]},
+    { id: 'g9', kind: 'similar', site: 'weibo.com', username: '13800001234', items: [
+      { id: 'i19', title: '微博', vaultId: 'p', url: 'https://weibo.com/login', username: '13800001234', password: 'Wb@9x!Q22e', updated: '2025-10-21', strength: '强' },
+      { id: 'i20', title: '新浪微博', vaultId: 'p', url: 'https://passport.weibo.com', username: '13800001234', password: 'weibo888', updated: '2021-06-15', strength: '弱' },
+      { id: 'i21', title: 'Weibo（手机）', vaultId: 'f', url: 'https://m.weibo.com', username: '13800001234', password: 'weibo888', updated: '2020-09-01', strength: '弱' },
+    ]},
+    { id: 'g10', kind: 'similar', site: 'notion.so', username: 'dev@lin.dev', items: [
+      { id: 'i22', title: 'Notion', vaultId: 'p', url: 'https://notion.so/login', username: 'dev@lin.dev', password: 'Nt#77Xq!pLm', updated: '2026-06-18', strength: '强' },
+      { id: 'i23', title: 'Notion 工作区', vaultId: 'w', url: 'https://www.notion.so', username: 'dev@lin.dev', password: 'notion@2023', updated: '2023-05-27', strength: '中' },
+    ]},
+    { id: 'g11', kind: 'similar', site: 'dropbox.com', username: 'zhang.wei@gmail.com', items: [
+      { id: 'i24', title: 'Dropbox', vaultId: 'p', url: 'https://dropbox.com', username: 'zhang.wei@gmail.com', password: 'Db0x!k93#Wp', updated: '2025-04-08', strength: '强' },
+      { id: 'i25', title: 'Dropbox 备份', vaultId: 'f', url: 'https://www.dropbox.com/login', username: 'zhang.wei@gmail.com', password: 'dropbox123', updated: '2019-08-14', strength: '弱' },
+    ]},
+    { id: 'g4', kind: 'identical', site: 'netflix.com', username: 'family@lin.dev', items: [
+      { id: 'i8', title: 'Netflix', vaultId: 'f', url: 'https://netflix.com', username: 'family@lin.dev', password: 'Nf!x9922#pQ', updated: '2025-12-01', strength: '强' },
+      { id: 'i9', title: 'Netflix', vaultId: 'f', url: 'https://netflix.com', username: 'family@lin.dev', password: 'Nf!x9922#pQ', updated: '2025-12-01', strength: '强' },
+    ]},
+    { id: 'g5', kind: 'identical', site: 'jd.com', username: '13800001234', items: [
+      { id: 'i10', title: '京东', vaultId: 'p', url: 'https://jd.com', username: '13800001234', password: 'jd@Buy2024', updated: '2024-06-18', strength: '中' },
+      { id: 'i11', title: '京东', vaultId: 'p', url: 'https://jd.com', username: '13800001234', password: 'jd@Buy2024', updated: '2024-06-18', strength: '中' },
+      { id: 'i12', title: '京东', vaultId: 'w', url: 'https://jd.com', username: '13800001234', password: 'jd@Buy2024', updated: '2024-06-18', strength: '中' },
+    ]},
+    { id: 'g6', kind: 'incomplete', site: '—', username: '（缺失关键字段）', items: [
+      { id: 'i13', title: 'WiFi 路由器备份', vaultId: 'f', url: '—', username: '（无 username）', password: 'admin888', updated: '2020-03-11', strength: '弱' },
+      { id: 'i14', title: '临时登录', vaultId: 'p', url: 'https://tmp.example.com', username: 'temp_user', password: '', updated: '2019-11-25', strength: '—', creds: [{ type: 'missing' }] },
+    ]},
+    { id: 'g7', kind: 'misc', site: '（无法归纳）', username: 'vpn_lin', items: [
+      { id: 'i15', title: '公司 VPN', vaultId: 'w', url: 'https://vpn.corp-a.com', username: 'vpn_lin', password: 'Vp#n!8842', updated: '2025-07-07', strength: '强' },
+      { id: 'i16', title: '公司 VPN', vaultId: 'w', url: 'https://gw.corp-b.net', username: 'vpn_lin', password: 'Vp#n!8842', updated: '2024-02-14', strength: '强' },
+    ]},
+  ];
+
+  CRED_META = {
+    password: { label: '密码', bg: 'rgba(130,170,255,0.12)', color: '#82aaff' },
+    totp:     { label: 'OTP', bg: 'rgba(255,203,107,0.14)', color: '#ffcb6b' },
+    passkey:  { label: '通行密钥', bg: 'rgba(137,221,255,0.14)', color: '#89ddff' },
+    missing:  { label: '缺失', bg: 'rgba(255,83,112,0.14)', color: '#ff5370' },
+  };
+
+  KIND_META = {
+    similar:    { label: '近似组',   color: '#82aaff', bg: 'rgba(130,170,255,0.14)' },
+    identical:  { label: '全等组',   color: '#89ddff', bg: 'rgba(137,221,255,0.14)' },
+    incomplete: { label: '建议删除', color: '#ffcb6b', bg: 'rgba(255,203,107,0.14)' },
+    misc:       { label: '杂项组',   color: '#c792ea', bg: 'rgba(199,146,234,0.14)' },
+  };
+
+  state = {
+    step: 1, account: '', authState: 'idle',
+    scanned: {}, scanDone: false,
+    analysis: 'idle', analysisPct: 0,
+    decisions: {}, skipped: {}, reveal: false,
+    phase: 'decide', ops: [], applyIdx: -1,
+    activeKind: 'similar', previewKind: 'similar', tabInd: null, pTabInd: null,
+  };
+
+  speed() { return this.props.simSpeed ?? 1; }
+  vaultName(id) { return (this.VAULTS.find(v => v.id === id) || {}).name || id; }
+  totalItems() { return this.VAULTS.reduce((a, v) => a + v.total, 0); }
+
+  newestId(g) {
+    return g.items.slice().sort((a, b) => b.updated.localeCompare(a.updated))[0].id;
+  }
+
+  defaultDecisions() {
+    const d = {};
+    const defRemove = this.props.defaultRemoveAction ?? 'archive';
+    this.GROUPS.forEach(g => {
+      const newest = this.newestId(g);
+      g.items.forEach((it, i) => {
+        let keep;
+        if (g.kind === 'similar') keep = it.id === newest;
+        else if (g.kind === 'identical') keep = it.id === newest && g.items.findIndex(x => x.id === newest) === i || (it.id === newest && i === g.items.findIndex(x => x.id === newest));
+        else if (g.kind === 'incomplete') keep = false;
+        else keep = true;
+        d[it.id] = { keep, targetVault: it.vaultId, removeAction: defRemove };
+      });
+      if (g.kind === 'identical') {
+        // keep exactly the first occurrence of newest
+        let kept = false;
+        g.items.forEach(it => {
+          const isNewest = it.updated === g.items.slice().sort((a,b)=>b.updated.localeCompare(a.updated))[0].updated;
+          const keep = isNewest && !kept;
+          if (keep) kept = true;
+          d[it.id] = { keep, targetVault: it.vaultId, removeAction: defRemove };
+        });
+      }
+    });
+    return d;
+  }
+
+  connect = () => {
+    if (this.state.authState !== 'idle') return;
+    const account = this.state.account.trim() || 'dev@lin.dev';
+    this.setState({ account, authState: 'authorizing' });
+    setTimeout(() => { this.setState({ authState: 'authorized' }); this.startScan(); }, 1700 / this.speed());
+  };
+
+  startScan = () => {
+    const scanned = {};
+    this.VAULTS.forEach(v => scanned[v.id] = 0);
+    this.setState({ scanned, scanDone: false });
+    // Elapsed-time driven so progress always completes even if ticks are throttled/dropped.
+    const durationMs = 2600 / this.speed();          // total scan wall time
+    const start = Date.now();
+    clearInterval(this._scanTimer);
+    this._scanTimer = setInterval(() => {
+      const t = Math.min(1, (Date.now() - start) / durationMs);
+      const next = {};
+      this.VAULTS.forEach((v, idx) => {
+        // each vault finishes at a slightly staggered local progress point
+        const startFrac = idx * 0.12;
+        const local = Math.max(0, Math.min(1, (t - startFrac) / (1 - startFrac)));
+        next[v.id] = Math.round(v.total * local);
+      });
+      const done = t >= 1;
+      if (done) { clearInterval(this._scanTimer); this._scanTimer = null; }
+      this.setState({ scanned: next, scanDone: done });
+    }, 80);
+  };
+
+  goAnalyze = () => {
+    this.setState({ step: 2, analysis: 'running', analysisPct: 0, poppedBack: false });
+    const durationMs = 1300 / this.speed();
+    const start = Date.now();
+    clearInterval(this._anTimer);
+    this._anTimer = setInterval(() => {
+      const p = Math.min(100, Math.round((Date.now() - start) / durationMs * 100));
+      if (p >= 100) {
+        clearInterval(this._anTimer); this._anTimer = null;
+        this.setState({ analysisPct: 100, analysis: 'done', decisions: this.defaultDecisions(), skipped: {}, phase: 'decide' });
+      } else {
+        this.setState({ analysisPct: p });
+      }
+    }, 60);
+  };
+
+  buildOps() {
+    const ops = [];
+    this.GROUPS.forEach(g => {
+      if (this.state.skipped[g.id]) return;
+      g.items.forEach(it => {
+        const d = this.state.decisions[it.id];
+        if (!d) return;
+        if (!d.keep) {
+          ops.push({ id: 'op-' + it.id, type: d.removeAction, label: (d.removeAction === 'delete' ? '删除' : '归档') + '「' + it.title + '」（' + this.vaultName(it.vaultId) + '）', status: 'pending' });
+        } else if (d.targetVault !== it.vaultId) {
+          ops.push({ id: 'op-' + it.id, type: 'move', label: '迁移「' + it.title + '」：' + this.vaultName(it.vaultId) + ' → ' + this.vaultName(d.targetVault), status: 'pending' });
+        }
+      });
+    });
+    return ops;
+  }
+
+  applyPlan = () => {
+    const ops = this.buildOps().map(o => ({ ...o }));
+    this.setState({ phase: 'applying', ops, applyIdx: 0 });
+    const failDemo = this.props.failDemo ?? true;
+    const failAt = failDemo && ops.length > 3 ? 2 : -1;
+    // Elapsed-time driven so it always completes even if ticks are throttled/dropped.
+    const perOp = 380 / this.speed();
+    const start = Date.now();
+    clearInterval(this._applyTimer);
+    this._applyTimer = setInterval(() => {
+      const elapsed = Date.now() - start;
+      const doneCount = Math.min(ops.length, Math.floor(elapsed / perOp));
+      const finished = doneCount >= ops.length && elapsed >= ops.length * perOp + 500;
+      const next = ops.map((o, idx) => {
+        let status = 'pending';
+        if (idx < doneCount) status = idx === failAt ? 'failed' : 'done';
+        else if (idx === doneCount && !finished) status = 'running';
+        return { ...o, status };
+      });
+      if (finished) { clearInterval(this._applyTimer); this._applyTimer = null; this.setState({ ops: next, applyIdx: ops.length, phase: 'summary' }); }
+      else this.setState({ ops: next, applyIdx: doneCount });
+    }, 80);
+  };
+
+  reset = () => {
+    clearInterval(this._scanTimer); clearInterval(this._anTimer); clearTimeout(this._applyTimer);
+    this.setState({ step: 1, authState: 'idle', scanned: {}, scanDone: false, analysis: 'idle', analysisPct: 0, decisions: {}, skipped: {}, phase: 'decide', ops: [], applyIdx: -1, tabInd: null, pTabInd: null });
+  };
+
+  componentWillUnmount() {
+    clearInterval(this._scanTimer); clearInterval(this._anTimer); clearTimeout(this._applyTimer);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const scannedTotal = this.VAULTS.reduce((a, v) => a + (s.scanned[v.id] || 0), 0);
+    const total = this.totalItems();
+    const scanRows = (s.authState !== 'authorized' ? [] : this.VAULTS).map(v => {
+      const sc = s.scanned[v.id] || 0;
+      const pct = Math.round(sc / v.total * 100);
+      const done = sc >= v.total;
+      const started = sc > 0;
+      // distribute scanned count across types proportionally (exact when done)
+      const typeNames = Object.keys(v.types);
+      let remaining = sc;
+      const typeRows = typeNames.map((tn, ti) => {
+        const finalN = v.types[tn];
+        let n;
+        if (done) n = finalN;
+        else {
+          n = Math.min(finalN, Math.round(finalN * sc / v.total));
+          if (ti === typeNames.length - 1) n = Math.max(0, Math.min(finalN, remaining));
+        }
+        remaining -= n;
+        return { name: tn, count: n, final: finalN, done: done || n >= finalN,
+          color: done || n >= finalN ? '#B0BEC5' : '#727272',
+          countColor: done || n >= finalN ? '#eeffff' : '#82aaff' };
+      });
+      return {
+        name: v.name + ' vault', icon: v.icon, scanned: sc, total: v.total, pct, typeRows, started,
+        barColor: done ? '#c3e88d' : '#82aaff',
+        status: done ? '完成' : started ? '扫描中…' : '等待中',
+        statusColor: done ? '#c3e88d' : started ? '#82aaff' : '#727272',
+      };
+    });
+
+    // decisions view
+    const dget = id => s.decisions[id] || { keep: true, targetVault: null, removeAction: 'archive' };
+    let statKeep = 0, statArchive = 0, statDelete = 0, statMove = 0;
+    const groups = this.GROUPS.map(g => {
+      const meta = this.KIND_META[g.kind];
+      const skipped = !!s.skipped[g.id];
+      const newest = this.newestId(g);
+      const pwSet = new Set(g.items.map(i => i.password));
+      const refPw = (g.items.find(i => i.id === newest) || {}).password;
+      const items = g.items.map(it => {
+        const d = dget(it.id);
+        if (!skipped) {
+          if (d.keep) { statKeep++; if (d.targetVault !== it.vaultId) statMove++; }
+          else { d.removeAction === 'delete' ? statDelete++ : statArchive++; }
+        }
+        const pwDiff = pwSet.size > 1 && it.password !== refPw;
+        const creds = it.creds || [{ type: 'password' }];
+        const credChips = creds.map(c => {
+          const cm = this.CRED_META[c.type];
+          let text, textColor = '#B0BEC5';
+          if (c.type === 'password') { text = s.reveal ? it.password : '••••••••••'; textColor = pwDiff ? '#ff5370' : '#B0BEC5'; }
+          else if (c.type === 'totp') { text = '动态 6 位 · 30s'; }
+          else if (c.type === 'passkey') { text = c.note || '已创建'; }
+          else { text = '（无 password）'; textColor = '#ff5370'; }
+          return { label: cm.label, bg: cm.bg, color: cm.color, text, textColor };
+        });
+        return {
+          credChips,
+          title: it.title, url: it.url, updated: it.updated, strength: it.strength,
+          vaultName: this.vaultName(it.vaultId),
+          password: s.reveal ? it.password : '••••••••••',
+          pwColor: pwDiff ? '#ff5370' : '#B0BEC5',
+          recommended: it.id === newest && (g.kind === 'similar' || g.kind === 'identical') && dget(it.id).keep,
+          keep: d.keep, notKeep: !d.keep,
+          rowBg: d.keep && !skipped ? 'rgba(130,170,255,0.04)' : 'transparent',
+          targetVault: d.targetVault, removeAction: d.removeAction,
+          removeBorder: d.removeAction === 'delete' ? 'rgba(255,83,112,0.5)' : '#3F3F3F',
+          removeColor: d.removeAction === 'delete' ? '#ff5370' : '#ffcb6b',
+          strengthBg: it.strength === '强' ? 'rgba(195,232,141,0.14)' : it.strength === '中' ? 'rgba(255,203,107,0.14)' : it.strength === '弱' ? 'rgba(255,83,112,0.14)' : '#323232',
+          strengthColor: it.strength === '强' ? '#c3e88d' : it.strength === '中' ? '#ffcb6b' : it.strength === '弱' ? '#ff5370' : '#727272',
+          vaultOptions: this.VAULTS.map(v => ({ id: v.id, label: v.id === it.vaultId ? v.name + '（原）' : '迁移至 ' + v.name })),
+          onToggle: () => this.setState(st => ({ decisions: { ...st.decisions, [it.id]: { ...dget(it.id), keep: !dget(it.id).keep } } })),
+          onTarget: e => { const v = e.target.value; this.setState(st => ({ decisions: { ...st.decisions, [it.id]: { ...dget(it.id), targetVault: v } } })); },
+          onRemoveAction: e => { const v = e.target.value; this.setState(st => ({ decisions: { ...st.decisions, [it.id]: { ...dget(it.id), removeAction: v } } })); },
+        };
+      });
+      return {
+        id: g.id, kindLabel: meta.label, badgeBg: meta.bg, badgeColor: meta.color,
+        site: g.site, username: g.username, count: g.items.length, items,
+        skipped, opacity: skipped ? 0.45 : 1,
+        cardBorder: skipped ? '#3a3a3a' : '#3F3F3F',
+        skipLabel: skipped ? '恢复此组' : '跳过此组',
+        skipColor: skipped ? '#82aaff' : '#B0BEC5',
+        onSkip: () => this.setState(st => ({ skipped: { ...st.skipped, [g.id]: !st.skipped[g.id] } })),
+      };
+    });
+
+    const kindOrder = ['similar', 'identical', 'incomplete', 'misc'];
+    const kindTabs = kindOrder.map(k => {
+      const meta = this.KIND_META[k];
+      const active = s.activeKind === k;
+      return {
+        label: meta.label, count: this.GROUPS.filter(g => g.kind === k).length,
+        textColor: active ? meta.color : '#B0BEC5',
+        countBg: active ? meta.bg : '#292929',
+        countColor: active ? meta.color : '#727272',
+        setRef: node => { if (node && active && !(s.tabInd && s.tabInd.w)) requestAnimationFrame(() => { if (node.offsetWidth > 0) this.setState({ tabInd: { l: node.offsetLeft, w: node.offsetWidth } }); }); },
+        onClick: e => { const b = e.currentTarget; this.setState({ activeKind: k, tabInd: { l: b.offsetLeft, w: b.offsetWidth } }); },
+      };
+    });
+    const visibleGroups = groups.filter((g, i) => this.GROUPS[i].kind === s.activeKind);
+
+    const ops = s.phase === 'decide' || s.phase === 'preview' ? this.buildOps() : s.ops;
+
+    // preview diff
+    const previewGroups = this.GROUPS.filter(g => !s.skipped[g.id]).map(g => {
+      const meta = this.KIND_META[g.kind];
+      const before = g.items.map(it => ({ title: it.title, vaultName: this.vaultName(it.vaultId) }));
+      const after = g.items.map(it => {
+        const d = dget(it.id);
+        if (d.keep) {
+          const moved = d.targetVault !== it.vaultId;
+          return { title: it.title, tag: moved ? '迁移 → ' + this.vaultName(d.targetVault) : '保留 · ' + this.vaultName(it.vaultId), tagColor: moved ? '#82aaff' : '#c3e88d', bg: 'rgba(195,232,141,0.06)', border: 'rgba(195,232,141,0.3)', deco: 'none', color: '#eeffff' };
+        }
+        const del = d.removeAction === 'delete';
+        return { title: it.title, tag: del ? '删除' : '归档', tagColor: del ? '#ff5370' : '#ffcb6b', bg: 'transparent', border: '#323232', deco: 'line-through', color: '#727272' };
+      });
+      return { kind: g.kind, kindLabel: meta.label, badgeBg: meta.bg, badgeColor: meta.color, site: g.site, username: g.username, before, after, changed: after.some(a => a.deco === 'line-through' || a.tagColor === '#82aaff') };
+    }).filter(pg => pg.changed);
+
+    const previewTabs = kindOrder.map(k => {
+      const meta = this.KIND_META[k];
+      const active = s.previewKind === k;
+      return {
+        label: meta.label, count: previewGroups.filter(pg => pg.kind === k).length,
+        textColor: active ? meta.color : '#B0BEC5',
+        countBg: active ? meta.bg : '#292929',
+        countColor: active ? meta.color : '#727272',
+        setRef: node => { if (node && active && !(s.pTabInd && s.pTabInd.w)) requestAnimationFrame(() => { if (node.offsetWidth > 0) this.setState({ pTabInd: { l: node.offsetLeft, w: node.offsetWidth } }); }); },
+        onClick: e => { const b = e.currentTarget; this.setState({ previewKind: k, pTabInd: { l: b.offsetLeft, w: b.offsetWidth } }); },
+      };
+    });
+    const visiblePreviewGroups = previewGroups.filter(pg => pg.kind === s.previewKind);
+
+    const opRows = s.ops.map(op => ({
+      label: op.label,
+      icon: op.status === 'done' ? '✓' : op.status === 'failed' ? '✕' : op.status === 'running' ? '◌' : '·',
+      iconColor: op.status === 'done' ? '#c3e88d' : op.status === 'failed' ? '#ff5370' : op.status === 'running' ? '#82aaff' : '#616161',
+      anim: op.status === 'running' ? 'op-pulse 0.8s ease-in-out infinite' : 'none',
+      statusText: op.status === 'done' ? '成功' : op.status === 'failed' ? '失败：1Password 返回冲突' : op.status === 'running' ? '执行中…' : '等待',
+      statusColor: op.status === 'done' ? '#c3e88d' : op.status === 'failed' ? '#ff5370' : op.status === 'running' ? '#82aaff' : '#727272',
+      border: op.status === 'failed' ? 'rgba(255,83,112,0.4)' : '#3a3a3a',
+      opacity: op.status === 'pending' ? 0.5 : 1,
+    }));
+    const doneOps = s.ops.filter(o => o.status === 'done' || o.status === 'failed').length;
+    const failedOps = s.ops.filter(o => o.status === 'failed').length;
+    const okArchive = s.ops.filter(o => o.type === 'archive' && o.status === 'done').length;
+    const okDelete = s.ops.filter(o => o.type === 'delete' && o.status === 'done').length;
+    const okMove = s.ops.filter(o => o.type === 'move' && o.status === 'done').length;
+
+    return {
+      // meta
+      account: s.account,
+      onAccountChange: e => this.setState({ account: e.target.value }),
+      accountChip: s.authState === 'authorized' || s.step > 1 ? '● ' + (s.account || 'dev@lin.dev') : '',
+      isStep1: s.step === 1,
+      isStep2: s.step === 2,
+      noVaults: s.authState !== 'authorized',
+      totalDisplay: s.authState === 'authorized' ? String(total) : '—',
+      scanBtnLabel: s.authState === 'idle' ? '扫描' : s.authState === 'authorizing' ? '等待授权…' : '扫描中',
+      scanBtnBg: s.authState === 'idle' ? '#f07178' : '#323232',
+      authHint: s.authState === 'idle' ? '' : s.authState === 'authorizing' ? '已向 1Password 请求授权，请在桌面端弹窗中点击「允许」…' : '✓ 授权成功 · 已连接 ' + this.VAULTS.length + ' 个 vault，正在扫描',
+      authHintColor: s.authState === 'authorizing' ? '#ffcb6b' : '#c3e88d',
+      isFinalStep: s.step === 3,
+      // auth
+      authIdle: s.authState === 'idle', authAuthorizing: s.authState === 'authorizing',
+      authAuthorized: s.authState === 'authorized', authBusy: s.authState !== 'idle',
+      connect: this.connect, startScan: this.startScan,
+      onConnectSubmit: e => { e.preventDefault(); this.connect(); },
+      vaultCount: this.VAULTS.length, totalItems: total,
+      // scan
+      scanRows, scannedTotal, overallPct: Math.round(scannedTotal / total * 100),
+      scanDone: s.scanDone, goAnalyze: this.goAnalyze,
+      // analysis
+      analysisRunning: s.analysis === 'running', analysisDone: s.analysis === 'done',
+      analysisPct: s.analysisPct,
+      groups: visibleGroups,
+      kindTabs,
+      tabIndL: s.tabInd ? s.tabInd.l : 0, tabIndW: s.tabInd ? s.tabInd.w : 0, tabIndO: s.tabInd && s.tabInd.w ? 1 : 0,
+      statGroups: this.GROUPS.filter(g => !s.skipped[g.id]).length,
+      statKeep, statArchive, statDelete, statMove,
+      opCount: ops.length,
+      genPlanLabel: '生成计划 (' + ops.length + ' 项操作) →',
+      applyPlanLabel: '应用计划 (' + ops.length + ' 项操作)',
+      reveal: s.reveal, revealLabel: s.reveal ? '隐藏密码' : '显示密码',
+      toggleReveal: () => this.setState(st => ({ reveal: !st.reveal })),
+      acceptAll: () => this.setState({ decisions: this.defaultDecisions(), skipped: {} }),
+      rescan: this.reset,
+      goPreview: () => this.setState({ step: 3, phase: 'preview', pTabInd: null }),
+      // step 4
+      phasePreview: s.phase === 'preview', phaseApplying: s.phase === 'applying', phaseSummary: s.phase === 'summary',
+      backToDecide: () => this.setState({ step: 2, phase: 'decide', poppedBack: true }),
+      pageAnim: s.poppedBack ? 'op-pop' : 'op-push',
+      applyPlan: this.applyPlan,
+      previewGroups: visiblePreviewGroups, previewTabs,
+      pTabIndL: s.pTabInd ? s.pTabInd.l : 0, pTabIndW: s.pTabInd ? s.pTabInd.w : 0, pTabIndO: s.pTabInd && s.pTabInd.w ? 1 : 0,
+      previewEmpty: visiblePreviewGroups.length === 0,
+      opRows,
+      applyPct: s.ops.length ? Math.round(doneOps / s.ops.length * 100) : 0,
+      summaryLine: '共执行 ' + s.ops.length + ' 项操作，成功 ' + (s.ops.length - failedOps) + ' 项' + (failedOps ? '，失败 ' + failedOps + ' 项' : ''),
+      summaryCards: [
+        { label: '保留', value: statKeep, color: '#c3e88d' },
+        { label: '已归档', value: okArchive, color: '#ffcb6b' },
+        { label: '已删除', value: okDelete, color: '#ff5370' },
+        { label: '已迁移', value: okMove, color: '#82aaff' },
+      ],
+      hasFailed: failedOps > 0,
+      failNote: '有 ' + failedOps + ' 项操作失败（1Password 返回冲突）。对应 item 未被改动，可重新扫描后重试。',
+      reset: this.reset,
+    };
+  }
+}
+</script>
+</body>
+</html>

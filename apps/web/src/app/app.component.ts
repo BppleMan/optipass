@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { Component, computed, OnInit, signal } from "@angular/core";
+import { Component, computed, OnDestroy, OnInit, signal } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import {
   DashboardCategory,
@@ -46,6 +46,7 @@ const desktopAccountNameStorageKey = "optipass.desktopAccountName";
 type GroupTraitFilter = "all" | "cross-vault" | "totp" | "passkey" | "attachments";
 type CandidateTab = "similar-login" | "exact" | "delete-suggestion" | "misc";
 type RuleFilter = "all" | DuplicateRule;
+type RoutePage = "launch" | "workspace";
 
 interface CandidateTabView {
   id: CandidateTab;
@@ -138,7 +139,8 @@ const dashboardCategoryIcons: Record<DashboardCategory, string> = {
   imports: [CommonModule, FormsModule],
   templateUrl: "./app.component.html"
 })
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
+  readonly routePage = signal<RoutePage>(routePageFromLocation());
   readonly scanSnapshot = signal<ScanSnapshot | undefined>(undefined);
   readonly scanProgress = signal<ScanProgress | undefined>(undefined);
   readonly scanResult = signal<ScanResult | undefined>(undefined);
@@ -172,8 +174,9 @@ export class AppComponent implements OnInit {
   readonly clientOrigin = typeof window === "undefined" ? "unknown" : window.location.origin;
 
   readonly scanData = computed(() => this.scanResult() ?? this.scanSnapshot());
-  readonly workspaceActive = computed(() => this.loading() || this.analyzing() || Boolean(this.scanData()));
-  readonly scanComplete = computed(() => this.scanProgress()?.phase === "completed" || Boolean(this.scanSnapshot()));
+  readonly workspaceActive = computed(() => this.routePage() === "workspace");
+  readonly scanFailed = computed(() => this.scanProgress()?.phase === "failed");
+  readonly scanComplete = computed(() => this.scanProgress()?.phase === "completed" || (Boolean(this.scanSnapshot()) && !this.scanProgress()));
   readonly analysisReady = computed(() => Boolean(this.scanResult()));
   readonly groups = computed(() => this.filterAndSortGroups(this.scanResult()?.groups ?? []));
   readonly allGroups = computed(() => this.scanResult()?.groups ?? []);
@@ -365,7 +368,16 @@ export class AppComponent implements OnInit {
     };
   });
 
-  constructor(private readonly api: ApiService) {}
+  private readonly onRouteChanged = (): void => {
+    this.routePage.set(routePageFromLocation());
+  };
+
+  constructor(private readonly api: ApiService) {
+    if (typeof window !== "undefined") {
+      this.routePage.set(routePageFromLocation());
+      window.addEventListener?.("popstate", this.onRouteChanged);
+    }
+  }
 
   async ngOnInit(): Promise<void> {
     try {
@@ -373,6 +385,12 @@ export class AppComponent implements OnInit {
       this.accountName.set(this.readStoredAccountName() ?? session.accountName ?? "");
     } catch (error) {
       this.error.set(this.messageFor(error));
+    }
+  }
+
+  ngOnDestroy(): void {
+    if (typeof window !== "undefined") {
+      window.removeEventListener?.("popstate", this.onRouteChanged);
     }
   }
 
@@ -387,6 +405,7 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    this.navigateToWorkspace();
     this.loading.set(true);
     this.error.set(undefined);
     this.status.set(undefined);
@@ -420,6 +439,12 @@ export class AppComponent implements OnInit {
           this.activeVaultId.set(this.activeVaultId() ?? event.scan.vaults[0]?.id);
         }
         if (event.type === "failed") {
+          const partialScan = this.partialScanFromProgress(event.progress);
+          if (partialScan) {
+            completedScan = undefined;
+            this.scanSnapshot.set(partialScan);
+            this.activeVaultId.set(this.activeVaultId() ?? partialScan.vaults[0]?.id);
+          }
           this.error.set(event.error || event.progress.error || "扫描失败，请查看本地 API 日志。");
         }
       });
@@ -431,7 +456,7 @@ export class AppComponent implements OnInit {
       if (completedScan) {
         this.activeVaultId.set(this.activeVaultId() ?? completedScan.vaults[0]?.id);
         this.status.set("扫描完成。分析不会自动开始，请按需运行分析。");
-      } else if (this.scanProgress()?.phase === "failed") {
+      } else if (this.scanFailed()) {
         throw new Error(this.scanProgress()?.error || "扫描失败，请查看本地 API 日志。");
       }
     } catch (error) {
@@ -443,7 +468,7 @@ export class AppComponent implements OnInit {
 
   async analyze(): Promise<void> {
     const scan = this.scanSnapshot() ?? this.scanResult();
-    if (!scan) {
+    if (!scan || !this.scanComplete()) {
       this.error.set("请先完成扫描，再运行分析。");
       return;
     }
@@ -972,6 +997,9 @@ export class AppComponent implements OnInit {
     if (this.analyzing()) {
       return "正在分析";
     }
+    if (this.scanFailed()) {
+      return "扫描中断";
+    }
     if (this.scanComplete() && !this.analysisReady()) {
       return "扫描完成，尚未分析";
     }
@@ -980,10 +1008,13 @@ export class AppComponent implements OnInit {
 
   analysisEmptyMessage(): string {
     if (this.loading()) {
-      return "扫描期间这里保持空态；读取完成后可以手动运行分析。";
+      return this.scanProgress()?.message ?? "扫描期间这里保持空态；读取完成后可以手动运行分析。";
     }
     if (this.analyzing()) {
       return "正在根据重复语义生成候选组。";
+    }
+    if (this.scanFailed()) {
+      return this.scanProgress()?.message ?? "扫描失败，请重新扫描。";
     }
     if (this.scanComplete() && !this.analysisReady()) {
       return "点击左侧重新分析后，候选组会出现在这里。";
@@ -1290,6 +1321,33 @@ export class AppComponent implements OnInit {
       return String(error.message);
     }
     return String(error);
+  }
+
+  private partialScanFromProgress(progress: ScanProgress): ScanSnapshot | undefined {
+    if (progress.vaults.length === 0) {
+      return undefined;
+    }
+    return {
+      scanId: progress.scanId,
+      scannedAt: new Date().toISOString(),
+      vaults: progress.vaults.map((vault) => ({
+        id: vault.id,
+        name: vault.name
+      })),
+      items: []
+    };
+  }
+
+  private navigateToWorkspace(): void {
+    if (typeof window === "undefined") {
+      this.routePage.set("workspace");
+      return;
+    }
+
+    if (routePageFromLocation() !== "workspace") {
+      window.history?.pushState?.({ page: "workspace" }, "", "/workspace");
+    }
+    this.routePage.set("workspace");
   }
 
   private requiresDesktopAccountName(): boolean {
@@ -1599,4 +1657,12 @@ export class AppComponent implements OnInit {
 
 function confidenceRank(confidence: DuplicateGroup["confidence"]): number {
   return confidence === "high" ? 3 : confidence === "medium" ? 2 : 1;
+}
+
+function routePageFromLocation(): RoutePage {
+  if (typeof window === "undefined") {
+    return "launch";
+  }
+  const pathname = window.location.pathname.replace(/\/+$/, "");
+  return pathname === "/workspace" ? "workspace" : "launch";
 }

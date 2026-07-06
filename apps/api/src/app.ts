@@ -466,6 +466,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         serviceAccountToken: config.serviceAccountToken,
         accountName,
         onProgress: (event) => {
+          logScanProgress(server, event);
           emitScanEvent(job, redactScanProgressEvent(event));
         }
       });
@@ -493,6 +494,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       }
     } catch (error) {
       const message = formatOnePasswordError(error);
+      server.log.warn(
+        {
+          scanId: job.scanId,
+          phase: "failed",
+          message
+        },
+        "scan progress"
+      );
       job.progress = {
         ...job.progress,
         phase: "failed",
@@ -597,6 +606,32 @@ function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
   }
   if (event.type === "completed" || event.type === "failed") {
     job.done = true;
+  }
+}
+
+function logScanProgress(server: FastifyInstance, event: ScanProgressEvent): void {
+  const message = event.progress.message ?? event.error;
+  if (!message) {
+    return;
+  }
+
+  const logPayload = {
+    scanId: event.progress.scanId,
+    eventType: event.type,
+    phase: event.progress.phase,
+    totalVaults: event.progress.totalVaults,
+    scannedVaults: event.progress.scannedVaults,
+    totalItems: event.progress.totalItems,
+    scannedItems: event.progress.scannedItems,
+    message,
+    error: event.error ?? event.progress.error
+  };
+  if (event.type === "failed" || event.progress.error || /无法|跳过|超过|失败/.test(message)) {
+    server.log.warn(logPayload, "scan progress");
+    return;
+  }
+  if (/连接|唤起|授权|保险库列表|项目列表|项目详情|已发现|已读取|扫描完成/.test(message)) {
+    server.log.info(logPayload, "scan progress");
   }
 }
 
