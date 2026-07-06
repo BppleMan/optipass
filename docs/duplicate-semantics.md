@@ -72,12 +72,11 @@ login item + same site + same username
 Site may be represented by:
 
 - Same normalized full URL.
-- Same normalized domain.
 
 Confidence distinction:
 
-- Stronger: same full URL + same username.
-- Slightly weaker but still core: same domain + same username.
+- Core grouping anchor: same full URL + same username.
+- Domain is useful for display and filtering, but it does not create a group by itself.
 
 This is the key rule for the main workflow.
 
@@ -144,19 +143,22 @@ Scope:
 Grouping anchor:
 
 ```text
-same item type + same site + same username
+login item + same username set + same normalized full URL set + same credential fingerprint
 ```
+
+Here, "normalized full URL" is a strict duplicate key: it may canonicalize protocol/host casing and an absent protocol, but it preserves path, query string, and hash. It must not collapse `https://example.com/` and `https://example.com/?utm=...` into the same duplicate URL.
 
 Exactness evidence:
 
-- Same or equivalent core credential material.
-- Same or equivalent key fields.
-- Same or highly equivalent website set.
+- Username material is fully equal.
+- Normalized full URL material is fully equal.
+- Credential material is fully equal.
 
 Important:
 
 - Credential equality is only evidence after the identity anchor already matches.
 - Credential equality must not form groups by itself.
+- Sharing only one username or one URL is not enough to classify the whole group as exact if the full username or URL sets differ.
 
 Resolution:
 
@@ -174,13 +176,14 @@ This is the core Optipass workflow.
 Grouping anchor:
 
 ```text
-category/login + same site + same username
+category/login + same normalized full URL + same username
 ```
 
 Site matching:
 
-- Full URL equality is stronger.
-- Domain equality is acceptable and expected.
+- Full URL equality is required.
+- Full URL equality preserves query string and hash; same domain or same path without the same query/hash is not enough.
+- Domain equality is useful context, but it is not a grouping anchor.
 
 Username matching:
 
@@ -193,7 +196,12 @@ Forbidden as standalone anchors:
 - same password/secret hash,
 - same arbitrary field,
 - same username without same site,
-- same domain without same username.
+- same domain, even when username matches, without same normalized full URL.
+
+Classification:
+
+- If every item in the group also has the same credential fingerprint, classify it as an exact duplicate group.
+- If the shared username + URL anchor matches but credential fingerprints or other key login material differ, classify it as a similar login group.
 
 Resolution:
 
@@ -357,8 +365,8 @@ Sources:
 
 Derived forms:
 
-- normalized full URL,
-- normalized domain.
+- normalized full URL for grouping,
+- normalized domain for display and filtering.
 
 ### Credential Material
 

@@ -455,7 +455,31 @@ function createScanFixture(): ScanResult {
       { id: "vault-archive", name: "Archive" }
     ],
     items,
-    groups: findDuplicateGroups(items)
+    groups: [
+      ...findDuplicateGroups(items),
+      {
+        id: "misc-title:vault-personal:aws-1:vault-archive:aws-2",
+        candidateClass: "misc-title",
+        itemIds: ["vault-personal:aws-1", "vault-archive:aws-2"],
+        reasons: [
+          {
+            rule: "title",
+            key: "misc-title:aws-root",
+            label: "标题相同：AWS root",
+            itemIds: ["vault-personal:aws-1", "vault-archive:aws-2"]
+          }
+        ],
+        recommendedKeepIds: ["vault-personal:aws-1"],
+        recommendedKeepReasons: [
+          {
+            itemId: "vault-personal:aws-1",
+            score: 30,
+            labels: ["字段更多", "有一次性密码"]
+          }
+        ],
+        confidence: "medium"
+      }
+    ]
   };
 }
 

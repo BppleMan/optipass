@@ -3,7 +3,7 @@ import { findDuplicateGroups } from "./duplicates.js";
 import { item } from "./test-helpers.js";
 
 describe("findDuplicateGroups", () => {
-  it("groups similar login items by same domain and same account identity", () => {
+  it("does not group similar login items by same domain when normalized URLs differ", () => {
     const groups = findDuplicateGroups([
       item({
         id: "vault-a:1",
@@ -24,15 +24,126 @@ describe("findDuplicateGroups", () => {
       })
     ]);
 
+    expect(groups).toHaveLength(0);
+  });
+
+  it("groups similar login items by same normalized URL and same account identity", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://www.github.com/login/"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "old-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub work",
+        urls: ["github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "new-secret" }]
+      })
+    ]);
+
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({
       candidateClass: "similar-login",
-      confidence: "medium"
+      confidence: "high"
     });
     expect(groups[0].reasons[0]).toMatchObject({
       rule: "username-url",
-      label: "域名 + 用户名相同：alice@example.com@github.com"
+      label: "完整 URL + 用户名相同：alice@example.com@https://github.com/login"
     });
+  });
+
+  it("keeps same domain but different full URLs in separate login buckets", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:login-1",
+        title: "Example login",
+        urls: ["https://example.com/login"],
+        usernames: ["alice"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "login-old" }]
+      }),
+      item({
+        id: "vault-b:login-2",
+        onePasswordItemId: "login-2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "Example login copy",
+        urls: ["https://example.com/login"],
+        usernames: ["alice"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "login-new" }]
+      }),
+      item({
+        id: "vault-a:settings-1",
+        title: "Example settings",
+        urls: ["https://example.com/settings"],
+        usernames: ["alice"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "settings-old" }]
+      }),
+      item({
+        id: "vault-b:settings-2",
+        onePasswordItemId: "settings-2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "Example settings copy",
+        urls: ["https://example.com/settings"],
+        usernames: ["alice"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "settings-new" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.candidateClass === "similar-login")).toBe(true);
+    expect(groups.map((group) => group.itemIds.sort())).toEqual(
+      expect.arrayContaining([
+        ["vault-a:login-1", "vault-b:login-2"],
+        ["vault-a:settings-1", "vault-b:settings-2"]
+      ])
+    );
+  });
+
+  it("does not merge root and querystring URL variants into one exact group", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:leetcode-root",
+        title: "leetcode-cn.com",
+        urls: ["https://leetcode-cn.com/"],
+        usernames: ["18194005505"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:leetcode-query-1",
+        onePasswordItemId: "leetcode-query-1",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "leetcode-cn.com",
+        urls: ["https://leetcode-cn.com/?utm_source=LCUS&utm_medium=banner_redirect&utm_campaign=transfer2china"],
+        usernames: ["18194005505"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-c:leetcode-query-2",
+        onePasswordItemId: "leetcode-query-2",
+        vaultId: "vault-c",
+        vaultName: "Archive",
+        title: "leetcode-cn.com",
+        urls: ["https://leetcode-cn.com/?utm_source=LCUS&utm_medium=banner_redirect&utm_campaign=transfer2china"],
+        usernames: ["18194005505"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "exact-duplicate"
+    });
+    expect(groups[0].itemIds).toEqual(expect.arrayContaining(["vault-b:leetcode-query-1", "vault-c:leetcode-query-2"]));
+    expect(groups[0].itemIds).not.toContain("vault-a:leetcode-root");
   });
 
   it("classifies login copies as exact only after the site and username anchor matches", () => {
@@ -62,6 +173,179 @@ describe("findDuplicateGroups", () => {
       confidence: "high"
     });
     expect(groups[0].reasons.map((reason) => reason.rule)).toEqual(expect.arrayContaining(["username-url", "credential-material"]));
+  });
+
+  it("keeps same username and URL items similar when credential fingerprints differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "old-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub backup",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "new-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
+    expect(groups[0].reasons.map((reason) => reason.rule)).not.toContain("credential-material");
+  });
+
+  it("does not classify a shared username and URL bucket as exact when full username sets differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub copy",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com", "alice"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
+  });
+
+  it("does not classify a shared username and URL bucket as exact when full URL sets differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub copy",
+        urls: ["https://github.com/login", "https://github.com/settings"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
+  });
+
+  it("does not classify matching password hashes as exact when credential kinds differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub copy",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        hasTotp: true,
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
+  });
+
+  it("does not classify matching secret values as exact when password material types differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        hasPassword: true,
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub copy",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        comparableFields: [{ label: "api secret", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
+  });
+
+  it("does not classify matching secret hashes as exact when secret labels differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        hasPassword: true,
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub copy",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        hasPassword: true,
+        comparableFields: [{ label: "recovery code", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
   });
 
   it("does not create groups from password reuse or secret hashes alone", () => {
@@ -122,7 +406,7 @@ describe("findDuplicateGroups", () => {
     expect(groups).toHaveLength(0);
   });
 
-  it("groups only non-login items with the same title as miscellaneous candidates", () => {
+  it("does not create miscellaneous candidate groups for non-login items", () => {
     const groups = findDuplicateGroups([
       item({
         id: "vault-a:note-1",
@@ -138,6 +422,24 @@ describe("findDuplicateGroups", () => {
         category: "document"
       }),
       item({
+        id: "vault-a:card-1",
+        title: "Visa",
+        category: "credit-card"
+      }),
+      item({
+        id: "vault-a:ssh-1",
+        title: "One-off SSH key",
+        category: "ssh-key"
+      }),
+      item({
+        id: "vault-b:card-2",
+        onePasswordItemId: "card-2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "Visa",
+        category: "credit-card"
+      }),
+      item({
         id: "vault-c:login-1",
         onePasswordItemId: "login-1",
         vaultId: "vault-c",
@@ -150,12 +452,7 @@ describe("findDuplicateGroups", () => {
       })
     ]);
 
-    expect(groups).toHaveLength(1);
-    expect(groups[0]).toMatchObject({
-      candidateClass: "misc-title",
-      confidence: "low"
-    });
-    expect(groups[0].itemIds.sort()).toEqual(["vault-a:note-1", "vault-b:note-2"]);
+    expect(groups).toHaveLength(0);
   });
 
   it("emits delete suggestions as advisory single-item candidates", () => {

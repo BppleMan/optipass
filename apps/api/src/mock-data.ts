@@ -101,6 +101,52 @@ const items: ItemSummary[] = [
     ]
   },
   {
+    id: "vault-personal:linear-1",
+    onePasswordItemId: "linear-1",
+    vaultId: "vault-personal",
+    vaultName: "Personal",
+    title: "Linear",
+    category: "login",
+    createdAt: "2025-03-01T12:00:00.000Z",
+    updatedAt: "2026-02-12T12:00:00.000Z",
+    urls: ["https://linear.app/login"],
+    usernames: ["alice@example.com"],
+    tags: ["product"],
+    fieldCount: 4,
+    hasPassword: true,
+    hasTotp: false,
+    hasPasskey: false,
+    hasAttachments: false,
+    hasNotes: false,
+    comparableFields: [
+      { label: "username", kind: "username", normalizedValue: "alice@example.com" },
+      { label: "password", kind: "secret", normalizedValueHash: "mock-linear-secret-new" }
+    ]
+  },
+  {
+    id: "vault-work:linear-2",
+    onePasswordItemId: "linear-2",
+    vaultId: "vault-work",
+    vaultName: "Work",
+    title: "Linear copy",
+    category: "login",
+    createdAt: "2024-03-01T12:00:00.000Z",
+    updatedAt: "2025-10-12T12:00:00.000Z",
+    urls: ["linear.app/login"],
+    usernames: ["alice@example.com"],
+    tags: ["imported"],
+    fieldCount: 3,
+    hasPassword: true,
+    hasTotp: false,
+    hasPasskey: false,
+    hasAttachments: false,
+    hasNotes: false,
+    comparableFields: [
+      { label: "username", kind: "username", normalizedValue: "alice@example.com" },
+      { label: "password", kind: "secret", normalizedValueHash: "mock-linear-secret-old" }
+    ]
+  },
+  {
     id: "vault-work:note-1",
     onePasswordItemId: "note-1",
     vaultId: "vault-work",

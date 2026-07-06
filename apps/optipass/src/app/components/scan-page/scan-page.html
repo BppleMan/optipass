@@ -1,7 +1,7 @@
 <section data-screen-label="page1-连接与扫描" class="scan-page">
   <div class="connect-card">
     <h1>连接 1Password</h1>
-    <p>Optipass 通过 1Password SDK 读取本机数据。填写账户名并点击「扫描」，在 1Password 桌面端确认授权后自动开始扫描。</p>
+    <p>输入 1Password 账户名并点击「扫描」，在桌面端确认授权后，Optipass 会通过 1Password SDK 读取本机数据；整个过程仅在本机运行，凭据数据不会离开你的设备。</p>
     <form class="connect-form" (ngSubmit)="wf.startScan()">
       <input
         type="text"
@@ -14,16 +14,12 @@
       >
       <op-button type="submit" size="sm" [label]="scanButtonLabel()" [disabled]="scanControlsDisabled()"></op-button>
     </form>
-    <div class="auth-hint" [class]="wf.authHintClass()">{{ wf.authHint() }}</div>
+    @if (wf.authHint()) {
+      <div class="auth-hint" [class]="wf.authHintClass()">{{ wf.authHint() }}</div>
+    }
   </div>
 
-  <div class="scan-results">
-    <div class="section-row">
-      <h2>扫描结果</h2>
-      <span>{{ wf.scannedTotal() }} / {{ wf.totalItems() || '—' }}</span>
-    </div>
-    <op-progress [value]="wf.overallPct()" color="#f07178"></op-progress>
-
+  <div class="scan-list-panel">
     @if (wf.scanRows().length === 0) {
       <div class="empty-box">尚未连接 · 连接后将在此列出各 vault 及其 item 类型统计</div>
     }
@@ -53,17 +49,35 @@
         </div>
       }
     </div>
-
-    @if (wf.scanDone()) {
-      <div class="done-banner">
-        <div><span>扫描完成</span><em> · 已将 {{ wf.totalItems() }} 个 item 读入本地内存</em></div>
-        <op-button size="sm" label="开始分析 →" (pressed)="wf.startAnalysis()"></op-button>
-      </div>
-    }
   </div>
 
-  @if (wf.error() && wf.authState() !== 'failed') {
-    <div class="page-notice danger-text">{{ wf.error() }}</div>
+  <div
+    class="scan-progress-card"
+    [class.waiting]="scanStatusTone() === 'waiting'"
+    [class.scanning]="scanStatusTone() === 'scanning'"
+    [class.done]="scanStatusTone() === 'done'"
+    [class.failed]="scanStatusTone() === 'failed'"
+  >
+    <span class="scan-state">{{ scanStatusLabel() }}</span>
+    @if (wf.scanFailed() && wf.error()) {
+      <button type="button" class="scan-error-summary" (click)="openErrorDialog()">{{ wf.error() }}</button>
+    } @else {
+      <op-progress [value]="wf.overallPct()" [color]="scanProgressColor()"></op-progress>
+      <span class="scan-count">{{ wf.scannedTotal() }} / {{ wf.totalItems() || '—' }}</span>
+    }
+    <op-button size="sm" variant="ghost" label="重新扫描" [disabled]="rescanDisabled()" (pressed)="wf.rescan()"></op-button>
+    <op-button size="sm" label="开始分析 →" [disabled]="!wf.scanDone()" (pressed)="wf.startAnalysis()"></op-button>
+  </div>
+
+  @if (errorDialogOpen && wf.error()) {
+    <div class="op-modal-backdrop" (click)="closeErrorDialog()">
+      <div class="op-modal" role="dialog" aria-modal="true" aria-labelledby="scan-error-title" (click)="$event.stopPropagation()">
+        <div class="op-modal-head">
+          <h2 id="scan-error-title">扫描失败</h2>
+          <button type="button" class="modal-close" aria-label="关闭" (click)="closeErrorDialog()">X</button>
+        </div>
+        <p>{{ wf.error() }}</p>
+      </div>
+    </div>
   }
-  <p class="local-note">Optipass 仅在本机运行，凭据数据不会离开你的设备</p>
 </section>

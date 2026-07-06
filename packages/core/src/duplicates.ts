@@ -2,13 +2,12 @@ import {
   DuplicateCandidateClass,
   DuplicateGroup,
   DuplicateReason,
-  DuplicateRule,
   ItemSummary,
   RecommendedKeepReason
 } from "./model.js";
 import {
-  normalizeComparableUrl,
-  normalizeUrlHost,
+  normalizeLooseText,
+  normalizeDuplicateFullUrl,
   stableGroupId
 } from "./normalize.js";
 
@@ -20,25 +19,21 @@ interface DuplicateDraft {
 }
 
 interface LoginAnchorBucket {
-  kind: "full-url" | "domain";
   key: string;
   label: string;
   itemIds: string[];
 }
 
-export interface DuplicateOptions {
-  minTitleLength?: number;
-}
+export interface DuplicateOptions {}
 
 export function findDuplicateGroups(items: ItemSummary[], options: DuplicateOptions = {}): DuplicateGroup[] {
-  const minTitleLength = options.minTitleLength ?? 1;
+  void options;
   const deleteSuggestionItemIds = new Set(
     items.filter((item) => isDeleteSuggestionItem(item)).map((item) => item.id)
   );
 
   const drafts = [
     ...buildLoginIdentityGroups(items.filter((item) => item.category === "login" && !deleteSuggestionItemIds.has(item.id))),
-    ...buildMiscTitleGroups(items.filter((item) => item.category !== "login"), minTitleLength),
     ...buildDeleteSuggestionGroups(items.filter((item) => deleteSuggestionItemIds.has(item.id)))
   ];
 
@@ -80,22 +75,13 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
 
   for (const item of items) {
     const identities = accountIdentities(item);
-    const urls = normalizedUrls(item);
-    const domains = normalizedDomains(item);
+    const urls = duplicateFullUrls(item);
 
     for (const identity of identities) {
       for (const url of urls) {
         addToBucket({
-          kind: "full-url",
           key: `login-full-url:${url}\u0000${identity}`,
           label: `完整 URL + 用户名相同：${identity}@${url}`
-        }, item.id);
-      }
-      for (const domain of domains) {
-        addToBucket({
-          kind: "domain",
-          key: `login-domain:${domain}\u0000${identity}`,
-          label: `域名 + 用户名相同：${identity}@${domain}`
         }, item.id);
       }
     }
@@ -122,9 +108,6 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
 
     if (existing) {
       existing.reasons.push(reason);
-      if (bucket.kind === "full-url") {
-        existing.confidence = "high";
-      }
       if (existing.candidateClass !== "exact-duplicate" && isExactLoginDuplicateGroup(groupItems)) {
         existing.candidateClass = "exact-duplicate";
         existing.confidence = "high";
@@ -138,43 +121,11 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
       candidateClass: exact ? "exact-duplicate" : "similar-login",
       itemIds,
       reasons: exact ? [reason, exactCredentialReason(itemIds)] : [reason],
-      confidence: exact ? "high" : bucket.kind === "full-url" ? "high" : "medium"
+      confidence: "high"
     });
   }
 
   return removeStrictSubsetGroups(Array.from(byItemSet.values()));
-}
-
-function buildMiscTitleGroups(items: ItemSummary[], minTitleLength: number): DuplicateDraft[] {
-  const buckets = new Map<string, ItemSummary[]>();
-
-  for (const item of items) {
-    const title = item.title.trim();
-    if (title.length < minTitleLength) {
-      continue;
-    }
-    const bucket = buckets.get(title) ?? [];
-    bucket.push(item);
-    buckets.set(title, bucket);
-  }
-
-  return Array.from(buckets.entries()).flatMap(([title, bucket]) => {
-    if (bucket.length < 2) {
-      return [];
-    }
-    const itemIds = uniqueSorted(bucket.map((item) => item.id));
-    return [{
-      candidateClass: "misc-title" as const,
-      itemIds,
-      reasons: [{
-        rule: "title" as const,
-        key: `misc-title:${title}`,
-        label: `非登录标题相同：${title}`,
-        itemIds
-      }],
-      confidence: "low" as const
-    }];
-  });
 }
 
 function buildDeleteSuggestionGroups(items: ItemSummary[]): DuplicateDraft[] {
@@ -245,12 +196,8 @@ function accountIdentities(item: ItemSummary): string[] {
   ].map((value) => value.trim()).filter(Boolean));
 }
 
-function normalizedUrls(item: ItemSummary): string[] {
-  return uniqueSorted(item.urls.map((url) => normalizeComparableUrl(url)).filter((url): url is string => Boolean(url)));
-}
-
-function normalizedDomains(item: ItemSummary): string[] {
-  return uniqueSorted(item.urls.map((url) => normalizeUrlHost(url)).filter((host): host is string => Boolean(host)));
+function duplicateFullUrls(item: ItemSummary): string[] {
+  return uniqueSorted(item.urls.map((url) => normalizeDuplicateFullUrl(url)).filter((url): url is string => Boolean(url)));
 }
 
 function isExactLoginDuplicateGroup(items: ItemSummary[]): boolean {
@@ -258,15 +205,17 @@ function isExactLoginDuplicateGroup(items: ItemSummary[]): boolean {
     return false;
   }
 
-  const firstUrlSet = normalizedUrls(items[0]).join("\u0000");
-  const firstCredentialSet = credentialHashes(items[0]).join("\u0000");
-  if (!firstUrlSet || !firstCredentialSet) {
+  const firstIdentitySet = accountIdentities(items[0]).join("\u0000");
+  const firstUrlSet = duplicateFullUrls(items[0]).join("\u0000");
+  const firstCredentialSet = credentialFingerprint(items[0]);
+  if (!firstIdentitySet || !firstUrlSet || !firstCredentialSet) {
     return false;
   }
 
   return items.every((item) =>
-    normalizedUrls(item).join("\u0000") === firstUrlSet &&
-    credentialHashes(item).join("\u0000") === firstCredentialSet
+    accountIdentities(item).join("\u0000") === firstIdentitySet &&
+    duplicateFullUrls(item).join("\u0000") === firstUrlSet &&
+    credentialFingerprint(item) === firstCredentialSet
   );
 }
 
@@ -276,11 +225,31 @@ function credentialHashes(item: ItemSummary): string[] {
     .map((field) => field.normalizedValueHash!));
 }
 
+function credentialFingerprint(item: ItemSummary): string | undefined {
+  const secrets = item.comparableFields
+    .filter((field) => field.kind === "secret" && field.normalizedValueHash)
+    .map((field) => `${normalizeLooseText(field.label)}:${field.normalizedValueHash!}`)
+    .sort();
+  if (secrets.length === 0 && item.hasPassword) {
+    return undefined;
+  }
+  if (secrets.length === 0 && !item.hasTotp && !item.hasPasskey) {
+    return undefined;
+  }
+
+  return [
+    `secret:${secrets.join("\u0001")}`,
+    `password:${item.hasPassword ? "1" : "0"}`,
+    `totp:${item.hasTotp ? "1" : "0"}`,
+    `passkey:${item.hasPasskey ? "1" : "0"}`
+  ].join("\u0000");
+}
+
 function exactCredentialReason(itemIds: string[]): DuplicateReason {
   return {
     rule: "credential-material",
     key: `credential-material:${itemIds.join("\u0000")}`,
-    label: "同一登录身份下凭据材料相同",
+    label: "用户名、完整 URL 与凭据材料均相同",
     itemIds
   };
 }

@@ -2,7 +2,10 @@ import type { DuplicateCandidateClass, ExecutionPlan, ItemDecision, ItemSummary 
 
 export type AppStep = 'scan' | 'analysis' | 'preview' | 'applying' | 'summary';
 export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
-export type DuplicateKind = 'similar' | 'identical' | 'incomplete' | 'misc';
+export type DuplicateKind = 'similar' | 'identical' | 'incomplete';
+export type AnalysisFilterSectionId = 'years' | 'vaults' | 'domains' | 'credentials';
+export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential';
+export type FilterCredentialKind = 'password' | 'totp' | 'passkey';
 export type RemoveAction = 'archive' | 'delete';
 export type ApplyStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
@@ -37,6 +40,7 @@ export interface KindTabView {
 }
 
 export interface CredentialChipView {
+  kind: 'password' | 'totp' | 'passkey' | 'missing';
   label: string;
   bg: string;
   color: string;
@@ -49,16 +53,57 @@ export interface VaultOptionView {
   label: string;
 }
 
+export type ItemDetailFieldKey = 'username' | 'title' | 'url' | 'credentials' | 'strength' | 'vault' | 'category' | 'updated' | 'created' | 'tags';
+
+export interface ItemDetailRowView {
+  key: ItemDetailFieldKey;
+  label: string;
+  value: string;
+}
+
+export interface AnalysisFilterOptionView {
+  id: string;
+  label: string;
+  count: number;
+  selected: boolean;
+}
+
+export interface AnalysisFilterSectionView {
+  id: AnalysisFilterSectionId;
+  label: string;
+  countLabel: string;
+  expanded: boolean;
+  searchable: boolean;
+  query: string;
+  emptyText: string;
+  options: AnalysisFilterOptionView[];
+}
+
+export interface AnalysisFilterChipView {
+  key: AnalysisFilterKey;
+  id: string;
+  label: string;
+}
+
+export interface AnalysisFilterSummaryView {
+  total: number;
+  visible: number;
+  activeCount: number;
+  chips: AnalysisFilterChipView[];
+}
+
 export interface DuplicateItemView {
   id: string;
   title: string;
+  username: string;
   url: string;
+  categoryLabel: string;
   updated: string;
   strength: string;
+  vaultId: string;
   vaultName: string;
   keep: boolean;
   notKeep: boolean;
-  recommended: boolean;
   targetVault: string;
   removeAction: RemoveAction;
   removeBorder: string;
@@ -66,8 +111,30 @@ export interface DuplicateItemView {
   rowBg: string;
   strengthBg: string;
   strengthColor: string;
+  secretVisible: boolean;
+  secretLoading: boolean;
+  credentialSignature: string;
   credChips: CredentialChipView[];
+  detailRows: ItemDetailRowView[];
   vaultOptions: VaultOptionView[];
+}
+
+export type DetailCompareFieldKey =
+  | 'title'
+  | 'username'
+  | 'url'
+  | 'credentials'
+  | 'vault'
+  | 'category'
+  | 'time'
+  | 'tags';
+
+export interface DetailCompareFieldView {
+  key: DetailCompareFieldKey;
+  label: string;
+  value: string;
+  tone: 'default' | 'url' | 'credential' | 'warning';
+  different: boolean;
 }
 
 export interface DuplicateGroupView {
@@ -84,6 +151,10 @@ export interface DuplicateGroupView {
   cardBorder: string;
   skipLabel: string;
   skipColor: string;
+  filterYears: string[];
+  filterVaultIds: string[];
+  filterDomains: string[];
+  filterCredentialKinds: FilterCredentialKind[];
   items: DuplicateItemView[];
 }
 
@@ -152,7 +223,7 @@ export function kindFromCandidateClass(candidateClass: DuplicateCandidateClass):
     case 'delete-suggestion':
       return 'incomplete';
     case 'misc-title':
-      return 'misc';
+      return 'incomplete';
     case 'similar-login':
       return 'similar';
   }
