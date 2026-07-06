@@ -98,14 +98,12 @@ export interface DuplicateItemView {
   username: string;
   url: string;
   categoryLabel: string;
-  recommendationLabel: string;
   updated: string;
   strength: string;
   vaultId: string;
   vaultName: string;
   keep: boolean;
   notKeep: boolean;
-  recommended: boolean;
   targetVault: string;
   removeAction: RemoveAction;
   removeBorder: string;
@@ -115,9 +113,28 @@ export interface DuplicateItemView {
   strengthColor: string;
   secretVisible: boolean;
   secretLoading: boolean;
+  credentialSignature: string;
   credChips: CredentialChipView[];
   detailRows: ItemDetailRowView[];
   vaultOptions: VaultOptionView[];
+}
+
+export type DetailCompareFieldKey =
+  | 'title'
+  | 'username'
+  | 'url'
+  | 'credentials'
+  | 'vault'
+  | 'category'
+  | 'time'
+  | 'tags';
+
+export interface DetailCompareFieldView {
+  key: DetailCompareFieldKey;
+  label: string;
+  value: string;
+  tone: 'default' | 'url' | 'credential' | 'warning';
+  different: boolean;
 }
 
 export interface DuplicateGroupView {

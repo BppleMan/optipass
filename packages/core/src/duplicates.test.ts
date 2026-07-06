@@ -318,6 +318,36 @@ describe("findDuplicateGroups", () => {
     });
   });
 
+  it("does not classify matching secret hashes as exact when secret labels differ", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:1",
+        title: "GitHub",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        hasPassword: true,
+        comparableFields: [{ label: "password", kind: "secret", normalizedValueHash: "same-secret" }]
+      }),
+      item({
+        id: "vault-b:2",
+        onePasswordItemId: "2",
+        vaultId: "vault-b",
+        vaultName: "Work",
+        title: "GitHub copy",
+        urls: ["https://github.com/login"],
+        usernames: ["alice@example.com"],
+        hasPassword: true,
+        comparableFields: [{ label: "recovery code", kind: "secret", normalizedValueHash: "same-secret" }]
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "high"
+    });
+  });
+
   it("does not create groups from password reuse or secret hashes alone", () => {
     const groups = findDuplicateGroups([
       item({

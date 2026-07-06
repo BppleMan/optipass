@@ -6,6 +6,7 @@ import {
   RecommendedKeepReason
 } from "./model.js";
 import {
+  normalizeLooseText,
   normalizeDuplicateFullUrl,
   stableGroupId
 } from "./normalize.js";
@@ -225,13 +226,19 @@ function credentialHashes(item: ItemSummary): string[] {
 }
 
 function credentialFingerprint(item: ItemSummary): string | undefined {
-  const hashes = credentialHashes(item);
-  if (hashes.length === 0) {
+  const secrets = item.comparableFields
+    .filter((field) => field.kind === "secret" && field.normalizedValueHash)
+    .map((field) => `${normalizeLooseText(field.label)}:${field.normalizedValueHash!}`)
+    .sort();
+  if (secrets.length === 0 && item.hasPassword) {
+    return undefined;
+  }
+  if (secrets.length === 0 && !item.hasTotp && !item.hasPasskey) {
     return undefined;
   }
 
   return [
-    `secret:${hashes.join("\u0001")}`,
+    `secret:${secrets.join("\u0001")}`,
     `password:${item.hasPassword ? "1" : "0"}`,
     `totp:${item.hasTotp ? "1" : "0"}`,
     `passkey:${item.hasPasskey ? "1" : "0"}`

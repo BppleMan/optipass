@@ -1,10 +1,10 @@
-import { Component, HostListener, OnDestroy } from '@angular/core';
+import { Component } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
 import { OpTabsComponent } from '../op-tabs/op-tabs';
 import { WorkflowService } from '../../workflow.service';
-import type { DuplicateKind, ItemDetailFieldKey } from '../../models';
+import type { DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey } from '../../models';
 
 @Component({
   selector: 'op-analysis-page',
@@ -12,113 +12,108 @@ import type { DuplicateKind, ItemDetailFieldKey } from '../../models';
   imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent],
   templateUrl: './analysis-page.html'
 })
-export class AnalysisPageComponent implements OnDestroy {
-  activeDetailField: ItemDetailFieldKey | undefined;
+export class AnalysisPageComponent {
   activeDetailGroupId: string | undefined;
-  private detailCloseTimer: number | undefined;
 
   constructor(readonly wf: WorkflowService) {}
-
-  ngOnDestroy(): void {
-    this.clearDetailCloseTimer();
-  }
 
   setKind(kind: DuplicateKind): void {
     this.closeGroupDetail();
     this.wf.setActiveKind(kind);
   }
 
-  openGroupDetail(groupId: string): void {
-    this.clearDetailCloseTimer();
-    this.activeDetailGroupId = groupId;
-  }
-
-  scheduleGroupDetailClose(groupId: string, delayMs = 120): void {
-    this.clearDetailCloseTimer();
-    this.detailCloseTimer = window.setTimeout(() => {
-      if (this.activeDetailGroupId === groupId) {
-        this.closeGroupDetail();
-      }
-    }, delayMs);
-  }
-
-  setDetailField(field: ItemDetailFieldKey): void {
-    this.activeDetailField = field;
-  }
-
-  clearDetailField(field: ItemDetailFieldKey): void {
-    if (this.activeDetailField === field) {
-      this.activeDetailField = undefined;
-    }
-  }
-
-  @HostListener('document:pointermove', ['$event'])
-  onDocumentPointerMove(event: PointerEvent): void {
+  detailGroup(): DuplicateGroupView | undefined {
     const activeGroupId = this.activeDetailGroupId;
     if (!activeGroupId) {
-      return;
+      return undefined;
     }
-
-    const targetZone = this.detailTargetZone(event.target, activeGroupId);
-    if (targetZone === 'detail') {
-      this.clearDetailCloseTimer();
-      return;
-    }
-
-    if (targetZone === 'same-card') {
-      this.scheduleGroupDetailClose(activeGroupId, 80);
-      return;
-    }
-
-    this.closeGroupDetail();
+    return this.wf.visibleGroups().find((group) => group.id === activeGroupId)
+      ?? this.wf.activeKindGroups().find((group) => group.id === activeGroupId);
   }
 
-  @HostListener('document:mouseleave')
-  @HostListener('window:blur')
-  closeGroupDetailFromBoundary(): void {
-    this.closeGroupDetail();
+  toggleGroupDetail(groupId: string): void {
+    this.activeDetailGroupId = this.activeDetailGroupId === groupId ? undefined : groupId;
   }
 
-  @HostListener('document:mouseout', ['$event'])
-  onDocumentMouseOut(event: MouseEvent): void {
-    if (!event.relatedTarget) {
-      this.closeGroupDetail();
-    }
-  }
-
-  @HostListener('document:wheel', ['$event'])
-  onDocumentWheel(event: WheelEvent): void {
-    const activeGroupId = this.activeDetailGroupId;
-    if (!activeGroupId || this.detailTargetZone(event.target, activeGroupId) === 'detail') {
-      return;
-    }
-
-    this.closeGroupDetail();
-  }
-
-  private closeGroupDetail(): void {
+  closeGroupDetail(): void {
     this.activeDetailGroupId = undefined;
-    this.activeDetailField = undefined;
-    this.clearDetailCloseTimer();
   }
 
-  private clearDetailCloseTimer(): void {
-    if (this.detailCloseTimer !== undefined) {
-      window.clearTimeout(this.detailCloseTimer);
-      this.detailCloseTimer = undefined;
-    }
+  hasPasswordItems(group: DuplicateGroupView): boolean {
+    return group.items.some((item) => item.credChips.some((chip) => chip.kind === 'password'));
   }
 
-  private detailTargetZone(target: EventTarget | null, groupId: string): 'detail' | 'same-card' | 'outside' {
-    if (!(target instanceof Element)) {
-      return 'outside';
-    }
-
-    const groupCard = target.closest<HTMLElement>('[data-detail-group-id]');
-    if (!groupCard || groupCard.dataset['detailGroupId'] !== groupId) {
-      return 'outside';
-    }
-
-    return target.closest('.identity-cell, .group-detail-popover') ? 'detail' : 'same-card';
+  groupSecretsVisible(group: DuplicateGroupView): boolean {
+    const passwordItems = group.items.filter((item) => item.credChips.some((chip) => chip.kind === 'password'));
+    return passwordItems.length > 0 && passwordItems.every((item) => item.secretVisible);
   }
+
+  fieldDifferent(group: DuplicateGroupView, key: DetailCompareFieldKey): boolean {
+    return fieldIsDifferent(group, key);
+  }
+
+  detailTimeParts(item: DuplicateItemView): string[] {
+    return [detailRowValue(item, 'created'), detailRowValue(item, 'updated')];
+  }
+
+  detailFields(group: DuplicateGroupView, item: DuplicateItemView): DetailCompareFieldView[] {
+    const rows: Array<Omit<DetailCompareFieldView, 'different'>> = [
+      { key: 'url', label: 'URL', value: item.url, tone: 'url' },
+      { key: 'credentials', label: '凭据', value: credentialSummary(item), tone: 'credential' },
+      { key: 'vault', label: '保险库', value: item.vaultName, tone: 'default' },
+      { key: 'time', label: '时间', value: detailTimeValue(item), tone: 'default' },
+      { key: 'category', label: '类型', value: item.categoryLabel, tone: 'default' },
+      { key: 'tags', label: '标签', value: detailRowValue(item, 'tags'), tone: 'default' }
+    ];
+
+    return rows.map((row) => ({
+      ...row,
+      different: fieldIsDifferent(group, row.key)
+    }));
+  }
+}
+
+function fieldIsDifferent(group: DuplicateGroupView, key: DetailCompareFieldKey): boolean {
+  if (group.items.length < 2) {
+    return false;
+  }
+  const values = new Set(group.items.map((item) => normalizeDetailValue(detailValue(item, key))));
+  return values.size > 1;
+}
+
+function detailValue(item: DuplicateItemView, key: DetailCompareFieldKey): string {
+  switch (key) {
+    case 'username':
+      return item.username;
+    case 'title':
+      return item.title;
+    case 'url':
+      return item.url;
+    case 'credentials':
+      return item.credentialSignature;
+    case 'vault':
+      return item.vaultName;
+    case 'category':
+      return item.categoryLabel;
+    case 'time':
+      return detailTimeValue(item);
+    case 'tags':
+      return detailRowValue(item, key);
+  }
+}
+
+function detailRowValue(item: DuplicateItemView, key: ItemDetailFieldKey): string {
+  return item.detailRows.find((row) => row.key === key)?.value || '—';
+}
+
+function detailTimeValue(item: DuplicateItemView): string {
+  return `${detailRowValue(item, 'created')} ${detailRowValue(item, 'updated')}`;
+}
+
+function credentialSummary(item: DuplicateItemView): string {
+  return item.credChips.map((chip) => `${chip.label}: ${chip.text}`).join(' / ');
+}
+
+function normalizeDetailValue(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
 }

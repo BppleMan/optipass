@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import {
   createExecutionPlan,
   dashboardCategoryDefinitions,
+  normalizeLooseText,
   normalizeUrlHost,
   type DashboardCategory,
   type DuplicateGroup,
@@ -509,6 +510,55 @@ export class WorkflowService {
     }
   }
 
+  async toggleGroupReveal(groupId: string): Promise<void> {
+    const group = this.visibleGroups().find((candidate) => candidate.id === groupId)
+      ?? this.activeKindGroups().find((candidate) => candidate.id === groupId);
+    if (!group) {
+      return;
+    }
+
+    const itemIds = group.items
+      .filter((item) => item.credChips.some((chip) => chip.kind === 'password'))
+      .map((item) => item.id);
+    if (itemIds.length === 0) {
+      return;
+    }
+
+    const visible = { ...this.visibleSecretItems() };
+    const allVisible = itemIds.every((itemId) => visible[itemId]);
+    for (const itemId of itemIds) {
+      visible[itemId] = !allVisible;
+    }
+    this.visibleSecretItems.set(visible);
+    if (allVisible) {
+      return;
+    }
+
+    const result = this.scanResult();
+    if (!result) {
+      return;
+    }
+
+    for (const itemId of itemIds) {
+      if (this.revealedSecrets()[itemId] || this.revealingItems()[itemId]) {
+        continue;
+      }
+      this.revealingItems.set({ ...this.revealingItems(), [itemId]: true });
+      try {
+        const response = await this.api.revealCredentials(result.scanId, itemId);
+        const field = response.fields.find((candidate) => candidate.value.trim()) ?? response.fields[0];
+        this.revealedSecrets.set({
+          ...this.revealedSecrets(),
+          [itemId]: field?.value || '无可显示密码'
+        });
+      } catch {
+        this.revealedSecrets.set({ ...this.revealedSecrets(), [itemId]: '显示失败' });
+      } finally {
+        this.revealingItems.set({ ...this.revealingItems(), [itemId]: false });
+      }
+    }
+  }
+
   async goPreview(): Promise<void> {
     this.phase.set('preview');
     this.previewKind.set(this.activeKind());
@@ -821,14 +871,12 @@ export class WorkflowService {
       username,
       url,
       categoryLabel: categoryDisplay[item.category]?.label ?? item.category,
-      recommendationLabel: recommendationLabel(group, item.id),
       updated: itemUpdatedDate(item),
       strength,
       vaultId: item.vaultId,
       vaultName: item.vaultName,
       keep: decision.keep,
       notKeep: !decision.keep,
-      recommended: decision.keep && group.recommendedKeepIds.includes(item.id),
       targetVault: decision.targetVaultId || item.vaultId,
       removeAction,
       removeBorder: removeAction === 'delete' ? 'rgba(255,83,112,0.5)' : '#3F3F3F',
@@ -838,6 +886,7 @@ export class WorkflowService {
       strengthColor: strengthColor(strength),
       secretVisible: Boolean(this.visibleSecretItems()[item.id]),
       secretLoading: Boolean(this.revealingItems()[item.id]),
+      credentialSignature: credentialCompareValue(item),
       credChips,
       detailRows: itemDetailRows(item),
       vaultOptions: vaults.map((vault) => ({
@@ -1272,15 +1321,6 @@ function groupSite(group: DuplicateGroup, items: ItemSummary[]): string {
   }
 }
 
-function recommendationLabel(group: DuplicateGroup, itemId: string): string {
-  const reason = group.recommendedKeepReasons.find((candidate) => candidate.itemId === itemId);
-  if (!reason) {
-    return '';
-  }
-  const label = reason.labels.includes('最近更新') ? '最新' : reason.labels[0];
-  return label ? `推荐保留 · ${label}` : '推荐保留';
-}
-
 function credentialChips(item: ItemSummary, reveal: boolean, revealedValue: string | undefined): CredentialChipView[] {
   const chips: CredentialChipView[] = [];
   if (item.hasPasskey) {
@@ -1303,6 +1343,19 @@ function credentialChips(item: ItemSummary, reveal: boolean, revealedValue: stri
     chips.push({ kind: 'missing', label: '缺失', bg: 'rgba(255,83,112,0.14)', color: '#ff5370', text: '（无 password）', textColor: '#ff5370' });
   }
   return chips;
+}
+
+function credentialCompareValue(item: ItemSummary): string {
+  const secretHashes = item.comparableFields
+    .filter((field) => field.kind === 'secret' && field.normalizedValueHash)
+    .map((field) => `${normalizeLooseText(field.label)}:${field.normalizedValueHash}`)
+    .sort();
+  return [
+    `password:${item.hasPassword ? '1' : '0'}`,
+    `totp:${item.hasTotp ? '1' : '0'}`,
+    `passkey:${item.hasPasskey ? '1' : '0'}`,
+    ...secretHashes
+  ].join('\u0000');
 }
 
 function strengthLabel(item: ItemSummary, group: DuplicateGroup): string {
