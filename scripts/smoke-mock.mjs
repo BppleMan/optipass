@@ -4,8 +4,8 @@ const port = Number(process.env.SMOKE_PORT || "3423");
 const token = "mock-smoke-token";
 const baseUrl = `http://127.0.0.1:${port}`;
 
-const server = spawn("pnpm", ["--filter", "@optimize-password/api", "start"], {
-  cwd: new URL("..", import.meta.url),
+const server = spawn("pnpm", ["start"], {
+  cwd: new URL("../apps/api", import.meta.url),
   env: {
     ...process.env,
     APP_SESSION_TOKEN: token,
@@ -58,7 +58,7 @@ async function waitForHealth() {
 
 async function runChecks() {
   const index = await get("/");
-  assert(index.status === 200 && String(index.body).includes("<op-root>"), `index failed: ${index.status}`);
+  assert(index.status === 200 && String(index.body).includes("<app-root>"), `index failed: ${index.status}`);
   const csp = index.headers.get("content-security-policy") || "";
   assert(
     csp.includes("default-src") && csp.includes("script-src") && csp.includes("object-src"),
@@ -78,17 +78,21 @@ async function runChecks() {
   });
   assert(unauthorized.status === 401, `unauthorized scan expected 401, got ${unauthorized.status}`);
 
-  const mockScan = await post("/api/scan", { mode: "mock" });
-  assert(mockScan.status === 200, `mock scan failed: ${mockScan.status}`);
-  assert(mockScan.body.groups.length > 0, "mock scan returned no duplicate groups");
-  const mockScanJson = JSON.stringify(mockScan.body);
-  assert(!mockScanJson.includes("AKIA-MOCK-KEY"), "mock scan leaked a comparable field value");
-  assert(!mockScanJson.includes("mock-aws-secret"), "mock scan leaked a secret hash");
+  const mockScanStart = await post("/api/scan", { mode: "mock" });
+  assert(mockScanStart.status === 200, `mock scan failed: ${mockScanStart.status}`);
+  const mockScan = await getWithToken("/api/scan");
+  assert(mockScan.status === 200, `mock scan load failed: ${mockScan.status}`);
+  const mockAnalysis = await post("/api/analyze", { scanId: mockScanStart.body.scanId });
+  assert(mockAnalysis.status === 200, `mock analysis failed: ${mockAnalysis.status}`);
+  assert(mockAnalysis.body.groups.length > 0, "mock scan returned no duplicate groups");
+  const mockScanJson = JSON.stringify(mockAnalysis.body);
+  assert(!mockScanJson.includes("AKIA-MOCK-KEY"), "mock analysis leaked a comparable field value");
+  assert(!mockScanJson.includes("mock-aws-secret"), "mock analysis leaked a secret hash");
 
   const liveScan = await post("/api/scan", { mode: "live" });
   assert(liveScan.status === 400, `live scan without auth expected 400, got ${liveScan.status}`);
   assert(
-    String(liveScan.body.message || "").includes("Missing 1Password account name"),
+    String(liveScan.body.message || "").includes("Desktop App 授权需要账户名"),
     "live scan without auth did not report the missing account guard"
   );
 
@@ -99,7 +103,7 @@ async function runChecks() {
       index: index.status,
       session: session.status,
       unauthorizedScan: unauthorized.status,
-      mockGroups: mockScan.body.groups.length,
+      mockGroups: mockAnalysis.body.groups.length,
       liveWithoutAuth: liveScan.status
     }
   };
@@ -107,6 +111,15 @@ async function runChecks() {
 
 async function get(path) {
   const response = await fetch(`${baseUrl}${path}`);
+  return responseBody(response);
+}
+
+async function getWithToken(path) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    headers: {
+      "x-session-token": token
+    }
+  });
   return responseBody(response);
 }
 

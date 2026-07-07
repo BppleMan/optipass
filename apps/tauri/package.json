@@ -1,0 +1,24 @@
+{
+  "name": "@optimize-password/tauri-shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "CI=true tauri build",
+    "dev:ui": "pnpm --dir ../web exec ng serve --host 127.0.0.1 --port 4200",
+    "prepare:build": "CI=true pnpm --dir ../../packages/core build && CI=true pnpm --dir ../api build && CI=true pnpm --dir ../web build",
+    "prepare:api-resource": "bash scripts/prepare-api-resource.sh",
+    "prepare:bun-runtime": "bash scripts/prepare-bun-runtime.sh",
+    "prepare:resources": "pnpm run prepare:api-resource && pnpm run prepare:bun-runtime",
+    "check": "cargo check",
+    "test": "cargo test"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

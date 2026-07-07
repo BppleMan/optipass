@@ -1,0 +1,4 @@
+/target
+/resources/backend/*
+!/resources/backend/.gitkeep
+/.tauri

@@ -68,7 +68,10 @@ async function dryRunGroup(
   return response.json().dryRunKey;
 }
 
-async function startScan(app: ApiServer, payload: Record<string, unknown>): Promise<{ scanId: string; mode: string; progress: ScanProgress }> {
+async function startScan(
+  app: ApiServer,
+  payload: Record<string, unknown>
+): Promise<{ scanId: string; mode: string; progress: ScanProgress; eventsToken: string }> {
   const response = await app.inject({
     method: "POST",
     url: "/api/scan",
@@ -159,6 +162,33 @@ describe("api app", () => {
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
+  it("describes the local session mode and runtime capabilities", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/session"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      token,
+      mode: "browser-dev",
+      enableMutations: true,
+      forceDryRun: false,
+      hasServiceAccountToken: false,
+      supportsDesktopAuth: true,
+      idleShutdownMs: null,
+      capabilities: {
+        staticUi: false,
+        canShutdown: false,
+        supportsHeartbeat: false,
+        supportsIdleShutdown: false,
+        supportsDesktopAuth: true,
+        shell: "browser"
+      }
+    });
+    expect(JSON.stringify(response.json())).not.toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
   it("adds baseline security headers to API responses", async () => {
     const response = await app.inject({
       method: "GET",
@@ -170,7 +200,8 @@ describe("api app", () => {
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["content-security-policy"]).toContain("default-src 'self'");
-    expect(response.headers["content-security-policy"]).toContain("script-src 'self'");
+    expect(response.headers["content-security-policy"]).toContain("script-src 'self' 'unsafe-inline'");
+    expect(response.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
     expect(response.headers["content-security-policy"]).toContain("object-src 'none'");
   });
 
@@ -217,6 +248,40 @@ describe("api app", () => {
     expect(response.body).not.toContain("AKIA-MOCK-KEY");
   });
 
+  it("allows scan event streams with the per-scan events token", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("event: started");
+    expect(response.body).toContain("event: completed");
+  });
+
+  it("adds CORS headers to scan event streams for configured origins", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}`,
+      headers: { origin: "http://127.0.0.1:4200" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:4200");
+  });
+
+  it("rejects scan event streams with an invalid events token", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=wrong-token`
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
   it("clears the current scan and local item cache without calling 1Password mutations", async () => {
     const scanResponse = await startScan(app, { mode: "mock" });
     await waitForScan(app, scanResponse.scanId);
@@ -256,6 +321,61 @@ describe("api app", () => {
     expect(response.json().message).toContain("Desktop App 授权需要账户名或 account_uuid");
   });
 
+  it("rejects a new scan while another scan is still running", async () => {
+    vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
+    }));
+
+    const firstResponse = await app.inject({
+      method: "POST",
+      url: "/api/scan",
+      headers: { "x-session-token": token },
+      payload: { mode: "live", accountName: "example-account" }
+    });
+    const secondResponse = await app.inject({
+      method: "POST",
+      url: "/api/scan",
+      headers: { "x-session-token": token },
+      payload: { mode: "live", accountName: "example-account" }
+    });
+
+    expect(firstResponse.statusCode).toBe(200);
+    expect(secondResponse.statusCode).toBe(409);
+    expect(secondResponse.json().message).toContain("当前已有执行任务正在运行");
+    expect(service.scan).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an active scan when clearing scan state", async () => {
+    let resolveLiveScan!: (scan: ScanSnapshot) => void;
+    vi.mocked(service.scan).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveLiveScan = resolve;
+    }));
+
+    const liveStart = await startScan(app, { mode: "live", accountName: "example-account" });
+    const clearResponse = await app.inject({
+      method: "POST",
+      url: "/api/scan/clear",
+      headers: { "x-session-token": token }
+    });
+    const mockStart = await startScan(app, { mode: "mock" });
+    const mockScan = await waitForScan(app, mockStart.scanId);
+
+    resolveLiveScan(createMockScanResult());
+    await vi.waitFor(async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/scan",
+        headers: { "x-session-token": token }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().scanId).toBe(mockStart.scanId);
+    });
+
+    expect(liveStart.scanId).not.toBe(mockStart.scanId);
+    expect(clearResponse.statusCode).toBe(200);
+    expect(mockScan.scanId).toBe(mockStart.scanId);
+    expect(service.clearCache).toHaveBeenCalledTimes(1);
+  });
+
   it("serves the production web UI without intercepting API routes", async () => {
     await app.close();
     const webDistDir = await mkdtemp(join(tmpdir(), "optimize-password-web-"));
@@ -284,7 +404,8 @@ describe("api app", () => {
 
       expect(indexResponse.statusCode).toBe(200);
       expect(indexResponse.headers["content-type"]).toContain("text/html");
-      expect(indexResponse.headers["content-security-policy"]).toContain("script-src 'self'");
+      expect(indexResponse.headers["content-security-policy"]).toContain("script-src 'self' 'unsafe-inline'");
+      expect(indexResponse.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
       expect(indexResponse.body).toContain("<op-root>");
       expect(assetResponse.statusCode).toBe(200);
       expect(assetResponse.headers["content-type"]).toContain("text/javascript");
@@ -296,6 +417,107 @@ describe("api app", () => {
     } finally {
       await rm(webDistDir, { recursive: true, force: true });
     }
+  });
+
+  it("protects heartbeat and shutdown with the local session token", async () => {
+    const heartbeatResponse = await app.inject({
+      method: "POST",
+      url: "/api/session/heartbeat"
+    });
+    const shutdownResponse = await app.inject({
+      method: "POST",
+      url: "/api/session/shutdown"
+    });
+
+    expect(heartbeatResponse.statusCode).toBe(401);
+    expect(shutdownResponse.statusCode).toBe(401);
+  });
+
+  it("allows launcher-managed shutdown when no scan or mutation is running", async () => {
+    await app.close();
+    const onShutdown = vi.fn();
+    app = await createApiServer({
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        mode: "browser-serve",
+        webOrigins: ["http://127.0.0.1:4200"],
+        enableMutations: true,
+        forceDryRun: false,
+        sessionToken: token,
+        idleShutdownMs: 5000
+      },
+      onePassword: service,
+      lifecycle: {
+        shutdown: {
+          enabled: true,
+          onShutdown
+        }
+      },
+      logger: false
+    });
+
+    const sessionResponse = await app.inject({ method: "GET", url: "/api/session" });
+    const shutdownResponse = await app.inject({
+      method: "POST",
+      url: "/api/session/shutdown",
+      headers: { "x-session-token": token }
+    });
+
+    expect(sessionResponse.json()).toMatchObject({
+      mode: "browser-serve",
+      idleShutdownMs: 5000,
+      capabilities: {
+        canShutdown: true,
+        supportsHeartbeat: true,
+        supportsIdleShutdown: true
+      }
+    });
+    expect(shutdownResponse.statusCode).toBe(200);
+    await vi.waitFor(() => expect(onShutdown).toHaveBeenCalledWith("requested"));
+  });
+
+  it("refuses shutdown while a scan is still running", async () => {
+    await app.close();
+    vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
+    }));
+    const onShutdown = vi.fn();
+    app = await createApiServer({
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        mode: "browser-serve",
+        webOrigins: ["http://127.0.0.1:4200"],
+        enableMutations: true,
+        forceDryRun: false,
+        sessionToken: token
+      },
+      onePassword: service,
+      lifecycle: {
+        shutdown: {
+          enabled: true,
+          onShutdown
+        }
+      },
+      logger: false
+    });
+
+    const startResponse = await app.inject({
+      method: "POST",
+      url: "/api/scan",
+      headers: { "x-session-token": token },
+      payload: { mode: "live", accountName: "example-account" }
+    });
+    const shutdownResponse = await app.inject({
+      method: "POST",
+      url: "/api/session/shutdown",
+      headers: { "x-session-token": token }
+    });
+
+    expect(startResponse.statusCode).toBe(200);
+    expect(shutdownResponse.statusCode).toBe(409);
+    expect(shutdownResponse.json().message).toContain("扫描或执行任务运行中");
+    expect(onShutdown).not.toHaveBeenCalled();
   });
 
   it("blocks execution when the decision omits items from the duplicate group", async () => {

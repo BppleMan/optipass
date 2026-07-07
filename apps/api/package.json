@@ -10,7 +10,11 @@
     "build": "pnpm run clean && tsc -p tsconfig.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "serve:local": "node dist/serve-local.js --open",
+    "helper": "node dist/helper.js",
+    "helper:dev": "OP_FORCE_DRY_RUN=true tsx src/helper.ts",
+    "serve:local:dev": "OP_FORCE_DRY_RUN=true tsx src/serve-local.ts --open"
   },
   "dependencies": {
     "@1password/sdk": "^0.4.0",
