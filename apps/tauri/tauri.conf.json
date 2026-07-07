@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Optipass",
+  "version": "0.1.0",
+  "identifier": "com.bppleman.optipass",
+  "build": {
+    "beforeDevCommand": "pnpm run dev:ui",
+    "devUrl": "http://127.0.0.1:4200",
+    "beforeBuildCommand": "pnpm run prepare:build",
+    "beforeBundleCommand": "pnpm run prepare:resources",
+    "frontendDist": "../web/dist/web/browser"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Optipass",
+        "width": 1200,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "resources": {
+      "resources/api/": "api/",
+      "resources/runtime/": "runtime/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

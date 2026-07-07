@@ -9,4 +9,6 @@ dist/
 .env.*
 !.env.example
 figma-agent-bridge
-
+apps/tauri/.pack/
+apps/tauri/resources/api/
+apps/tauri/resources/runtime/

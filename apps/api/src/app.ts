@@ -19,7 +19,7 @@ import {
   validateDecisionItemSet
 } from "@optimize-password/core";
 import { z, ZodError } from "zod";
-import { ApiConfig } from "./config.js";
+import { ApiConfig, AppMode } from "./config.js";
 import { createMockScanResult } from "./mock-data.js";
 
 export interface PasswordService {
@@ -40,6 +40,14 @@ export interface CreateApiServerOptions {
   config: ApiConfig;
   onePassword: PasswordService;
   logger?: boolean | { level: string };
+  lifecycle?: ApiLifecycleOptions;
+}
+
+export interface ApiLifecycleOptions {
+  shutdown?: {
+    enabled: boolean;
+    onShutdown?: (reason: "requested" | "idle") => void | Promise<void>;
+  };
 }
 
 type ScanMode = "live" | "mock";
@@ -56,25 +64,31 @@ interface ScanStartResponse {
   scanId: string;
   mode: ScanMode;
   progress: ScanProgress;
+  eventsToken: string;
 }
 
 interface ScanJob {
   scanId: string;
   mode: ScanMode;
+  eventsToken: string;
   progress: ScanProgress;
   events: ScanProgressEvent[];
   subscribers: Set<(event: ScanProgressEvent) => void>;
   done: boolean;
+  cancelled: boolean;
 }
 
 export async function createApiServer(options: CreateApiServerOptions): Promise<FastifyInstance> {
   const { config, onePassword } = options;
+  const mode = sessionMode(config);
+  const canShutdown = Boolean(options.lifecycle?.shutdown?.enabled);
   let latestScan: ScanSnapshot | undefined;
   let latestAnalysis: ScanResult | undefined;
   let latestScanMode: ScanMode | undefined;
   let activeMutationScanId: string | undefined;
   let latestDryRunKey: string | undefined;
   let latestSkippedGroups: ScanResult["groups"] = [];
+  let idleTimer: NodeJS.Timeout | undefined;
   const scanJobs = new Map<string, ScanJob>();
 
   const server = Fastify({
@@ -87,6 +101,10 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     origin: config.webOrigins,
     credentials: false,
     allowedHeaders: ["content-type", "x-session-token"]
+  });
+
+  server.addHook("onRequest", async () => {
+    refreshIdleTimer();
   });
 
   server.addHook("onSend", async (_request, reply, payload) => {
@@ -111,7 +129,10 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   });
 
   server.addHook("preHandler", async (request, reply) => {
-    if (request.url === "/healthz" || request.url === "/api/session") {
+    if (request.url === "/healthz") {
+      return;
+    }
+    if (request.url === "/api/session" && mode !== "tauri") {
       return;
     }
     if (!request.url.startsWith("/api/")) {
@@ -119,22 +140,47 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const token = request.headers["x-session-token"];
-    if (token !== config.sessionToken) {
-      await reply.code(401).send({ error: "本地会话令牌无效，请刷新页面后重试。" });
+    if (token === config.sessionToken || isAuthorizedScanEventStream(request.url, scanJobs)) {
+      return;
     }
+
+    await reply.code(401).send({ error: "本地会话令牌无效，请刷新页面后重试。" });
   });
 
   server.get("/healthz", async () => ({ ok: true }));
 
   server.get("/api/session", async () => ({
     token: config.sessionToken,
+    mode,
     accountName: config.accountName,
     apiBaseUrl: `http://${config.host}:${config.port}`,
     enableMutations: config.enableMutations,
     forceDryRun: config.forceDryRun,
     hasServiceAccountToken: Boolean(config.serviceAccountToken),
-    supportsDesktopAuth: true
+    supportsDesktopAuth: true,
+    idleShutdownMs: config.idleShutdownMs ?? null,
+    capabilities: sessionCapabilities(mode, canShutdown, Boolean(config.webDistDir), config.idleShutdownMs)
   }));
+
+  server.post("/api/session/heartbeat", async () => ({
+    ok: true,
+    idleShutdownMs: config.idleShutdownMs ?? null
+  }));
+
+  server.post("/api/session/shutdown", async (_request, reply) => {
+    if (!canShutdown) {
+      return reply.code(404).send({ error: "当前启动模式不支持由页面关闭本地服务。" });
+    }
+    if (hasActiveWork()) {
+      return reply.code(409).send({
+        error: "冲突",
+        message: "当前仍有扫描或执行任务运行中，暂不关闭本地服务。"
+      });
+    }
+
+    scheduleShutdown("requested");
+    return { ok: true };
+  });
 
   server.get("/api/scan", async () => {
     if (!latestScan) {
@@ -163,6 +209,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     latestScanMode = undefined;
     latestDryRunKey = undefined;
     latestSkippedGroups = [];
+    cancelScanJobs(scanJobs);
     scanJobs.clear();
     onePassword.clearCache();
 
@@ -170,7 +217,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   });
 
   server.post("/api/scan", async (request, reply): Promise<ScanStartResponse | unknown> => {
-    if (activeMutationScanId) {
+    if (activeMutationScanId || hasActiveScanJob()) {
       return reply.code(409).send({
         error: "冲突",
         message: "当前已有执行任务正在运行，请等待完成后再重新扫描。"
@@ -190,7 +237,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     if (body.mode === "mock") {
       void runMockScanJob(job);
-      return { scanId, mode: body.mode, progress: job.progress };
+      return { scanId, mode: body.mode, progress: job.progress, eventsToken: job.eventsToken };
     }
 
     const accountName = body.accountName || config.accountName;
@@ -200,7 +247,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     void runLiveScanJob(job, accountName);
-    return { scanId, mode: body.mode, progress: job.progress };
+    return { scanId, mode: body.mode, progress: job.progress, eventsToken: job.eventsToken };
   });
 
   server.get("/api/scan/events", async (request, reply) => {
@@ -210,10 +257,17 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       throw new ClientInputError("找不到扫描任务，请重新开始扫描。");
     }
 
-    reply
-      .header("content-type", "text/event-stream; charset=utf-8")
-      .header("cache-control", "no-store")
-      .header("connection", "keep-alive");
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      "connection": "keep-alive",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": securityPolicy(),
+      ...corsHeadersFor(request.headers.origin, config.webOrigins)
+    });
 
     for (const event of job.events) {
       reply.raw.write(toSseMessage(event));
@@ -221,23 +275,36 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     if (job.done) {
       reply.raw.end();
-      return reply;
+      return;
     }
 
+    const keepAlive = setInterval(() => {
+      if (!reply.raw.destroyed) {
+        reply.raw.write(": keep-alive\n\n");
+      }
+    }, 15_000);
+    keepAlive.unref();
+
+    const cleanup = (): void => {
+      clearInterval(keepAlive);
+      job.subscribers.delete(subscriber);
+    };
+
     const subscriber = (event: ScanProgressEvent): void => {
+      if (reply.raw.destroyed) {
+        cleanup();
+        return;
+      }
       reply.raw.write(toSseMessage(event));
       if (event.type === "completed" || event.type === "failed") {
         reply.raw.end();
-        job.subscribers.delete(subscriber);
+        cleanup();
       }
     };
 
     job.subscribers.add(subscriber);
-    request.raw.on("close", () => {
-      job.subscribers.delete(subscriber);
-    });
-
-    return reply;
+    request.raw.on("close", cleanup);
+    reply.raw.on("close", cleanup);
   });
 
   server.post("/api/analyze", async (request) => {
@@ -392,6 +459,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         error: "当前已有执行任务正在运行，请等待完成后重新扫描再继续。"
       };
     }
+    if (hasActiveScanJob()) {
+      return {
+        plan,
+        results: [],
+        blocked: true,
+        error: "当前仍有扫描任务运行中，请等待扫描完成并重新分析后再执行真实变更。"
+      };
+    }
 
     if (!config.enableMutations) {
       return {
@@ -441,15 +516,24 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       items: []
     };
 
+    if (job.cancelled) {
+      return;
+    }
     job.progress = progressFor(job.scanId, "scanning", snapshot.vaults, snapshot.items, mockResult.items.length, 0, "正在读取演示数据。");
     emitScanEvent(job, { type: "progress", progress: job.progress });
 
     for (const item of mockResult.items) {
+      if (job.cancelled) {
+        return;
+      }
       snapshot.items.push(item);
       job.progress = progressFor(job.scanId, "scanning", snapshot.vaults, snapshot.items, mockResult.items.length, 0, "正在读取演示数据。");
       emitScanEvent(job, { type: "progress", progress: job.progress });
     }
 
+    if (job.cancelled) {
+      return;
+    }
     latestScan = snapshot;
     job.progress = progressFor(job.scanId, "completed", snapshot.vaults, snapshot.items, mockResult.items.length, snapshot.vaults.length, "扫描完成，等待手动分析。");
     emitScanEvent(job, {
@@ -466,10 +550,16 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         serviceAccountToken: config.serviceAccountToken,
         accountName,
         onProgress: (event) => {
+          if (job.cancelled) {
+            return;
+          }
           logScanProgress(server, event);
           emitScanEvent(job, redactScanProgressEvent(event));
         }
       });
+      if (job.cancelled) {
+        return;
+      }
       const normalizedScan: ScanSnapshot = {
         ...scan,
         scanId: job.scanId
@@ -493,6 +583,9 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         });
       }
     } catch (error) {
+      if (job.cancelled) {
+        return;
+      }
       const message = formatOnePasswordError(error);
       server.log.warn(
         {
@@ -517,8 +610,72 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   }
 
   await registerStaticUi(server, config.webDistDir);
+  refreshIdleTimer();
 
   return server;
+
+  function hasActiveWork(): boolean {
+    return Boolean(activeMutationScanId) || hasActiveScanJob();
+  }
+
+  function hasActiveScanJob(): boolean {
+    return Array.from(scanJobs.values()).some((job) => !job.done);
+  }
+
+  function refreshIdleTimer(): void {
+    if (!config.idleShutdownMs || !canShutdown) {
+      return;
+    }
+
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+    }
+    idleTimer = setTimeout(() => {
+      if (hasActiveWork()) {
+        refreshIdleTimer();
+        return;
+      }
+      scheduleShutdown("idle");
+    }, config.idleShutdownMs);
+    idleTimer.unref();
+  }
+
+  function scheduleShutdown(reason: "requested" | "idle"): void {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+
+    setImmediate(() => {
+      void (async () => {
+        if (options.lifecycle?.shutdown?.onShutdown) {
+          await options.lifecycle.shutdown.onShutdown(reason);
+          return;
+        }
+        await server.close();
+      })();
+    });
+  }
+}
+
+function sessionMode(config: ApiConfig): AppMode {
+  return config.mode ?? "browser-dev";
+}
+
+function sessionCapabilities(
+  mode: AppMode,
+  canShutdown: boolean,
+  hasStaticUi: boolean,
+  idleShutdownMs: number | undefined
+) {
+  return {
+    staticUi: mode !== "browser-dev" && hasStaticUi,
+    canShutdown,
+    supportsHeartbeat: canShutdown,
+    supportsIdleShutdown: canShutdown && Boolean(idleShutdownMs),
+    supportsDesktopAuth: true,
+    shell: mode === "tauri" ? "tauri" : "browser"
+  };
 }
 
 const scanBodySchema = z.object({
@@ -589,13 +746,35 @@ function createScanJob(scanId: string, mode: ScanMode): ScanJob {
   const job: ScanJob = {
     scanId,
     mode,
+    eventsToken: randomUUID(),
     progress,
     events: [],
     subscribers: new Set(),
-    done: false
+    done: false,
+    cancelled: false
   };
   emitScanEvent(job, { type: "started", progress });
   return job;
+}
+
+function cancelScanJobs(scanJobs: Map<string, ScanJob>): void {
+  for (const job of scanJobs.values()) {
+    if (job.done || job.cancelled) {
+      continue;
+    }
+
+    job.cancelled = true;
+    emitScanEvent(job, {
+      type: "failed",
+      error: "扫描已取消。",
+      progress: {
+        ...job.progress,
+        phase: "failed",
+        message: "扫描已取消。",
+        error: "扫描已取消。"
+      }
+    });
+  }
 }
 
 function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
@@ -607,6 +786,35 @@ function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
   if (event.type === "completed" || event.type === "failed") {
     job.done = true;
   }
+}
+
+function isAuthorizedScanEventStream(url: string, scanJobs: Map<string, ScanJob>): boolean {
+  const parsed = new URL(url, "http://127.0.0.1");
+  if (parsed.pathname !== "/api/scan/events") {
+    return false;
+  }
+
+  const scanId = parsed.searchParams.get("scanId");
+  const eventsToken = parsed.searchParams.get("eventsToken");
+  if (!scanId || !eventsToken) {
+    return false;
+  }
+
+  return scanJobs.get(scanId)?.eventsToken === eventsToken;
+}
+
+function corsHeadersFor(origin: string | undefined, allowedOrigins: string[]): Record<string, string> {
+  if (!origin) {
+    return {};
+  }
+  if (!allowedOrigins.includes(origin)) {
+    return {};
+  }
+
+  return {
+    "access-control-allow-origin": origin,
+    vary: "Origin"
+  };
 }
 
 function logScanProgress(server: FastifyInstance, event: ScanProgressEvent): void {
@@ -986,8 +1194,8 @@ function contentTypeFor(path: string): string {
 function securityPolicy(): string {
   return [
     "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
     "connect-src 'self'",
     "img-src 'self' data:",
     "font-src 'self' data:",
