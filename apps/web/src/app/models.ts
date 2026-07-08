@@ -1,8 +1,9 @@
 import type { DuplicateCandidateClass, ExecutionPlan, ItemDecision, ItemSummary } from '@optimize-password/core';
 
-export type AppStep = 'scan' | 'analysis' | 'preview' | 'applying' | 'summary';
+export type AppStep = 'scan' | 'analysis' | 'applying' | 'summary';
 export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
 export type DuplicateKind = 'similar' | 'identical' | 'incomplete';
+export type AnalysisDisplayMode = 'edit' | 'preview';
 export type AnalysisFilterSectionId = 'years' | 'vaults' | 'domains' | 'credentials';
 export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential';
 export type FilterCredentialKind = 'password' | 'totp' | 'passkey';
@@ -31,12 +32,17 @@ export interface ScanVaultRow {
   typeRows: TypeCountView[];
 }
 
-export interface KindTabView {
-  kind: DuplicateKind;
+export interface TabView {
+  kind: string;
   label: string;
-  count: number;
+  count?: number;
   color: string;
   bg: string;
+}
+
+export interface KindTabView extends TabView {
+  kind: DuplicateKind;
+  count: number;
 }
 
 export interface CredentialChipView {
@@ -166,17 +172,6 @@ export interface DecisionStatsView {
   move: number;
 }
 
-export interface PreviewLineView {
-  title: string;
-  vaultName?: string;
-  tag?: string;
-  tagColor?: string;
-  bg?: string;
-  border?: string;
-  deco?: string;
-  color?: string;
-}
-
 export interface PreviewGroupView {
   id: string;
   kind: DuplicateKind;
@@ -185,9 +180,41 @@ export interface PreviewGroupView {
   badgeColor: string;
   username: string;
   site: string;
-  before: PreviewLineView[];
-  after: PreviewLineView[];
+  skipped: boolean;
+  opacity: number;
+  cardBorder: string;
+  skipColor: string;
+  items: DuplicateItemView[];
   plan?: ExecutionPlan;
+  actions: PlanActionPreviewView[];
+}
+
+export interface PlanActionPreviewView {
+  id: string;
+  itemId: string;
+  title: string;
+  username: string;
+  url: string;
+  created: string;
+  updated: string;
+  strength: string;
+  vaultName: string;
+  opLabel: string;
+  targetLabel: string;
+  detail: string;
+  tone: 'keep' | 'archive' | 'delete' | 'move';
+  color: string;
+  bg: string;
+  border: string;
+}
+
+export interface GroupPlanDialogView {
+  groupId: string;
+  title: string;
+  subtitle: string;
+  plan: ExecutionPlan;
+  actions: PlanActionPreviewView[];
+  operationCount: number;
 }
 
 export interface ApplyOperationView {

@@ -1,0 +1,29 @@
+@if ((group().plan?.blockers ?? []).length) {
+  <div class="blocker-list">
+    @for (blocker of group().plan?.blockers ?? []; track blocker) {
+      <p>{{ blocker }}</p>
+    }
+  </div>
+}
+
+@if ((group().plan?.warnings ?? []).length) {
+  <div class="warning-list">
+    @for (warning of group().plan?.warnings ?? []; track warning) {
+      <p>{{ warning }}</p>
+    }
+  </div>
+}
+
+<div class="plan-action-list plan-mode-list">
+  @for (action of group().actions; track action.id) {
+    <div class="plan-action-row plan-mode-row" [style.background]="action.bg" [style.border-color]="action.border">
+      <span class="plan-op" [style.color]="action.color">{{ action.opLabel }}</span>
+      <strong class="plan-username">{{ action.username }}</strong>
+      <span class="plan-title">{{ action.title }}</span>
+      <span class="plan-url">{{ action.url }}</span>
+      <em class="plan-label">{{ action.vaultName }}</em>
+      <span class="plan-label">{{ action.created }}</span>
+      <span class="plan-label">{{ action.updated }}</span>
+    </div>
+  }
+</div>

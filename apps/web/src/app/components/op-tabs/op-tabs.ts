@@ -11,7 +11,7 @@ import {
   ViewChildren,
   effect
 } from '@angular/core';
-import type { DuplicateKind, KindTabView } from '../../models';
+import type { TabView } from '../../models';
 
 @Component({
   selector: 'op-tabs',
@@ -19,11 +19,13 @@ import type { DuplicateKind, KindTabView } from '../../models';
   templateUrl: './op-tabs.html'
 })
 export class OpTabsComponent implements AfterViewInit, OnDestroy {
-  readonly tabs = input<KindTabView[]>([]);
-  readonly active = input<DuplicateKind>('similar');
+  readonly tabs = input<TabView[]>([]);
+  readonly active = input<string>('similar');
+  readonly ariaLabel = input('标签');
+  readonly showCount = input(true);
   readonly indicator = signal({ left: 0, width: 0, visible: false });
 
-  @Output() readonly activeChange = new EventEmitter<DuplicateKind>();
+  @Output() readonly activeChange = new EventEmitter<string>();
 
   @ViewChildren('tabButton') private readonly tabButtons?: QueryList<ElementRef<HTMLButtonElement>>;
 
@@ -64,7 +66,7 @@ export class OpTabsComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  selectTab(kind: DuplicateKind): void {
+  selectTab(kind: string): void {
     this.activeChange.emit(kind);
     this.queueIndicatorSync();
   }

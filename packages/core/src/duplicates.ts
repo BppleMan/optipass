@@ -2,12 +2,13 @@ import {
   DuplicateCandidateClass,
   DuplicateGroup,
   DuplicateReason,
+  ItemAnalysisMaterial,
   ItemSummary,
   RecommendedKeepReason
 } from "./model.js";
 import {
-  normalizeLooseText,
   normalizeDuplicateFullUrl,
+  normalizeSimilarUrl,
   stableGroupId
 } from "./normalize.js";
 
@@ -28,16 +29,27 @@ export interface DuplicateOptions {}
 
 export function findDuplicateGroups(items: ItemSummary[], options: DuplicateOptions = {}): DuplicateGroup[] {
   void options;
-  const deleteSuggestionItemIds = new Set(
-    items.filter((item) => isDeleteSuggestionItem(item)).map((item) => item.id)
+  const usedItemIds = new Set<string>();
+
+  const exactGroups = buildExactDuplicateGroups(items);
+  markUsed(usedItemIds, exactGroups);
+
+  const similarGroups = selectExclusiveGroups(
+    buildSimilarLoginGroups(items.filter((item) => item.category === "login" && !usedItemIds.has(item.id))),
+    new Set(),
+    items
+  );
+  markUsed(usedItemIds, similarGroups);
+
+  const deleteSuggestionGroups = buildDeleteSuggestionGroups(
+    items.filter((item) => !usedItemIds.has(item.id) && isDeleteSuggestionItem(item))
   );
 
-  const drafts = [
-    ...buildLoginIdentityGroups(items.filter((item) => item.category === "login" && !deleteSuggestionItemIds.has(item.id))),
-    ...buildDeleteSuggestionGroups(items.filter((item) => deleteSuggestionItemIds.has(item.id)))
-  ];
-
-  return drafts
+  return [
+    ...exactGroups,
+    ...similarGroups,
+    ...deleteSuggestionGroups
+  ]
     .map((draft) => toDuplicateGroup(draft, items))
     .sort(compareGroups);
 }
@@ -62,7 +74,28 @@ export function recommendKeepItemsWithReasons(items: ItemSummary[]): Recommended
   return [toRecommendedKeepReason(sorted[0])];
 }
 
-function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
+function buildExactDuplicateGroups(items: ItemSummary[]): DuplicateDraft[] {
+  const buckets = new Map<string, string[]>();
+
+  for (const item of items) {
+    const fingerprint = exactItemFingerprint(item);
+    const itemIds = buckets.get(fingerprint) ?? [];
+    itemIds.push(item.id);
+    buckets.set(fingerprint, itemIds);
+  }
+
+  return Array.from(buckets.values())
+    .map(uniqueSorted)
+    .filter((itemIds) => itemIds.length >= 2)
+    .map((itemIds) => ({
+      candidateClass: "exact-duplicate",
+      itemIds,
+      reasons: [exactItemReason(itemIds)],
+      confidence: "high"
+    }));
+}
+
+function buildSimilarLoginGroups(items: ItemSummary[]): DuplicateDraft[] {
   const buckets = new Map<string, LoginAnchorBucket>();
 
   const addToBucket = (bucket: Omit<LoginAnchorBucket, "itemIds">, itemId: string): void => {
@@ -75,19 +108,18 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
 
   for (const item of items) {
     const identities = accountIdentities(item);
-    const urls = duplicateFullUrls(item);
+    const urls = similarUrls(item);
 
     for (const identity of identities) {
       for (const url of urls) {
         addToBucket({
-          key: `login-full-url:${url}\u0000${identity}`,
-          label: `完整 URL + 用户名相同：${identity}@${url}`
+          key: `login-similar-url:${url}\u0000${identity}`,
+          label: `相似 URL + 身份相同：${identity}@${url}`
         }, item.id);
       }
     }
   }
 
-  const itemById = new Map(items.map((item) => [item.id, item]));
   const byItemSet = new Map<string, DuplicateDraft>();
 
   for (const bucket of buckets.values()) {
@@ -96,7 +128,6 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
       continue;
     }
 
-    const groupItems = itemIds.map((id) => itemById.get(id)).filter((item): item is ItemSummary => Boolean(item));
     const reason: DuplicateReason = {
       rule: "username-url",
       key: bucket.key,
@@ -108,24 +139,18 @@ function buildLoginIdentityGroups(items: ItemSummary[]): DuplicateDraft[] {
 
     if (existing) {
       existing.reasons.push(reason);
-      if (existing.candidateClass !== "exact-duplicate" && isExactLoginDuplicateGroup(groupItems)) {
-        existing.candidateClass = "exact-duplicate";
-        existing.confidence = "high";
-        existing.reasons.push(exactCredentialReason(itemIds));
-      }
       continue;
     }
 
-    const exact = isExactLoginDuplicateGroup(groupItems);
     byItemSet.set(itemSetKey, {
-      candidateClass: exact ? "exact-duplicate" : "similar-login",
+      candidateClass: "similar-login",
       itemIds,
-      reasons: exact ? [reason, exactCredentialReason(itemIds)] : [reason],
+      reasons: [reason],
       confidence: "high"
     });
   }
 
-  return removeStrictSubsetGroups(Array.from(byItemSet.values()));
+  return Array.from(byItemSet.values());
 }
 
 function buildDeleteSuggestionGroups(items: ItemSummary[]): DuplicateDraft[] {
@@ -175,6 +200,50 @@ function toDuplicateGroup(draft: DuplicateDraft, allItems: ItemSummary[]): Dupli
   };
 }
 
+function exactItemFingerprint(item: ItemSummary): string {
+  const analysis = analysisMaterial(item);
+  return JSON.stringify({
+    title: item.title,
+    category: item.category,
+    notesValueHash: analysis.notesValueHash,
+    exactUrlKeys: sortedValues(analysis.exactUrlKeys),
+    fieldCount: item.fieldCount,
+    fieldSignatures: sortedValues(analysis.fieldSignatures),
+    hasPassword: item.hasPassword,
+    hasTotp: item.hasTotp,
+    hasPasskey: item.hasPasskey,
+    hasAttachments: item.hasAttachments
+  });
+}
+
+function analysisMaterial(item: ItemSummary): ItemAnalysisMaterial {
+  return {
+    notesValueHash: item.analysis?.notesValueHash ?? "",
+    exactUrlKeys: item.analysis?.exactUrlKeys ?? duplicateFullUrls(item),
+    similarUrlKeys: item.analysis?.similarUrlKeys ?? similarUrlsFromRaw(item.urls),
+    identityValues: item.analysis?.identityValues ?? accountIdentitiesFromFields(item),
+    fieldSignatures: item.analysis?.fieldSignatures ?? comparableFieldSignatures(item)
+  };
+}
+
+function comparableFieldSignatures(item: ItemSummary): string[] {
+  return item.comparableFields.map((field) => JSON.stringify({
+    label: field.label,
+    kind: field.kind,
+    value: field.normalizedValue ?? "",
+    hash: field.normalizedValueHash ?? ""
+  })).sort();
+}
+
+function exactItemReason(itemIds: string[]): DuplicateReason {
+  return {
+    rule: "item-fingerprint",
+    key: `item-fingerprint:${itemIds.join("\u0000")}`,
+    label: "除保险库、时间和标签外，项目内容均相同",
+    itemIds
+  };
+}
+
 function isDeleteSuggestionItem(item: ItemSummary): boolean {
   return item.category === "login" && (!hasAccountIdentity(item) || !hasCredentialMaterial(item));
 }
@@ -188,35 +257,28 @@ function hasCredentialMaterial(item: ItemSummary): boolean {
 }
 
 function accountIdentities(item: ItemSummary): string[] {
+  return analysisMaterial(item).identityValues;
+}
+
+function accountIdentitiesFromFields(item: ItemSummary): string[] {
   return uniqueSorted([
     ...item.usernames,
     ...item.comparableFields
       .filter((field) => field.kind === "username" || field.kind === "email" || field.kind === "phone")
       .map((field) => field.normalizedValue ?? "")
-  ].map((value) => value.trim()).filter(Boolean));
+  ].filter((value) => value.length > 0));
 }
 
 function duplicateFullUrls(item: ItemSummary): string[] {
   return uniqueSorted(item.urls.map((url) => normalizeDuplicateFullUrl(url)).filter((url): url is string => Boolean(url)));
 }
 
-function isExactLoginDuplicateGroup(items: ItemSummary[]): boolean {
-  if (items.length < 2 || items.some((item) => item.category !== "login")) {
-    return false;
-  }
+function similarUrls(item: ItemSummary): string[] {
+  return analysisMaterial(item).similarUrlKeys;
+}
 
-  const firstIdentitySet = accountIdentities(items[0]).join("\u0000");
-  const firstUrlSet = duplicateFullUrls(items[0]).join("\u0000");
-  const firstCredentialSet = credentialFingerprint(items[0]);
-  if (!firstIdentitySet || !firstUrlSet || !firstCredentialSet) {
-    return false;
-  }
-
-  return items.every((item) =>
-    accountIdentities(item).join("\u0000") === firstIdentitySet &&
-    duplicateFullUrls(item).join("\u0000") === firstUrlSet &&
-    credentialFingerprint(item) === firstCredentialSet
-  );
+function similarUrlsFromRaw(urls: string[]): string[] {
+  return uniqueSorted(urls.map((url) => normalizeSimilarUrl(url)).filter((url): url is string => Boolean(url)));
 }
 
 function credentialHashes(item: ItemSummary): string[] {
@@ -225,55 +287,51 @@ function credentialHashes(item: ItemSummary): string[] {
     .map((field) => field.normalizedValueHash!));
 }
 
-function credentialFingerprint(item: ItemSummary): string | undefined {
-  const secrets = item.comparableFields
-    .filter((field) => field.kind === "secret" && field.normalizedValueHash)
-    .map((field) => `${normalizeLooseText(field.label)}:${field.normalizedValueHash!}`)
-    .sort();
-  if (secrets.length === 0 && item.hasPassword) {
-    return undefined;
-  }
-  if (secrets.length === 0 && !item.hasTotp && !item.hasPasskey) {
-    return undefined;
-  }
-
-  return [
-    `secret:${secrets.join("\u0001")}`,
-    `password:${item.hasPassword ? "1" : "0"}`,
-    `totp:${item.hasTotp ? "1" : "0"}`,
-    `passkey:${item.hasPasskey ? "1" : "0"}`
-  ].join("\u0000");
-}
-
-function exactCredentialReason(itemIds: string[]): DuplicateReason {
-  return {
-    rule: "credential-material",
-    key: `credential-material:${itemIds.join("\u0000")}`,
-    label: "用户名、完整 URL 与凭据材料均相同",
-    itemIds
-  };
-}
-
-function removeStrictSubsetGroups(groups: DuplicateDraft[]): DuplicateDraft[] {
-  const sorted = groups.slice().sort((a, b) =>
-    b.itemIds.length - a.itemIds.length ||
-    confidenceRank(b.confidence) - confidenceRank(a.confidence) ||
-    classRank(b.candidateClass) - classRank(a.candidateClass)
-  );
+function selectExclusiveGroups(
+  groups: DuplicateDraft[],
+  initialUsedItemIds: Set<string>,
+  allItems: ItemSummary[]
+): DuplicateDraft[] {
+  const itemById = new Map(allItems.map((item) => [item.id, item]));
   const selected: DuplicateDraft[] = [];
+  const usedItemIds = new Set(initialUsedItemIds);
 
-  for (const group of sorted) {
-    if (selected.some((candidate) => isStrictSubset(group.itemIds, candidate.itemIds))) {
+  for (const group of groups.slice().sort((a, b) => compareDraftsForSelection(a, b, itemById))) {
+    if (group.itemIds.some((itemId) => usedItemIds.has(itemId))) {
       continue;
     }
     selected.push(group);
+    for (const itemId of group.itemIds) {
+      usedItemIds.add(itemId);
+    }
   }
 
   return selected;
 }
 
-function isStrictSubset(candidate: string[], container: string[]): boolean {
-  return candidate.length < container.length && candidate.every((id) => container.includes(id));
+function compareDraftsForSelection(
+  a: DuplicateDraft,
+  b: DuplicateDraft,
+  itemById: Map<string, ItemSummary>
+): number {
+  return (
+    b.itemIds.length - a.itemIds.length ||
+    b.reasons.length - a.reasons.length ||
+    draftRecommendedScore(b, itemById) - draftRecommendedScore(a, itemById) ||
+    stableGroupId([a.candidateClass, ...a.itemIds]).localeCompare(stableGroupId([b.candidateClass, ...b.itemIds]))
+  );
+}
+
+function draftRecommendedScore(group: DuplicateDraft, itemById: Map<string, ItemSummary>): number {
+  return group.itemIds.reduce((sum, itemId) => sum + scoreItem(itemById.get(itemId)), 0);
+}
+
+function markUsed(usedItemIds: Set<string>, groups: DuplicateDraft[]): void {
+  for (const group of groups) {
+    for (const itemId of group.itemIds) {
+      usedItemIds.add(itemId);
+    }
+  }
 }
 
 function compareGroups(a: DuplicateGroup, b: DuplicateGroup): number {
@@ -288,9 +346,9 @@ function compareGroups(a: DuplicateGroup, b: DuplicateGroup): number {
 
 function classRank(candidateClass: DuplicateCandidateClass): number {
   switch (candidateClass) {
-    case "similar-login":
-      return 4;
     case "exact-duplicate":
+      return 4;
+    case "similar-login":
       return 3;
     case "misc-title":
       return 2;
@@ -305,6 +363,10 @@ function confidenceRank(confidence: DuplicateGroup["confidence"]): number {
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort();
+}
+
+function sortedValues(values: string[]): string[] {
+  return values.slice().sort();
 }
 
 function scoreItem(item: ItemSummary | undefined): number {

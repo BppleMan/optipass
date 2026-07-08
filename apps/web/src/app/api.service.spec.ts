@@ -73,6 +73,21 @@ describe('ApiService session bootstrap', () => {
     });
   });
 
+  it('updates mutation mode through the session API', async () => {
+    service.session.set(sessionResponse({ token: 'browser-token', enableMutations: false }));
+
+    const updating = service.setMutationsEnabled(true);
+    const request = http.expectOne('/api/session/mutations');
+
+    expect(request.request.method).toBe('PATCH');
+    expect(request.request.headers.get('x-session-token')).toBe('browser-token');
+    expect(request.request.body).toEqual({ enableMutations: true });
+    request.flush(sessionResponse({ token: 'browser-token', enableMutations: true }));
+
+    await expect(updating).resolves.toMatchObject({ enableMutations: true });
+    expect(service.session()?.enableMutations).toBe(true);
+  });
+
   it('streams scan events through native EventSource and closes after a terminal event', async () => {
     const completed = scanEvent('completed', 'completed', 2);
     const onEvent = vi.fn();
@@ -141,7 +156,6 @@ function sessionResponse(overrides: Partial<SessionResponse>): SessionResponse {
     mode: 'browser-dev',
     apiBaseUrl: 'http://127.0.0.1:3417',
     enableMutations: false,
-    forceDryRun: true,
     hasServiceAccountToken: false,
     supportsDesktopAuth: true,
     idleShutdownMs: null,

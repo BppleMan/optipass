@@ -1,25 +1,37 @@
-import { Component } from '@angular/core';
+import { Component, ElementRef, OnInit, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
 import { OpTabsComponent } from '../op-tabs/op-tabs';
+import { PlanActionGroupComponent } from './plan-action-group/plan-action-group';
 import { WorkflowService } from '../../workflow.service';
-import type { DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey } from '../../models';
+import type { AnalysisDisplayMode, DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey, TabView } from '../../models';
 
 @Component({
   selector: 'op-analysis-page',
   standalone: true,
-  imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent],
+  imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent, PlanActionGroupComponent],
   templateUrl: './analysis-page.html'
 })
-export class AnalysisPageComponent {
+export class AnalysisPageComponent implements OnInit {
+  readonly displayModeTabs: TabView[] = [
+    { kind: 'edit', label: '编辑', color: '#82aaff', bg: 'rgba(130, 170, 255, 0.16)' },
+    { kind: 'preview', label: '预览', color: '#82aaff', bg: 'rgba(130, 170, 255, 0.16)' }
+  ];
+
   activeDetailGroupId: string | undefined;
+
+  @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
 
   constructor(readonly wf: WorkflowService) {}
 
-  setKind(kind: DuplicateKind): void {
+  ngOnInit(): void {
+    void this.wf.restoreCachedState();
+  }
+
+  setKind(kind: string): void {
     this.closeGroupDetail();
-    this.wf.setActiveKind(kind);
+    this.wf.setActiveKind(kind as DuplicateKind);
   }
 
   detailGroup(): DuplicateGroupView | undefined {
@@ -39,11 +51,47 @@ export class AnalysisPageComponent {
     this.activeDetailGroupId = undefined;
   }
 
-  hasPasswordItems(group: DuplicateGroupView): boolean {
+  switchDisplayMode(mode: string): void {
+    const displayMode = mode as AnalysisDisplayMode;
+    if (this.wf.analysisDisplayMode() === displayMode) {
+      return;
+    }
+    const anchorGroupId = this.visibleAnchorGroupId();
+    this.closeGroupDetail();
+    this.wf.setAnalysisDisplayMode(displayMode);
+    this.restoreAnchorGroup(anchorGroupId);
+  }
+
+  handleBatchApply(): void {
+    if (this.wf.analysisDisplayMode() !== 'preview') {
+      const anchorGroupId = this.visibleAnchorGroupId();
+      this.closeGroupDetail();
+      this.wf.prepareBatchPreview();
+      this.restoreAnchorGroup(anchorGroupId);
+      return;
+    }
+    void this.wf.applyPlan();
+  }
+
+  batchApplyLabel(): string {
+    const count = this.wf.planOperationCount();
+    return this.wf.analysisDisplayMode() === 'preview'
+      ? `应用计划 (${count} 项操作)`
+      : `应用计划 (${count} 项操作) →`;
+  }
+
+  batchApplyDisabled(): boolean {
+    if (this.wf.analysisDisplayMode() === 'preview') {
+      return !this.wf.canApply();
+    }
+    return this.wf.planOperationCount() === 0 || this.wf.loading() || this.wf.applying();
+  }
+
+  hasPasswordItems(group: { items: DuplicateItemView[] }): boolean {
     return group.items.some((item) => item.credChips.some((chip) => chip.kind === 'password'));
   }
 
-  groupSecretsVisible(group: DuplicateGroupView): boolean {
+  groupSecretsVisible(group: { items: DuplicateItemView[] }): boolean {
     const passwordItems = group.items.filter((item) => item.credChips.some((chip) => chip.kind === 'password'));
     return passwordItems.length > 0 && passwordItems.every((item) => item.secretVisible);
   }
@@ -71,6 +119,41 @@ export class AnalysisPageComponent {
       different: fieldIsDifferent(group, row.key)
     }));
   }
+
+  private visibleAnchorGroupId(): string | undefined {
+    const container = this.groupList?.nativeElement;
+    if (!container) {
+      return undefined;
+    }
+    const containerTop = container.getBoundingClientRect().top;
+    const groups = Array.from(container.querySelectorAll<HTMLElement>('[data-group-id]'));
+    return groups
+      .map((element) => ({
+        element,
+        distance: Math.abs(element.getBoundingClientRect().top - containerTop)
+      }))
+      .sort((a, b) => a.distance - b.distance)[0]?.element.dataset['groupId'];
+  }
+
+  private restoreAnchorGroup(groupId: string | undefined): void {
+    if (!groupId) {
+      return;
+    }
+    window.setTimeout(() => {
+      const container = this.groupList?.nativeElement;
+      const target = container?.querySelector<HTMLElement>(`[data-group-id="${cssEscape(groupId)}"]`);
+      if (container && target) {
+        container.scrollTop += target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      }
+    }, 0);
+  }
+}
+
+function cssEscape(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/"/g, '\\"');
 }
 
 function fieldIsDifferent(group: DuplicateGroupView, key: DetailCompareFieldKey): boolean {

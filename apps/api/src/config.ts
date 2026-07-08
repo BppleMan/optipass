@@ -11,7 +11,6 @@ export interface ApiConfig {
   webOrigins: string[];
   accountName?: string;
   enableMutations: boolean;
-  forceDryRun: boolean;
   serviceAccountToken?: string;
   sessionToken: string;
   webDistDir?: string;
@@ -19,15 +18,13 @@ export interface ApiConfig {
 }
 
 export function readConfig(): ApiConfig {
-  const forceDryRun = process.env.OP_FORCE_DRY_RUN === "true";
   return {
     host: "127.0.0.1",
     port: Number(process.env.PORT || "3417"),
     mode: readAppMode(),
     webOrigins: readWebOrigins(),
     accountName: process.env.OP_ACCOUNT_NAME,
-    enableMutations: process.env.OP_ENABLE_MUTATIONS === "true" && !forceDryRun,
-    forceDryRun,
+    enableMutations: false,
     serviceAccountToken: process.env.OP_SERVICE_ACCOUNT_TOKEN,
     sessionToken: process.env.APP_SESSION_TOKEN || randomBytes(24).toString("base64url"),
     webDistDir: process.env.WEB_DIST_DIR || defaultWebDistDir(),

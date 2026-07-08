@@ -1,4 +1,4 @@
-import { ItemSummary } from "./model.js";
+import { ItemAnalysisMaterial, ItemSummary } from "./model.js";
 
 export function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | "title">): ItemSummary {
   return {
@@ -18,6 +18,17 @@ export function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | 
     hasAttachments: false,
     hasNotes: false,
     comparableFields: [],
+    ...overrides
+  };
+}
+
+export function analysis(overrides: Partial<ItemAnalysisMaterial> = {}): ItemAnalysisMaterial {
+  return {
+    notesValueHash: "notes:",
+    exactUrlKeys: [],
+    similarUrlKeys: [],
+    identityValues: [],
+    fieldSignatures: [],
     ...overrides
   };
 }

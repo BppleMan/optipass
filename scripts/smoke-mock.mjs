@@ -10,8 +10,6 @@ const server = spawn("pnpm", ["start"], {
     ...process.env,
     APP_SESSION_TOKEN: token,
     OP_ACCOUNT_NAME: "",
-    OP_ENABLE_MUTATIONS: "",
-    OP_FORCE_DRY_RUN: "true",
     OP_SERVICE_ACCOUNT_TOKEN: "",
     PORT: String(port)
   },
@@ -68,8 +66,13 @@ async function runChecks() {
   const session = await get("/api/session");
   assert(session.status === 200, `session failed: ${session.status}`);
   assert(session.body.token === token, "session token mismatch");
-  assert(session.body.forceDryRun === true, "OP_FORCE_DRY_RUN was not reflected by /api/session");
-  assert(session.body.enableMutations === false, "mutations should be disabled during mock smoke");
+  assert(session.body.enableMutations === false, "mutations should be disabled by default");
+  const writableSession = await patch("/api/session/mutations", { enableMutations: true });
+  assert(writableSession.status === 200, `mutation enable failed: ${writableSession.status}`);
+  assert(writableSession.body.enableMutations === true, "mutation switch did not enable writes");
+  const readonlySession = await patch("/api/session/mutations", { enableMutations: false });
+  assert(readonlySession.status === 200, `mutation disable failed: ${readonlySession.status}`);
+  assert(readonlySession.body.enableMutations === false, "mutation switch did not disable writes");
 
   const unauthorized = await fetch(`${baseUrl}/api/scan`, {
     method: "POST",
@@ -126,6 +129,18 @@ async function getWithToken(path) {
 async function post(path, payload) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-session-token": token
+    },
+    body: JSON.stringify(payload)
+  });
+  return responseBody(response);
+}
+
+async function patch(path, payload) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "PATCH",
     headers: {
       "content-type": "application/json",
       "x-session-token": token

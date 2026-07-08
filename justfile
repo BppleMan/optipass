@@ -54,7 +54,7 @@ package-tauri-resources: build-api
     cd apps/tauri && CI=true pnpm run prepare:resources
 
 dev-api: build-core
-    cd apps/api && OP_FORCE_DRY_RUN=true pnpm dev
+    cd apps/api && pnpm dev
 
 dev-ui:
     cd apps/web && pnpm exec ng serve --host 127.0.0.1 --port 4200
@@ -70,14 +70,14 @@ dev-browser:
       done
     }
     trap cleanup EXIT INT TERM
-    (cd apps/api && OP_FORCE_DRY_RUN=true pnpm dev) &
+    (cd apps/api && pnpm dev) &
     pids+=("$!")
     (cd apps/web && pnpm exec ng serve --host 127.0.0.1 --port 4200) &
     pids+=("$!")
     wait
 
 serve-local: build-local
-    cd apps/api && APP_MODE=browser-serve OP_FORCE_DRY_RUN=true pnpm serve:local
+    cd apps/api && APP_MODE=browser-serve pnpm serve:local
 
 dev-tauri: package-tauri-resources
     cd apps/tauri && pnpm tauri dev

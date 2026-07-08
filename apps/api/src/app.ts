@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { extname, join, normalize, relative, resolve } from "node:path";
 import cors from "@fastify/cors";
-import Fastify, { FastifyInstance } from "fastify";
+import Fastify, { FastifyInstance, FastifyRequest } from "fastify";
 import {
   createExecutionPlan,
   findDuplicateGroups,
@@ -32,7 +32,8 @@ export interface PasswordService {
   revealCredentials(appItemId: string): Promise<RevealedCredentialField[]>;
   archive(vaultId: string, onePasswordItemId: string): Promise<void>;
   delete(vaultId: string, onePasswordItemId: string): Promise<void>;
-  copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<void>;
+  copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<CopyToVaultResult>;
+  listItemStates(vaultId: string): Promise<ItemStateSnapshot>;
   clearCache(): void;
 }
 
@@ -67,6 +68,43 @@ interface ScanStartResponse {
   eventsToken: string;
 }
 
+interface ActiveScanResponse extends ScanStartResponse {
+  eventCount: number;
+}
+
+export interface ItemStateSnapshot {
+  activeIds: string[];
+  archivedIds: string[];
+}
+
+export interface CopyToVaultResult {
+  createdItemId: string;
+}
+
+interface ExecuteActionResult {
+  itemId: string;
+  action: PlanAction["type"];
+  ok: boolean;
+  error?: string;
+  skipped?: boolean;
+  createdItemId?: string;
+  targetVaultId?: string;
+}
+
+interface VerificationResult {
+  itemId?: string;
+  vaultId: string;
+  action?: PlanAction["type"];
+  ok: boolean;
+  severity: "critical" | "incomplete";
+  message: string;
+}
+
+interface ExecutionVerification {
+  ok: boolean;
+  results: VerificationResult[];
+}
+
 interface ScanJob {
   scanId: string;
   mode: ScanMode;
@@ -78,18 +116,37 @@ interface ScanJob {
   cancelled: boolean;
 }
 
+interface TabAnalysisState {
+  analysis?: ScanResult;
+  dryRunKey?: string;
+  skippedGroups: ScanResult["groups"];
+}
+
 export async function createApiServer(options: CreateApiServerOptions): Promise<FastifyInstance> {
   const { config, onePassword } = options;
   const mode = sessionMode(config);
   const canShutdown = Boolean(options.lifecycle?.shutdown?.enabled);
+  let enableMutations = config.enableMutations;
   let latestScan: ScanSnapshot | undefined;
-  let latestAnalysis: ScanResult | undefined;
   let latestScanMode: ScanMode | undefined;
   let activeMutationScanId: string | undefined;
-  let latestDryRunKey: string | undefined;
-  let latestSkippedGroups: ScanResult["groups"] = [];
   let idleTimer: NodeJS.Timeout | undefined;
   const scanJobs = new Map<string, ScanJob>();
+  const tabStates = new Map<string, TabAnalysisState>();
+
+  function tabStateFor(request: FastifyRequest): TabAnalysisState {
+    const tabId = tabIdFor(request);
+    let state = tabStates.get(tabId);
+    if (!state) {
+      state = { skippedGroups: [] };
+      tabStates.set(tabId, state);
+    }
+    return state;
+  }
+
+  function optionalTabAnalysisState(request: FastifyRequest): TabAnalysisState | undefined {
+    return tabStates.get(tabIdFor(request));
+  }
 
   const server = Fastify({
     logger: options.logger ?? {
@@ -100,7 +157,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   await server.register(cors, {
     origin: config.webOrigins,
     credentials: false,
-    allowedHeaders: ["content-type", "x-session-token"]
+    allowedHeaders: ["content-type", "x-session-token", "x-tab-id"]
   });
 
   server.addHook("onRequest", async () => {
@@ -147,20 +204,29 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     await reply.code(401).send({ error: "本地会话令牌无效，请刷新页面后重试。" });
   });
 
+  function sessionResponse() {
+    return {
+      token: config.sessionToken,
+      mode,
+      accountName: config.accountName,
+      apiBaseUrl: `http://${config.host}:${config.port}`,
+      enableMutations,
+      hasServiceAccountToken: Boolean(config.serviceAccountToken),
+      supportsDesktopAuth: true,
+      idleShutdownMs: config.idleShutdownMs ?? null,
+      capabilities: sessionCapabilities(mode, canShutdown, Boolean(config.webDistDir), config.idleShutdownMs)
+    };
+  }
+
   server.get("/healthz", async () => ({ ok: true }));
 
-  server.get("/api/session", async () => ({
-    token: config.sessionToken,
-    mode,
-    accountName: config.accountName,
-    apiBaseUrl: `http://${config.host}:${config.port}`,
-    enableMutations: config.enableMutations,
-    forceDryRun: config.forceDryRun,
-    hasServiceAccountToken: Boolean(config.serviceAccountToken),
-    supportsDesktopAuth: true,
-    idleShutdownMs: config.idleShutdownMs ?? null,
-    capabilities: sessionCapabilities(mode, canShutdown, Boolean(config.webDistDir), config.idleShutdownMs)
-  }));
+  server.get("/api/session", async () => sessionResponse());
+
+  server.patch("/api/session/mutations", async (request) => {
+    const body = z.object({ enableMutations: z.boolean() }).parse(request.body);
+    enableMutations = body.enableMutations;
+    return sessionResponse();
+  });
 
   server.post("/api/session/heartbeat", async () => ({
     ok: true,
@@ -189,14 +255,15 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     return redactScanSnapshotForClient(latestScan);
   });
 
-  server.get("/api/analysis", async () => {
-    if (!latestAnalysis) {
+  server.get("/api/analysis", async (request) => {
+    const state = optionalTabAnalysisState(request);
+    if (!state?.analysis) {
       throw new ClientInputError("还没有分析结果，请先完成扫描并手动运行分析。");
     }
-    return redactScanResultForClient(latestAnalysis);
+    return redactScanResultForClient(currentAnalysisForGlobalScan(state.analysis, latestScan));
   });
 
-  server.post("/api/scan/clear", async (_request, reply) => {
+  server.post("/api/scan/clear", async (request, reply) => {
     if (activeMutationScanId) {
       return reply.code(409).send({
         error: "冲突",
@@ -205,10 +272,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     latestScan = undefined;
-    latestAnalysis = undefined;
     latestScanMode = undefined;
-    latestDryRunKey = undefined;
-    latestSkippedGroups = [];
+    tabStates.delete(tabIdFor(request));
     cancelScanJobs(scanJobs);
     scanJobs.clear();
     onePassword.clearCache();
@@ -226,11 +291,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     const body = scanBodySchema.parse(request.body ?? {});
     const scanId = createScanId();
-    latestScan = undefined;
-    latestAnalysis = undefined;
-    latestScanMode = body.mode;
-    latestDryRunKey = undefined;
-    latestSkippedGroups = [];
+    resetTabAnalysisState(tabStateFor(request));
 
     const job = createScanJob(scanId, body.mode);
     scanJobs.set(scanId, job);
@@ -250,11 +311,29 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     return { scanId, mode: body.mode, progress: job.progress, eventsToken: job.eventsToken };
   });
 
+  server.get("/api/scan/active", async (): Promise<ActiveScanResponse> => {
+    const activeJob = Array.from(scanJobs.values()).find((job) => !job.done);
+    if (!activeJob) {
+      throw new ClientInputError("当前没有正在运行的扫描任务。");
+    }
+
+    return {
+      scanId: activeJob.scanId,
+      mode: activeJob.mode,
+      progress: activeJob.progress,
+      eventsToken: activeJob.eventsToken,
+      eventCount: activeJob.events.length
+    };
+  });
+
   server.get("/api/scan/events", async (request, reply) => {
     const query = scanEventsQuerySchema.parse(request.query ?? {});
     const job = scanJobs.get(query.scanId);
     if (!job) {
       throw new ClientInputError("找不到扫描任务，请重新开始扫描。");
+    }
+    if (job.eventsToken !== query.eventsToken) {
+      throw new ClientInputError("扫描事件令牌无效，请重新开始扫描。");
     }
 
     reply.hijack();
@@ -269,7 +348,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       ...corsHeadersFor(request.headers.origin, config.webOrigins)
     });
 
-    for (const event of job.events) {
+    for (const event of job.events.slice(query.after)) {
       reply.raw.write(toSseMessage(event));
     }
 
@@ -310,10 +389,11 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/analyze", async (request) => {
     const body = analyzeBodySchema.parse(request.body ?? {});
     const scan = currentScanSnapshotFor(body.scanId, latestScan);
-    latestAnalysis = analyzeScan(scan);
-    latestDryRunKey = undefined;
-    latestSkippedGroups = [];
-    return redactScanResultForClient(latestAnalysis);
+    const state = tabStateFor(request);
+    state.analysis = analyzeScan(scan);
+    state.dryRunKey = undefined;
+    state.skippedGroups = [];
+    return redactScanResultForClient(state.analysis);
   });
 
   server.post("/api/items/:itemId/reveal", async (request): Promise<RevealCredentialsResponse> => {
@@ -338,7 +418,9 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
   server.post("/api/plan", async (request) => {
     const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
-    const plan = createPlanFromLatestScan(decision, latestAnalysis);
+    const state = tabStateFor(request);
+    currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
+    const plan = createPlanFromLatestScan(decision, state.analysis);
     return plan;
   });
 
@@ -352,20 +434,21 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     const params = groupParamsSchema.parse(request.params);
     const body = skipGroupBodySchema.parse(request.body ?? {});
-    const scan = currentAnalysisFor(body.scanId, latestAnalysis);
+    const state = tabStateFor(request);
+    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
     const skippedGroup = scan.groups.find((group) => group.id === params.groupId);
     if (!skippedGroup) {
       throw new ClientInputError(`找不到重复组：${params.groupId}`);
     }
 
-    latestSkippedGroups.push(skippedGroup);
-    latestAnalysis = removeCompletedGroup(scan, params.groupId);
-    latestDryRunKey = undefined;
+    state.skippedGroups.push(skippedGroup);
+    state.analysis = removeCompletedGroup(scan, params.groupId);
+    state.dryRunKey = undefined;
 
     return {
       skippedGroupId: params.groupId,
-      restorableSkippedGroupCount: latestSkippedGroups.length,
-      scan: redactScanResultForClient(latestAnalysis)
+      restorableSkippedGroupCount: state.skippedGroups.length,
+      scan: redactScanResultForClient(state.analysis)
     };
   });
 
@@ -378,28 +461,31 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const body = restoreSkippedBodySchema.parse(request.body ?? {});
-    const scan = currentAnalysisFor(body.scanId, latestAnalysis);
-    const restoredGroup = latestSkippedGroups.pop();
+    const state = tabStateFor(request);
+    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
+    const restoredGroup = state.skippedGroups.pop();
     if (!restoredGroup) {
       throw new ClientInputError("没有可恢复的已跳过重复组。");
     }
 
-    latestAnalysis = {
+    state.analysis = {
       ...scan,
       groups: [restoredGroup, ...scan.groups]
     };
-    latestDryRunKey = undefined;
+    state.dryRunKey = undefined;
 
     return {
       restoredGroupId: restoredGroup.id,
-      restorableSkippedGroupCount: latestSkippedGroups.length,
-      scan: redactScanResultForClient(latestAnalysis)
+      restorableSkippedGroupCount: state.skippedGroups.length,
+      scan: redactScanResultForClient(state.analysis)
     };
   });
 
   server.post("/api/execute", async (request) => {
     const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
-    const plan = createPlanFromLatestScan(decision, latestAnalysis);
+    const state = tabStateFor(request);
+    currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
+    const plan = createPlanFromLatestScan(decision, state.analysis);
 
     if (plan.blockers.length > 0) {
       return { plan, results: [], blocked: true };
@@ -407,11 +493,11 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (decision.dryRun || latestScanMode === "mock") {
       const shouldAdvanceMockScan = !decision.dryRun && latestScanMode === "mock";
       if (shouldAdvanceMockScan) {
-        latestAnalysis = removeCompletedGroup(latestAnalysis!, decision.groupId);
-        latestDryRunKey = undefined;
-        latestSkippedGroups = [];
+        state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
+        state.dryRunKey = undefined;
+        state.skippedGroups = [];
       } else if (decision.dryRun) {
-        latestDryRunKey = dryRunKeyFor(decision, plan.actions);
+        state.dryRunKey = dryRunKeyFor(decision, plan.actions);
       }
 
       return {
@@ -423,14 +509,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
           dryRun: true
         })),
         dryRun: true,
-        dryRunKey: decision.dryRun ? latestDryRunKey : undefined,
+        dryRunKey: decision.dryRun ? state.dryRunKey : undefined,
         completedGroupId: shouldAdvanceMockScan ? decision.groupId : undefined,
-        scan: shouldAdvanceMockScan && latestAnalysis ? redactScanResultForClient(latestAnalysis) : undefined
+        scan: shouldAdvanceMockScan && state.analysis ? redactScanResultForClient(state.analysis) : undefined
       };
     }
 
     const requiredDryRunKey = dryRunKeyFor(decision, plan.actions);
-    if (decision.confirmedDryRunKey !== requiredDryRunKey || latestDryRunKey !== requiredDryRunKey) {
+    if (decision.confirmedDryRunKey !== requiredDryRunKey || state.dryRunKey !== requiredDryRunKey) {
       return {
         plan,
         results: [],
@@ -468,37 +554,46 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       };
     }
 
-    if (!config.enableMutations) {
+    if (!enableMutations) {
       return {
         plan,
         results: [],
         blocked: true,
-        error: mutationDisabledMessage(config)
+        error: mutationDisabledMessage()
       };
     }
 
     activeMutationScanId = decision.scanId;
     try {
-      const results = await executePlanActions(plan.actions, latestAnalysis!, onePassword);
+      const involvedVaultIds = planAffectedVaultIds(plan.actions);
+      const beforeStates = await snapshotVaultStates(involvedVaultIds, onePassword);
+      const results = await executePlanActions(plan.actions, state.analysis!, onePassword);
       const hasFailure = results.some((result) => !result.ok);
       const hasMutation = results.some((result) => result.ok && result.action !== "keep");
       if (hasFailure) {
         latestScan = undefined;
-        latestAnalysis = undefined;
         latestScanMode = undefined;
-        latestDryRunKey = undefined;
-        latestSkippedGroups = [];
+        resetTabAnalysisState(state);
         return { plan, results, scanInvalidated: true };
       }
 
-      latestAnalysis = removeCompletedGroup(latestAnalysis!, decision.groupId);
-      latestDryRunKey = undefined;
-      latestSkippedGroups = [];
+      const verification = await verifyExecutedPlan(plan.actions, state.analysis!, results, beforeStates, involvedVaultIds, onePassword);
+      if (!verification.ok) {
+        latestScan = undefined;
+        latestScanMode = undefined;
+        resetTabAnalysisState(state);
+        return { plan, results, verification, scanInvalidated: true };
+      }
+
+      state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
+      state.dryRunKey = undefined;
+      state.skippedGroups = [];
       return {
         plan,
         results,
+        verification,
         completedGroupId: decision.groupId,
-        scan: redactScanResultForClient(latestAnalysis),
+        scan: redactScanResultForClient(state.analysis),
         scanInvalidated: false,
         mutated: hasMutation
       };
@@ -535,6 +630,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       return;
     }
     latestScan = snapshot;
+    latestScanMode = "mock";
     job.progress = progressFor(job.scanId, "completed", snapshot.vaults, snapshot.items, mockResult.items.length, snapshot.vaults.length, "扫描完成，等待手动分析。");
     emitScanEvent(job, {
       type: "completed",
@@ -684,7 +780,9 @@ const scanBodySchema = z.object({
 });
 
 const scanEventsQuerySchema = z.object({
-  scanId: z.string().min(1)
+  scanId: z.string().min(1),
+  eventsToken: z.string().min(1),
+  after: z.coerce.number().int().min(0).default(0)
 });
 
 const analyzeBodySchema = z.object({
@@ -710,6 +808,19 @@ const skipGroupBodySchema = z.object({
 const restoreSkippedBodySchema = z.object({
   scanId: z.string().min(1)
 });
+
+function tabIdFor(request: FastifyRequest): string {
+  const value = request.headers["x-tab-id"];
+  const raw = Array.isArray(value) ? value[0] : value;
+  const tabId = typeof raw === "string" ? raw.trim() : "";
+  return tabId || "default";
+}
+
+function resetTabAnalysisState(state: TabAnalysisState): void {
+  state.analysis = undefined;
+  state.dryRunKey = undefined;
+  state.skippedGroups = [];
+}
 
 const decisionSchema = z.object({
   scanId: z.string().min(1),
@@ -940,6 +1051,18 @@ function currentAnalysisFor(scanId: string, latestAnalysis: ScanResult | undefin
   return latestAnalysis;
 }
 
+function currentAnalysisForGlobalScan(analysis: ScanResult, latestScan: ScanSnapshot | undefined): ScanResult {
+  if (!latestScan) {
+    throw new ClientInputError("当前扫描结果已过期，请重新扫描并重新分析后再继续。");
+  }
+
+  if (analysis.scanId !== latestScan.scanId) {
+    throw new ClientInputError("当前分析结果已过期，请基于最新扫描重新分析后再继续。");
+  }
+
+  return analysis;
+}
+
 function validateTargetVaults(decision: GroupDecision, scan: ScanResult): string[] {
   const vaultIds = new Set(scan.vaults.map((vault) => vault.id));
   const blockers: string[] = [];
@@ -959,16 +1082,13 @@ function validateTargetVaults(decision: GroupDecision, scan: ScanResult): string
 class ClientInputError extends Error {
 }
 
-function mutationDisabledMessage(config: ApiConfig): string {
-  if (config.forceDryRun) {
-    return "真实 1Password 变更已被开发保护禁用。只有取消 OP_FORCE_DRY_RUN 并显式设置 OP_ENABLE_MUTATIONS=true 后，才能执行真实归档、删除或迁移。";
-  }
-  return "真实 1Password 变更当前已禁用。只有显式设置 OP_ENABLE_MUTATIONS=true 后，才能执行真实归档、删除或迁移。";
+function mutationDisabledMessage(): string {
+  return "真实 1Password 变更当前已在状态栏关闭。请先在状态栏切换为可写，再执行真实归档、删除或迁移。";
 }
 
-async function executePlanActions(actions: PlanAction[], latestScan: ScanResult, onePassword: PasswordService) {
+async function executePlanActions(actions: PlanAction[], latestScan: ScanResult, onePassword: PasswordService): Promise<ExecuteActionResult[]> {
   const itemById = new Map(latestScan.items.map((item) => [item.id, item]));
-  const results: Array<{ itemId: string; action: string; ok: boolean; error?: string; skipped?: boolean }> = [];
+  const results: ExecuteActionResult[] = [];
 
   for (let index = 0; index < actions.length; index += 1) {
     const action = actions[index];
@@ -990,7 +1110,15 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
       } else if (action.type === "delete") {
         await onePassword.delete(item.vaultId, item.onePasswordItemId);
       } else if (action.type === "copy-to-vault-and-archive-source") {
-        await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId);
+        const copyResult = await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId);
+        results.push({
+          itemId: action.itemId,
+          action: action.type,
+          ok: true,
+          createdItemId: copyResult.createdItemId,
+          targetVaultId: action.targetVaultId
+        });
+        continue;
       }
       results.push({ itemId: action.itemId, action: action.type, ok: true });
     } catch (error) {
@@ -1008,7 +1136,7 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
   return results;
 }
 
-function skippedResults(actions: PlanAction[]): Array<{ itemId: string; action: string; ok: boolean; skipped: boolean; error: string }> {
+function skippedResults(actions: PlanAction[]): ExecuteActionResult[] {
   return actions.map((action) => ({
     itemId: action.itemId,
     action: action.type,
@@ -1016,6 +1144,247 @@ function skippedResults(actions: PlanAction[]): Array<{ itemId: string; action: 
     skipped: true,
     error: "由于前一个操作失败，已跳过。"
   }));
+}
+
+function planAffectedVaultIds(actions: PlanAction[]): string[] {
+  const vaultIds = new Set<string>();
+  for (const action of actions) {
+    vaultIds.add(action.vaultId);
+    if (action.type === "copy-to-vault-and-archive-source") {
+      vaultIds.add(action.targetVaultId);
+    }
+  }
+  return Array.from(vaultIds).sort();
+}
+
+async function snapshotVaultStates(vaultIds: string[], onePassword: PasswordService): Promise<Map<string, ItemStateSnapshot>> {
+  const states = new Map<string, ItemStateSnapshot>();
+  for (const vaultId of vaultIds) {
+    states.set(vaultId, await onePassword.listItemStates(vaultId));
+  }
+  return states;
+}
+
+async function verifyExecutedPlan(
+  actions: PlanAction[],
+  latestScan: ScanResult,
+  results: ExecuteActionResult[],
+  beforeStates: Map<string, ItemStateSnapshot>,
+  involvedVaultIds: string[],
+  onePassword: PasswordService
+): Promise<ExecutionVerification> {
+  let latestVerification: ExecutionVerification = { ok: false, results: [] };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(300);
+    }
+    let afterStates: Map<string, ItemStateSnapshot>;
+    try {
+      afterStates = await snapshotVaultStates(involvedVaultIds, onePassword);
+    } catch (error) {
+      latestVerification = {
+        ok: false,
+        results: involvedVaultIds.map((vaultId) => ({
+          vaultId,
+          ok: false,
+          severity: "incomplete",
+          message: `执行后校验失败：无法读取保险库 ${vaultId} 的 item 状态：${errorMessage(error)}`
+        }))
+      };
+      continue;
+    }
+    latestVerification = verifyPlanAgainstSnapshots(actions, latestScan, results, beforeStates, afterStates);
+    if (latestVerification.ok) {
+      return latestVerification;
+    }
+  }
+  return latestVerification;
+}
+
+function verifyPlanAgainstSnapshots(
+  actions: PlanAction[],
+  latestScan: ScanResult,
+  results: ExecuteActionResult[],
+  beforeStates: Map<string, ItemStateSnapshot>,
+  afterStates: Map<string, ItemStateSnapshot>
+): ExecutionVerification {
+  const itemById = new Map(latestScan.items.map((item) => [item.id, item]));
+  const resultByItemId = new Map(results.map((result) => [result.itemId, result]));
+  const failures: VerificationResult[] = [];
+  const allowedTransitions = new Map<string, Map<string, ItemState>>();
+
+  const allow = (vaultId: string, itemId: string, state: ItemState): void => {
+    let vaultTransitions = allowedTransitions.get(vaultId);
+    if (!vaultTransitions) {
+      vaultTransitions = new Map<string, ItemState>();
+      allowedTransitions.set(vaultId, vaultTransitions);
+    }
+    vaultTransitions.set(itemId, state);
+  };
+
+  for (const action of actions) {
+    const item = itemById.get(action.itemId);
+    if (!item) {
+      failures.push({
+        itemId: action.itemId,
+        vaultId: action.vaultId,
+        action: action.type,
+        ok: false,
+        severity: "critical",
+        message: "执行后校验失败：找不到计划内 item 的扫描材料。"
+      });
+      continue;
+    }
+
+    const sourceItemId = item.onePasswordItemId;
+    const sourceAfter = stateOf(afterStates.get(item.vaultId), sourceItemId);
+    if (action.type === "keep") {
+      allow(item.vaultId, sourceItemId, "active");
+      if (sourceAfter !== "active") {
+        failures.push({
+          itemId: sourceItemId,
+          vaultId: item.vaultId,
+          action: action.type,
+          ok: false,
+          severity: "critical",
+          message: `执行后校验失败：保留项 ${item.title} 已不在原保险库的活跃列表中。`
+        });
+      }
+      continue;
+    }
+
+    if (action.type === "archive") {
+      allow(item.vaultId, sourceItemId, "archived");
+      if (sourceAfter !== "archived") {
+        failures.push({
+          itemId: sourceItemId,
+          vaultId: item.vaultId,
+          action: action.type,
+          ok: false,
+          severity: sourceAfter === "missing" ? "critical" : "incomplete",
+          message: sourceAfter === "missing"
+            ? `执行后校验失败：归档项 ${item.title} 未出现在归档列表中，且已不在活跃列表中。`
+            : `执行后校验失败：归档项 ${item.title} 仍在活跃列表中。`
+        });
+      }
+      continue;
+    }
+
+    if (action.type === "delete") {
+      allow(item.vaultId, sourceItemId, "missing");
+      if (sourceAfter !== "missing") {
+        failures.push({
+          itemId: sourceItemId,
+          vaultId: item.vaultId,
+          action: action.type,
+          ok: false,
+          severity: "incomplete",
+          message: `执行后校验失败：删除项 ${item.title} 仍存在于 ${sourceAfter === "active" ? "活跃" : "归档"} 列表中。`
+        });
+      }
+      continue;
+    }
+
+    if (action.type === "copy-to-vault-and-archive-source") {
+      const result = resultByItemId.get(action.itemId);
+      const createdItemId = result?.createdItemId;
+      allow(item.vaultId, sourceItemId, "archived");
+      if (createdItemId) {
+        allow(action.targetVaultId, createdItemId, "active");
+      }
+      if (sourceAfter !== "archived") {
+        failures.push({
+          itemId: sourceItemId,
+          vaultId: item.vaultId,
+          action: action.type,
+          ok: false,
+          severity: sourceAfter === "missing" ? "critical" : "incomplete",
+          message: sourceAfter === "missing"
+            ? `执行后校验失败：迁移源 ${item.title} 未归档且已不在原保险库中。`
+            : `执行后校验失败：迁移源 ${item.title} 仍在原保险库活跃列表中。`
+        });
+      }
+      if (!createdItemId) {
+        failures.push({
+          itemId: action.itemId,
+          vaultId: action.targetVaultId,
+          action: action.type,
+          ok: false,
+          severity: "critical",
+          message: `执行后校验失败：迁移目标 ${item.title} 缺少新建 item id。`
+        });
+      } else if (stateOf(afterStates.get(action.targetVaultId), createdItemId) !== "active") {
+        failures.push({
+          itemId: createdItemId,
+          vaultId: action.targetVaultId,
+          action: action.type,
+          ok: false,
+          severity: "critical",
+          message: `执行后校验失败：迁移目标 ${item.title} 未出现在目标保险库活跃列表中。`
+        });
+      }
+    }
+  }
+
+  failures.push(...verifyVaultDiffs(beforeStates, afterStates, allowedTransitions));
+  return {
+    ok: failures.length === 0,
+    results: failures
+  };
+}
+
+type ItemState = "active" | "archived" | "missing";
+
+function verifyVaultDiffs(
+  beforeStates: Map<string, ItemStateSnapshot>,
+  afterStates: Map<string, ItemStateSnapshot>,
+  allowedTransitions: Map<string, Map<string, ItemState>>
+): VerificationResult[] {
+  const failures: VerificationResult[] = [];
+  const vaultIds = new Set([...beforeStates.keys(), ...afterStates.keys()]);
+  for (const vaultId of vaultIds) {
+    const before = beforeStates.get(vaultId);
+    const after = afterStates.get(vaultId);
+    const itemIds = new Set([
+      ...(before?.activeIds ?? []),
+      ...(before?.archivedIds ?? []),
+      ...(after?.activeIds ?? []),
+      ...(after?.archivedIds ?? [])
+    ]);
+    const allowed = allowedTransitions.get(vaultId) ?? new Map<string, ItemState>();
+    for (const itemId of itemIds) {
+      const beforeState = stateOf(before, itemId);
+      const afterState = stateOf(after, itemId);
+      if (beforeState === afterState) {
+        continue;
+      }
+      if (allowed.get(itemId) === afterState) {
+        continue;
+      }
+      failures.push({
+        itemId,
+        vaultId,
+        ok: false,
+        severity: "critical",
+        message: `执行后校验失败：保险库 ${vaultId} 中 item ${itemId} 出现计划外状态变化（${beforeState} -> ${afterState}）。`
+      });
+    }
+  }
+  return failures;
+}
+
+function stateOf(snapshot: ItemStateSnapshot | undefined, itemId: string): ItemState {
+  if (snapshot?.activeIds.includes(itemId)) {
+    return "active";
+  }
+  if (snapshot?.archivedIds.includes(itemId)) {
+    return "archived";
+  }
+  return "missing";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function mutationActionError(action: PlanAction, error: unknown): string {
@@ -1053,7 +1422,8 @@ function redactScanSnapshotForClient(scan: ScanSnapshot): ScanSnapshot {
     ...scan,
     items: scan.items.map((item) => ({
       ...item,
-      comparableFields: []
+      comparableFields: [],
+      analysis: undefined
     }))
   };
 }

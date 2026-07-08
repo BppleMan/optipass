@@ -22,7 +22,6 @@ export interface SessionResponse {
   accountName?: string;
   apiBaseUrl: string;
   enableMutations: boolean;
-  forceDryRun: boolean;
   hasServiceAccountToken: boolean;
   supportsDesktopAuth: boolean;
   idleShutdownMs: number | null;
@@ -43,6 +42,10 @@ export interface ScanStartResponse {
   eventsToken: string;
 }
 
+export interface ActiveScanResponse extends ScanStartResponse {
+  eventCount: number;
+}
+
 export interface ExecuteActionResult {
   itemId: string;
   action: string;
@@ -50,12 +53,29 @@ export interface ExecuteActionResult {
   dryRun?: boolean;
   skipped?: boolean;
   error?: string;
+  createdItemId?: string;
+  targetVaultId?: string;
+}
+
+export interface VerificationResult {
+  itemId?: string;
+  vaultId: string;
+  action?: string;
+  ok: boolean;
+  severity: 'critical' | 'incomplete';
+  message: string;
+}
+
+export interface ExecutionVerification {
+  ok: boolean;
+  results: VerificationResult[];
 }
 
 export interface ExecuteResponse {
   plan?: ExecutionPlan;
   scan?: ScanResult;
   results?: ExecuteActionResult[];
+  verification?: ExecutionVerification;
   blocked?: boolean;
   error?: string;
   dryRun?: boolean;
@@ -65,11 +85,20 @@ export interface ExecuteResponse {
   mutated?: boolean;
 }
 
+export interface SkipGroupResponse {
+  skippedGroupId: string;
+  restorableSkippedGroupCount: number;
+  scan: ScanResult;
+}
+
+const tabIdStorageKey = 'optipass.tabId';
+
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   readonly session = signal<SessionResponse | undefined>(undefined);
   private apiBaseUrl = '';
   private bootstrapSessionToken: string | undefined;
+  private readonly tabId = loadTabId();
 
   constructor(private readonly http: HttpClient) {}
 
@@ -105,6 +134,14 @@ export class ApiService {
     return this.request(firstValueFrom(this.http.get<ScanSnapshot>(this.apiUrl('/api/scan'), { headers: this.headers() })));
   }
 
+  async loadActiveScan(): Promise<ActiveScanResponse> {
+    return this.request(firstValueFrom(this.http.get<ActiveScanResponse>(this.apiUrl('/api/scan/active'), { headers: this.headers() })));
+  }
+
+  async loadAnalysis(): Promise<ScanResult> {
+    return this.request(firstValueFrom(this.http.get<ScanResult>(this.apiUrl('/api/analysis'), { headers: this.headers() })));
+  }
+
   async analyze(scanId: string): Promise<ScanResult> {
     return this.request(firstValueFrom(
       this.http.post<ScanResult>(this.apiUrl('/api/analyze'), { scanId }, { headers: this.headers() })
@@ -125,7 +162,7 @@ export class ApiService {
     scanId: string,
     eventsToken: string,
     onEvent: (event: ScanProgressEvent) => void,
-    options: { signal?: AbortSignal } = {}
+    options: { signal?: AbortSignal; after?: number } = {}
   ): Promise<void> {
     if (typeof EventSource !== 'undefined') {
       await this.streamScanEventsWithEventSource(scanId, eventsToken, onEvent, options);
@@ -139,7 +176,7 @@ export class ApiService {
     scanId: string,
     eventsToken: string,
     onEvent: (event: ScanProgressEvent) => void,
-    options: { signal?: AbortSignal } = {}
+    options: { signal?: AbortSignal; after?: number } = {}
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (options.signal?.aborted) {
@@ -147,7 +184,7 @@ export class ApiService {
         return;
       }
 
-      const source = new EventSource(this.scanEventsUrl(scanId, eventsToken));
+      const source = new EventSource(this.scanEventsUrl(scanId, eventsToken, options.after));
       let settled = false;
 
       function settle(callback: () => void): void {
@@ -188,9 +225,9 @@ export class ApiService {
     scanId: string,
     eventsToken: string,
     onEvent: (event: ScanProgressEvent) => void,
-    options: { signal?: AbortSignal } = {}
+    options: { signal?: AbortSignal; after?: number } = {}
   ): Promise<void> {
-    const response = await fetch(this.scanEventsUrl(scanId, eventsToken), {
+    const response = await fetch(this.scanEventsUrl(scanId, eventsToken, options.after), {
       headers: this.fetchHeaders(),
       cache: 'no-store',
       signal: options.signal
@@ -235,6 +272,16 @@ export class ApiService {
     return this.request(firstValueFrom(this.http.post<ExecutionPlan>(this.apiUrl('/api/plan'), decision, { headers: this.headers() })));
   }
 
+  async skipGroup(scanId: string, groupId: string): Promise<SkipGroupResponse> {
+    return this.request(firstValueFrom(
+      this.http.post<SkipGroupResponse>(
+        this.apiUrl(`/api/groups/${encodeURIComponent(groupId)}/skip`),
+        { scanId },
+        { headers: this.headers() }
+      )
+    ));
+  }
+
   async execute(decision: GroupDecision & {
     confirmPermanentDelete?: boolean;
     permanentDeleteConfirmationPhrase?: string;
@@ -242,6 +289,18 @@ export class ApiService {
     dryRun?: boolean;
   }): Promise<ExecuteResponse> {
     return this.request(firstValueFrom(this.http.post<ExecuteResponse>(this.apiUrl('/api/execute'), decision, { headers: this.headers() })));
+  }
+
+  async setMutationsEnabled(enableMutations: boolean): Promise<SessionResponse> {
+    const session = await this.request(firstValueFrom(
+      this.http.patch<SessionResponse>(
+        this.apiUrl('/api/session/mutations'),
+        { enableMutations },
+        { headers: this.headers() }
+      )
+    ));
+    this.session.set(session);
+    return session;
   }
 
   async clearScan(): Promise<{ ok: boolean }> {
@@ -260,23 +319,30 @@ export class ApiService {
 
   private headers(): HttpHeaders {
     const token = this.session()?.token ?? this.bootstrapSessionToken;
-    return token ? new HttpHeaders({ 'x-session-token': token }) : new HttpHeaders();
+    const headers: Record<string, string> = { 'x-tab-id': this.tabId };
+    if (token) {
+      headers['x-session-token'] = token;
+    }
+    return new HttpHeaders(headers);
   }
 
   private fetchHeaders(): HeadersInit {
     const token = this.session()?.token ?? this.bootstrapSessionToken;
-    return token ? { 'x-session-token': token } : {};
+    return token ? { 'x-session-token': token, 'x-tab-id': this.tabId } : { 'x-tab-id': this.tabId };
   }
 
   private apiUrl(path: string): string {
     return `${this.apiBaseUrl}${path}`;
   }
 
-  private scanEventsUrl(scanId: string, eventsToken: string): string {
+  private scanEventsUrl(scanId: string, eventsToken: string, after = 0): string {
     const query = new URLSearchParams({
       scanId,
       eventsToken
     });
+    if (after > 0) {
+      query.set('after', String(after));
+    }
     return this.apiUrl(`/api/scan/events?${query.toString()}`);
   }
 
@@ -361,4 +427,24 @@ function isTauriRuntime(): boolean {
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
+}
+
+function loadTabId(): string {
+  const fallback = createTabId();
+  if (typeof sessionStorage === 'undefined') {
+    return fallback;
+  }
+  const existing = sessionStorage.getItem(tabIdStorageKey);
+  if (existing) {
+    return existing;
+  }
+  sessionStorage.setItem(tabIdStorageKey, fallback);
+  return fallback;
+}
+
+function createTabId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }

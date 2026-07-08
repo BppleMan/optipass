@@ -16,6 +16,7 @@ function createService(): PasswordService {
     archive: vi.fn(),
     delete: vi.fn(),
     copyToVaultAndArchiveSource: vi.fn(),
+    listItemStates: vi.fn(),
     clearCache: vi.fn()
   };
 }
@@ -112,6 +113,41 @@ async function scanAndAnalyze(app: ApiServer, payload: Record<string, unknown>):
   return response.json();
 }
 
+function mockArchiveGroupVerification(service: PasswordService, scan: ScanResult, group: ScanResult["groups"][number]): void {
+  const groupItems = group.itemIds.map((itemId) => scan.items.find((item) => item.id === itemId)!);
+  const keepItem = groupItems[0];
+  const archivedItems = groupItems.slice(1);
+  const callsByVault = new Map<string, number>();
+  vi.mocked(service.listItemStates).mockImplementation(async (vaultId: string) => {
+    const callCount = callsByVault.get(vaultId) ?? 0;
+    callsByVault.set(vaultId, callCount + 1);
+    const vaultItems = groupItems.filter((item) => item.vaultId === vaultId);
+    const vaultArchivedItems = archivedItems.filter((item) => item.vaultId === vaultId);
+    if (callCount === 0) {
+      return {
+        activeIds: vaultItems.map((item) => item.onePasswordItemId),
+        archivedIds: []
+      };
+    }
+    return {
+      activeIds: keepItem.vaultId === vaultId ? [keepItem.onePasswordItemId] : [],
+      archivedIds: vaultArchivedItems.map((item) => item.onePasswordItemId)
+    };
+  });
+}
+
+function mockVaultStateReadSequence(
+  service: PasswordService,
+  states: Array<Record<string, { activeIds: string[]; archivedIds: string[] }>>
+): void {
+  let index = 0;
+  vi.mocked(service.listItemStates).mockImplementation(async (vaultId: string) => {
+    const state = states[Math.min(index, states.length - 1)]?.[vaultId] ?? { activeIds: [], archivedIds: [] };
+    index += 1;
+    return state;
+  });
+}
+
 describe("api app", () => {
   let service: PasswordService;
   let app: Awaited<ReturnType<typeof createApiServer>>;
@@ -124,7 +160,6 @@ describe("api app", () => {
         port: 0,
         webOrigins: ["http://127.0.0.1:4200"],
         enableMutations: true,
-        forceDryRun: false,
         sessionToken: token
       },
       onePassword: service,
@@ -173,7 +208,6 @@ describe("api app", () => {
       token,
       mode: "browser-dev",
       enableMutations: true,
-      forceDryRun: false,
       hasServiceAccountToken: false,
       supportsDesktopAuth: true,
       idleShutdownMs: null,
@@ -187,6 +221,26 @@ describe("api app", () => {
       }
     });
     expect(JSON.stringify(response.json())).not.toContain("OP_SERVICE_ACCOUNT_TOKEN");
+  });
+
+  it("toggles live mutation capability at runtime", async () => {
+    const disabled = await app.inject({
+      method: "PATCH",
+      url: "/api/session/mutations",
+      headers: { "x-session-token": token },
+      payload: { enableMutations: false }
+    });
+    const enabled = await app.inject({
+      method: "PATCH",
+      url: "/api/session/mutations",
+      headers: { "x-session-token": token },
+      payload: { enableMutations: true }
+    });
+
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.json().enableMutations).toBe(false);
+    expect(enabled.statusCode).toBe(200);
+    expect(enabled.json().enableMutations).toBe(true);
   });
 
   it("adds baseline security headers to API responses", async () => {
@@ -229,15 +283,17 @@ describe("api app", () => {
     const body = await waitForScan(app, start.scanId);
 
     expect(body.items.every((item: { comparableFields: unknown[] }) => item.comparableFields.length === 0)).toBe(true);
+    expect(body.items.every((item: { analysis?: unknown }) => item.analysis === undefined)).toBe(true);
     expect(JSON.stringify(body)).not.toContain("AKIA-MOCK-KEY");
     expect(JSON.stringify(body)).not.toContain("mock-aws-secret");
+    expect(JSON.stringify(body)).not.toContain("mock-analysis");
   });
 
   it("streams scan progress events with a completed snapshot", async () => {
     const start = await startScan(app, { mode: "mock" });
     const response = await app.inject({
       method: "GET",
-      url: `/api/scan/events?scanId=${start.scanId}`,
+      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}`,
       headers: { "x-session-token": token }
     });
 
@@ -246,6 +302,41 @@ describe("api app", () => {
     expect(response.body).toContain("event: completed");
     expect(response.body).toContain("\"scan\"");
     expect(response.body).not.toContain("AKIA-MOCK-KEY");
+  });
+
+  it("continues scan event streams after a known event index", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    await waitForScan(app, start.scanId);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}&after=1`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).not.toContain("event: started");
+    expect(response.body).toContain("event: completed");
+  });
+
+  it("reports the active scan job for another tab to follow", async () => {
+    vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
+    }));
+    const start = await startScan(app, { mode: "live", accountName: "example-account" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/scan/active",
+      headers: { "x-session-token": token, "x-tab-id": "second-tab" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      scanId: start.scanId,
+      mode: "live",
+      eventsToken: start.eventsToken,
+      eventCount: expect.any(Number)
+    });
+    expect(response.json().progress.scanId).toBe(start.scanId);
   });
 
   it("allows scan event streams with the per-scan events token", async () => {
@@ -388,7 +479,6 @@ describe("api app", () => {
         port: 0,
         webOrigins: ["http://127.0.0.1:4200"],
         enableMutations: true,
-        forceDryRun: false,
         sessionToken: token,
         webDistDir
       },
@@ -443,7 +533,6 @@ describe("api app", () => {
         mode: "browser-serve",
         webOrigins: ["http://127.0.0.1:4200"],
         enableMutations: true,
-        forceDryRun: false,
         sessionToken: token,
         idleShutdownMs: 5000
       },
@@ -489,7 +578,6 @@ describe("api app", () => {
         mode: "browser-serve",
         webOrigins: ["http://127.0.0.1:4200"],
         enableMutations: true,
-        forceDryRun: false,
         sessionToken: token
       },
       onePassword: service,
@@ -642,6 +730,60 @@ describe("api app", () => {
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
+  });
+
+  it("shares scan cache globally while keeping analysis state isolated per tab", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    const snapshot = await waitForScan(app, start.scanId);
+    const tabA = { "x-session-token": token, "x-tab-id": "tab-a" };
+    const tabB = { "x-session-token": token, "x-tab-id": "tab-b" };
+
+    const scanFromTabB = await app.inject({
+      method: "GET",
+      url: "/api/scan",
+      headers: tabB
+    });
+    const analyzeTabA = await app.inject({
+      method: "POST",
+      url: "/api/analyze",
+      headers: tabA,
+      payload: { scanId: snapshot.scanId }
+    });
+    const analysisTabBBeforeAnalyze = await app.inject({
+      method: "GET",
+      url: "/api/analysis",
+      headers: tabB
+    });
+    const analyzeTabB = await app.inject({
+      method: "POST",
+      url: "/api/analyze",
+      headers: tabB,
+      payload: { scanId: snapshot.scanId }
+    });
+    const group = analyzeTabA.json().groups[0];
+    const skipTabA = await app.inject({
+      method: "POST",
+      url: `/api/groups/${group.id}/skip`,
+      headers: tabA,
+      payload: { scanId: snapshot.scanId }
+    });
+    const analysisTabBAfterSkip = await app.inject({
+      method: "GET",
+      url: "/api/analysis",
+      headers: tabB
+    });
+
+    expect(scanFromTabB.statusCode).toBe(200);
+    expect(scanFromTabB.json().scanId).toBe(snapshot.scanId);
+    expect(analyzeTabA.statusCode).toBe(200);
+    expect(analysisTabBBeforeAnalyze.statusCode).toBe(400);
+    expect(analysisTabBBeforeAnalyze.json().message).toContain("还没有分析结果");
+    expect(analyzeTabB.statusCode).toBe(200);
+    expect(skipTabA.statusCode).toBe(200);
+    expect(skipTabA.json().scan.groups).toHaveLength(analyzeTabA.json().groups.length - 1);
+    expect(analysisTabBAfterSkip.statusCode).toBe(200);
+    expect(analysisTabBAfterSkip.json().groups).toHaveLength(analyzeTabB.json().groups.length);
+    expect(analysisTabBAfterSkip.json().groups[0].id).toBe(group.id);
   });
 
   it("restores the most recently skipped duplicate group without calling 1Password", async () => {
@@ -840,7 +982,6 @@ describe("api app", () => {
         port: 0,
         webOrigins: ["http://127.0.0.1:4200"],
         enableMutations: false,
-        forceDryRun: false,
         sessionToken: token
       },
       onePassword: service,
@@ -977,6 +1118,7 @@ describe("api app", () => {
       }))
     };
     const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockArchiveGroupVerification(service, scan, group);
 
     const firstExecute = app.inject({
       method: "POST",
@@ -1067,6 +1209,7 @@ describe("api app", () => {
       }))
     };
     const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockArchiveGroupVerification(service, scan, group);
 
     const executeResponse = await app.inject({
       method: "POST",
@@ -1134,6 +1277,7 @@ describe("api app", () => {
       }))
     };
     const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockArchiveGroupVerification(service, currentScan, group);
 
     const executeResponse = await app.inject({
       method: "POST",
@@ -1157,6 +1301,203 @@ describe("api app", () => {
     expect(service.archive).toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
+  });
+
+  it("verifies archived items after a successful live archive", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    vi.mocked(service.archive).mockResolvedValue(undefined);
+
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
+    const group = scan.groups[0];
+    const payload = {
+      scanId: scan.scanId,
+      groupId: group.id,
+      items: group.itemIds.map((itemId: string, index: number) => ({
+        itemId,
+        keep: index === 0
+      }))
+    };
+    const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockArchiveGroupVerification(service, scan, group);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/execute",
+      headers: { "x-session-token": token },
+      payload: { ...payload, confirmedDryRunKey }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().scanInvalidated).toBe(false);
+    expect(response.json().verification).toMatchObject({ ok: true, results: [] });
+  });
+
+  it("verifies deleted items are absent from active and archived states", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    vi.mocked(service.delete).mockResolvedValue(undefined);
+
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
+    const group = scan.groups[0];
+    const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
+    const deleteItem = scan.items.find((item) => item.id === group.itemIds[1])!;
+    const payload = {
+      scanId: scan.scanId,
+      groupId: group.id,
+      confirmPermanentDelete: true,
+      permanentDeleteConfirmationPhrase: "永久删除",
+      items: [
+        { itemId: keepItem.id, keep: true },
+        { itemId: deleteItem.id, keep: false, deleteMode: "delete" }
+      ]
+    };
+    const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockVaultStateReadSequence(service, [
+      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
+      { [deleteItem.vaultId]: { activeIds: [deleteItem.onePasswordItemId], archivedIds: [] } },
+      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
+      { [deleteItem.vaultId]: { activeIds: [], archivedIds: [] } }
+    ]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/execute",
+      headers: { "x-session-token": token },
+      payload: { ...payload, confirmedDryRunKey }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().scanInvalidated).toBe(false);
+    expect(response.json().verification).toMatchObject({ ok: true, results: [] });
+    expect(service.delete).toHaveBeenCalledWith(deleteItem.vaultId, deleteItem.onePasswordItemId);
+  });
+
+  it("invalidates the scan when a kept item disappears after execution", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    vi.mocked(service.archive).mockResolvedValue(undefined);
+
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
+    const group = scan.groups[0];
+    const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
+    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
+    const payload = {
+      scanId: scan.scanId,
+      groupId: group.id,
+      items: [
+        { itemId: keepItem.id, keep: true },
+        { itemId: archiveItem.id, keep: false, deleteMode: "archive" }
+      ]
+    };
+    const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockVaultStateReadSequence(service, [
+      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
+      { [archiveItem.vaultId]: { activeIds: [archiveItem.onePasswordItemId], archivedIds: [] } },
+      { [keepItem.vaultId]: { activeIds: [], archivedIds: [] } },
+      { [archiveItem.vaultId]: { activeIds: [], archivedIds: [archiveItem.onePasswordItemId] } }
+    ]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/execute",
+      headers: { "x-session-token": token },
+      payload: { ...payload, confirmedDryRunKey }
+    });
+
+    const body = response.json();
+    expect(response.statusCode).toBe(200);
+    expect(body.scanInvalidated).toBe(true);
+    expect(body.completedGroupId).toBeUndefined();
+    expect(body.verification.ok).toBe(false);
+    expect(body.verification.results).toContainEqual(expect.objectContaining({
+      action: "keep",
+      severity: "critical",
+      ok: false
+    }));
+  });
+
+  it("verifies moved items by checking source archive and target active item", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    vi.mocked(service.archive).mockResolvedValue(undefined);
+    vi.mocked(service.copyToVaultAndArchiveSource).mockResolvedValue({ createdItemId: "created-copy-1" });
+
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
+    const group = scan.groups[0];
+    const moveItem = scan.items.find((item) => item.id === group.itemIds[0])!;
+    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
+    const payload = {
+      scanId: scan.scanId,
+      groupId: group.id,
+      items: [
+        { itemId: moveItem.id, keep: true, targetVaultId: "vault-archive" },
+        { itemId: archiveItem.id, keep: false, deleteMode: "archive" }
+      ]
+    };
+    const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockVaultStateReadSequence(service, [
+      { "vault-archive": { activeIds: [], archivedIds: [] } },
+      { [moveItem.vaultId]: { activeIds: [moveItem.onePasswordItemId], archivedIds: [] } },
+      { [archiveItem.vaultId]: { activeIds: [archiveItem.onePasswordItemId], archivedIds: [] } },
+      { "vault-archive": { activeIds: ["created-copy-1"], archivedIds: [] } },
+      { [moveItem.vaultId]: { activeIds: [], archivedIds: [moveItem.onePasswordItemId] } },
+      { [archiveItem.vaultId]: { activeIds: [], archivedIds: [archiveItem.onePasswordItemId] } }
+    ]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/execute",
+      headers: { "x-session-token": token },
+      payload: { ...payload, confirmedDryRunKey }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().scanInvalidated).toBe(false);
+    expect(response.json().verification).toMatchObject({ ok: true, results: [] });
+    expect(response.json().results).toContainEqual(expect.objectContaining({
+      itemId: moveItem.id,
+      action: "copy-to-vault-and-archive-source",
+      createdItemId: "created-copy-1"
+    }));
+  });
+
+  it("reports critical verification failure for unexpected vault state changes", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    vi.mocked(service.archive).mockResolvedValue(undefined);
+
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
+    const group = scan.groups[0];
+    const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
+    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
+    const payload = {
+      scanId: scan.scanId,
+      groupId: group.id,
+      items: [
+        { itemId: keepItem.id, keep: true },
+        { itemId: archiveItem.id, keep: false, deleteMode: "archive" }
+      ]
+    };
+    const confirmedDryRunKey = await dryRunGroup(app, payload);
+    mockVaultStateReadSequence(service, [
+      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
+      { [archiveItem.vaultId]: { activeIds: [archiveItem.onePasswordItemId, "external-item"], archivedIds: [] } },
+      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
+      { [archiveItem.vaultId]: { activeIds: [], archivedIds: [archiveItem.onePasswordItemId, "external-item"] } }
+    ]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/execute",
+      headers: { "x-session-token": token },
+      payload: { ...payload, confirmedDryRunKey }
+    });
+
+    const body = response.json();
+    expect(response.statusCode).toBe(200);
+    expect(body.scanInvalidated).toBe(true);
+    expect(body.verification.ok).toBe(false);
+    expect(body.verification.results).toContainEqual(expect.objectContaining({
+      itemId: "external-item",
+      severity: "critical",
+      ok: false
+    }));
   });
 
   it("invalidates live scan state after a failed mutation", async () => {

@@ -29,7 +29,14 @@ const items: ItemSummary[] = [
     comparableFields: [
       { label: "username", kind: "username", normalizedValue: "alice@example.com" },
       { label: "password", kind: "secret", normalizedValueHash: "mock-github-work-secret" }
-    ]
+    ],
+    analysis: {
+      notesValueHash: "mock-analysis-github-notes",
+      exactUrlKeys: ["https://github.com/login"],
+      similarUrlKeys: ["https://github.com/login"],
+      identityValues: ["alice@example.com"],
+      fieldSignatures: ["mock-analysis-github-username", "mock-analysis-github-password"]
+    }
   },
   {
     id: "vault-work:github-2",

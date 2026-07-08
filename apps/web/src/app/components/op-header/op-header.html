@@ -7,6 +7,20 @@
     </div>
   </div>
   <div class="header-spacer"></div>
+  <button
+    type="button"
+    class="mutation-switch"
+    [class.enabled]="mutationsEnabled()"
+    [attr.aria-pressed]="mutationsEnabled()"
+    [disabled]="mutationToggleDisabled()"
+    [attr.title]="mutationsEnabled() ? '真实 1Password 变更已开启' : '真实 1Password 变更已关闭'"
+    (click)="toggleMutations()"
+  >
+    <span class="mutation-switch-track" aria-hidden="true">
+      <i></i>
+    </span>
+    <strong>{{ mutationsEnabled() ? '可写' : '只读' }}</strong>
+  </button>
   @if (accountChip()) {
     <div class="account-chip">
       <span aria-hidden="true"></span>
