@@ -54,6 +54,26 @@ export function normalizeDuplicateFullUrl(raw: string): string | undefined {
   }
 }
 
+export function normalizeSimilarUrl(raw: string): string | undefined {
+  const value = raw.trim();
+  if (!value) {
+    return undefined;
+  }
+
+  const withProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(value) ? value : `https://${value}`;
+
+  try {
+    const url = new URL(withProtocol);
+    const protocol = url.protocol.toLowerCase();
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    const port = defaultPort(url) ? "" : url.port ? `:${url.port}` : "";
+    const pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return `${protocol}//${host}${port}${pathname}`;
+  } catch {
+    return normalizeLooseText(value).split("?")[0].split("#")[0].replace(/\/+$/, "");
+  }
+}
+
 export function normalizeUrlHost(raw: string): string | undefined {
   const comparable = normalizeComparableUrl(raw);
   if (!comparable) {

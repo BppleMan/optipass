@@ -30,6 +30,7 @@ export type DuplicateRule =
   | "url"
   | "username-url"
   | "credential-material"
+  | "item-fingerprint"
   | "missing-account-identity"
   | "missing-credential-material";
 
@@ -49,6 +50,14 @@ export interface ComparableField {
   kind: "username" | "url" | "email" | "phone" | "text" | "secret" | "card" | "unknown";
   normalizedValueHash?: string;
   normalizedValue?: string;
+}
+
+export interface ItemAnalysisMaterial {
+  notesValueHash: string;
+  exactUrlKeys: string[];
+  similarUrlKeys: string[];
+  identityValues: string[];
+  fieldSignatures: string[];
 }
 
 export interface ItemSummary {
@@ -71,6 +80,7 @@ export interface ItemSummary {
   hasAttachments: boolean;
   hasNotes: boolean;
   comparableFields: ComparableField[];
+  analysis?: ItemAnalysisMaterial;
 }
 
 export interface DuplicateReason {

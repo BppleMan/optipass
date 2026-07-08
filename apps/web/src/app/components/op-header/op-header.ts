@@ -1,4 +1,4 @@
-import { Component, input } from '@angular/core';
+import { Component, EventEmitter, input, Output } from '@angular/core';
 
 @Component({
   selector: 'op-header',
@@ -7,4 +7,15 @@ import { Component, input } from '@angular/core';
 })
 export class OpHeaderComponent {
   readonly accountChip = input('');
+  readonly mutationsEnabled = input(false);
+  readonly mutationToggleDisabled = input(false);
+
+  @Output() readonly mutationsEnabledChange = new EventEmitter<boolean>();
+
+  toggleMutations(): void {
+    if (this.mutationToggleDisabled()) {
+      return;
+    }
+    this.mutationsEnabledChange.emit(!this.mutationsEnabled());
+  }
 }

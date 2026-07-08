@@ -5,6 +5,7 @@ import {
   dashboardCategoryDefinitions,
   normalizeLooseText,
   normalizeUrlHost,
+  summarizeVaults,
   type DashboardCategory,
   type DuplicateGroup,
   type ExecutionPlan,
@@ -13,18 +14,20 @@ import {
   type ItemSummary,
   type PlanAction,
   type ScanProgress,
+  type ScanProgressEvent,
   type ScanResult,
   type ScanSnapshot,
   type VaultScanSummary,
   type VaultSummary
 } from '@optimize-password/core';
-import { ApiService, type ExecuteResponse } from './api.service';
+import { ApiService, type ActiveScanResponse, type ExecuteResponse } from './api.service';
 import {
   type AnalysisFilterChipView,
   type AnalysisFilterKey,
   type AnalysisFilterSectionId,
   type AnalysisFilterSectionView,
   type AnalysisFilterSummaryView,
+  type AnalysisDisplayMode,
   type ApplyOperationRowView,
   type ApplyOperationView,
   type ApplyStatus,
@@ -34,7 +37,9 @@ import {
   type DuplicateItemView,
   type DuplicateKind,
   type FilterCredentialKind,
+  type GroupPlanDialogView,
   type KindTabView,
+  type PlanActionPreviewView,
   type PreviewGroupView,
   type RemoveAction,
   type ScanVaultRow,
@@ -147,14 +152,20 @@ export class WorkflowService {
   readonly analysisFilters = signal<AnalysisFilterState>(emptyAnalysisFilters());
   readonly filterSectionsOpen = signal<Record<AnalysisFilterSectionId, boolean>>(defaultFilterSectionsOpen);
   readonly domainFilterQuery = signal('');
-  readonly previewKind = signal<DuplicateKind>('similar');
-  readonly phase = signal<'preview' | 'applying' | 'summary'>('preview');
+  readonly analysisDisplayMode = signal<AnalysisDisplayMode>('edit');
+  readonly phase = signal<'applying' | 'summary'>('summary');
   readonly operations = signal<ApplyOperationView[]>([]);
   readonly applying = signal(false);
   readonly applyMessage = signal<string | undefined>(undefined);
+  readonly groupPlanDialog = signal<GroupPlanDialogView | undefined>(undefined);
+  readonly groupPlanLoading = signal<Record<string, boolean>>({});
+  readonly groupApplying = signal(false);
+  readonly groupApplyError = signal<string | undefined>(undefined);
+  readonly mutationToggleBusy = signal(false);
   private scanAbortController: AbortController | undefined;
 
   readonly session = computed(() => this.api.session());
+  readonly mutationsEnabled = computed(() => Boolean(this.session()?.enableMutations));
   readonly accountChip = computed(() => {
     const account = this.account().trim();
     const authed = this.authState() === 'authorized' || Boolean(this.scanSnapshot()) || Boolean(this.scanResult());
@@ -198,15 +209,22 @@ export class WorkflowService {
   readonly analysisFilterSummary = computed<AnalysisFilterSummaryView>(() => this.buildAnalysisFilterSummary());
   readonly decisionStats = computed<DecisionStatsView>(() => this.buildDecisionStats());
   readonly allPreviewGroups = computed<PreviewGroupView[]>(() => this.buildPreviewGroups());
-  readonly planOperationCount = computed(() => this.countPlanOperations());
-  readonly visiblePreviewGroups = computed(() => this.allPreviewGroups().filter((group) => group.kind === this.previewKind()));
-  readonly previewTabs = computed<KindTabView[]>(() => this.buildPreviewTabs());
+  readonly visiblePreviewGroups = computed(() => {
+    const visibleIds = new Set(this.visibleGroups().map((group) => group.id));
+    return this.allPreviewGroups().filter((group) => visibleIds.has(group.id));
+  });
+  readonly planOperationCount = computed(() => this.countPlanOperations(this.visiblePreviewGroups()));
   readonly previewEmpty = computed(() => this.visiblePreviewGroups().length === 0);
   readonly liveExecutionDisabled = computed(() => {
     const session = this.session();
     return this.activeScanMode() === 'live' && session ? !session.enableMutations : false;
   });
-  readonly canApply = computed(() => this.planOperationCount() > 0 && !this.loading() && !this.applying() && !this.liveExecutionDisabled());
+  readonly canApply = computed(() =>
+    this.planOperationCount() > 0 &&
+    !this.loading() &&
+    !this.applying() &&
+    !this.liveExecutionDisabled()
+  );
   readonly operationRows = computed<ApplyOperationRowView[]>(() => this.operations().map((operation) => toOperationRow(operation)));
   readonly applyPct = computed(() => {
     const operations = this.operations();
@@ -251,6 +269,54 @@ export class WorkflowService {
     }
   }
 
+  async setMutationsEnabled(enableMutations: boolean): Promise<void> {
+    if (this.mutationToggleBusy() || this.session()?.enableMutations === enableMutations) {
+      return;
+    }
+    this.mutationToggleBusy.set(true);
+    this.error.set(undefined);
+    try {
+      await this.api.setMutationsEnabled(enableMutations);
+      this.status.set(enableMutations ? '已切换为可写模式。' : '已切换为只读模式。');
+    } catch (error) {
+      this.error.set(messageFor(error));
+    } finally {
+      this.mutationToggleBusy.set(false);
+    }
+  }
+
+  async restoreCachedState(): Promise<void> {
+    await this.loadSession();
+    if (this.loading() || this.analyzing() || this.applying()) {
+      return;
+    }
+
+    if (!this.scanResult()) {
+      try {
+        const result = await this.api.loadAnalysis();
+        this.restoreAnalysisResult(result);
+        return;
+      } catch {
+        // Absence of cached analysis is the normal first-run path.
+      }
+    }
+
+    if (!this.scanSnapshot()) {
+      try {
+        this.restoreScanSnapshot(await this.api.loadScan());
+        return;
+      } catch {
+        // Absence of cached scan is the normal first-run path.
+      }
+
+      try {
+        await this.restoreActiveScan();
+      } catch {
+        // Absence of an active scan is the normal first-run path.
+      }
+    }
+  }
+
   updateAccount(value: string): void {
     this.account.set(value);
     if (typeof localStorage !== 'undefined') {
@@ -278,18 +344,7 @@ export class WorkflowService {
       this.scanProgress.set(start.progress);
       try {
         await this.api.streamScanEvents(start.scanId, start.eventsToken, (event) => {
-          this.scanProgress.set(event.progress);
-          if (event.progress.totalVaults > 0 || event.progress.vaults.length > 0) {
-            this.authState.set('authorized');
-          }
-          if (event.scan) {
-            this.scanSnapshot.set(event.scan);
-            this.authState.set('authorized');
-          }
-          if (event.type === 'failed') {
-            this.authState.set('failed');
-            this.error.set(event.error || event.progress.error || '扫描失败，请查看本地 API 日志。');
-          }
+          this.handleScanProgressEvent(event);
         }, { signal: scanAbortController.signal });
       } catch (error) {
         if (scanAbortController.signal.aborted) {
@@ -341,6 +396,58 @@ export class WorkflowService {
     return false;
   }
 
+  private async restoreActiveScan(): Promise<void> {
+    if (this.scanAbortController) {
+      return;
+    }
+    const active = await this.api.loadActiveScan();
+    const scanAbortController = new AbortController();
+    this.scanAbortController = scanAbortController;
+    this.activeScanMode.set(active.mode);
+    this.scanProgress.set(active.progress);
+    this.authState.set(active.progress.totalVaults > 0 || active.progress.vaults.length > 0 ? 'authorized' : 'authorizing');
+    this.loading.set(true);
+    this.error.set(undefined);
+    this.status.set('已接入正在运行的扫描任务。');
+    try {
+      await this.api.streamScanEvents(active.scanId, active.eventsToken, (event) => {
+        this.handleScanProgressEvent(event);
+      }, { signal: scanAbortController.signal, after: active.eventCount });
+      if (!this.scanSnapshot() && this.scanProgress()?.phase === 'completed') {
+        this.scanSnapshot.set(await this.api.loadScan());
+        this.authState.set('authorized');
+      }
+      if (this.scanSnapshot()) {
+        this.status.set('扫描完成。');
+      }
+    } catch (error) {
+      if (!scanAbortController.signal.aborted && !await this.recoverCompletedScanAfterStreamError()) {
+        this.authState.set('failed');
+        this.error.set(messageFor(error));
+      }
+    } finally {
+      if (this.scanAbortController === scanAbortController) {
+        this.scanAbortController = undefined;
+      }
+      this.loading.set(false);
+    }
+  }
+
+  private handleScanProgressEvent(event: ScanProgressEvent): void {
+    this.scanProgress.set(event.progress);
+    if (event.progress.totalVaults > 0 || event.progress.vaults.length > 0) {
+      this.authState.set('authorized');
+    }
+    if (event.scan) {
+      this.scanSnapshot.set(event.scan);
+      this.authState.set('authorized');
+    }
+    if (event.type === 'failed') {
+      this.authState.set('failed');
+      this.error.set(event.error || event.progress.error || '扫描失败，请查看本地 API 日志。');
+    }
+  }
+
   async startAnalysis(): Promise<void> {
     const scan = this.scanSnapshot();
     if (!scan || !this.scanDone()) {
@@ -359,21 +466,8 @@ export class WorkflowService {
     }, 80);
     try {
       const result = await this.api.analyze(scan.scanId);
-      this.scanResult.set(result);
-      this.scanSnapshot.set({
-        scanId: result.scanId,
-        scannedAt: result.scannedAt,
-        vaults: result.vaults,
-        items: result.items
-      });
-      this.decisions.set(this.defaultDecisions(result));
-      this.skippedGroups.set({});
-      this.visibleSecretItems.set({});
-      this.revealingItems.set({});
-      this.revealedSecrets.set({});
-      this.reveal.set(false);
-      this.activeKind.set(firstAvailableKind(result.groups));
-      this.previewKind.set(firstAvailableKind(result.groups));
+      this.restoreAnalysisResult(result);
+      this.analysisDisplayMode.set('edit');
       this.clearAnalysisFilters();
       this.analysisPct.set(100);
       this.status.set(result.groups.length ? `分析完成，发现 ${result.groups.length} 组疑似重复。` : '分析完成，没有发现疑似重复。');
@@ -399,6 +493,10 @@ export class WorkflowService {
     }
   }
 
+  async backToScan(): Promise<void> {
+    await this.router.navigateByUrl('/scan');
+  }
+
   setActiveKind(kind: DuplicateKind): void {
     if (this.activeKind() === kind) {
       return;
@@ -407,8 +505,8 @@ export class WorkflowService {
     this.clearAnalysisFilters();
   }
 
-  setPreviewKind(kind: DuplicateKind): void {
-    this.previewKind.set(kind);
+  setAnalysisDisplayMode(mode: AnalysisDisplayMode): void {
+    this.analysisDisplayMode.set(mode);
   }
 
   toggleAnalysisFilter(sectionId: AnalysisFilterSectionId, optionId: string, selected: boolean): void {
@@ -450,9 +548,26 @@ export class WorkflowService {
     this.domainFilterQuery.set(value);
   }
 
-  toggleGroupSkip(groupId: string): void {
-    const skipped = this.skippedGroups();
-    this.skippedGroups.set({ ...skipped, [groupId]: !skipped[groupId] });
+  async toggleGroupSkip(groupId: string): Promise<void> {
+    const result = this.scanResult();
+    if (!result || this.groupApplying() || this.groupPlanLoading()[groupId]) {
+      return;
+    }
+
+    this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: true });
+    this.error.set(undefined);
+    try {
+      const response = await this.api.skipGroup(result.scanId, groupId);
+      this.replaceAnalysisResult(response.scan);
+      this.status.set('已跳过该组，本轮分析不再显示。');
+      if (this.groupPlanDialog()?.groupId === groupId) {
+        this.closeGroupPlanDialog();
+      }
+    } catch (error) {
+      this.error.set(messageFor(error));
+    } finally {
+      this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: false });
+    }
   }
 
   updateKeep(itemId: string, keep: boolean): void {
@@ -600,24 +715,98 @@ export class WorkflowService {
     }
   }
 
-  async goPreview(): Promise<void> {
-    this.phase.set('preview');
-    this.previewKind.set(this.activeKind());
-    this.operations.set(this.buildOperations());
-    await this.router.navigateByUrl('/preview');
+  groupOperationCount(groupId: string): number {
+    const plan = this.localPlanForGroup(groupId);
+    return plan?.actions.filter((action) => action.type !== 'keep').length ?? 0;
   }
 
-  async backToAnalysis(): Promise<void> {
-    this.phase.set('preview');
-    await this.router.navigateByUrl('/analysis');
+  canApplyGroup(groupId: string): boolean {
+    return this.groupOperationCount(groupId) > 0 &&
+      !this.loading() &&
+      !this.applying() &&
+      !this.groupApplying() &&
+      !this.groupPlanLoading()[groupId];
+  }
+
+  async openGroupPlanDialog(groupId: string): Promise<void> {
+    if (!this.canApplyGroup(groupId)) {
+      return;
+    }
+    const decision = this.groupDecisionById(groupId);
+    if (!decision) {
+      this.error.set('找不到待执行的重复组。');
+      return;
+    }
+
+    this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: true });
+    this.groupApplyError.set(undefined);
+    this.error.set(undefined);
+    try {
+      const plan = await this.api.createPlan(decision);
+      this.groupPlanDialog.set(this.buildGroupPlanDialog(groupId, plan));
+    } catch (error) {
+      this.error.set(messageFor(error));
+    } finally {
+      this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: false });
+    }
+  }
+
+  closeGroupPlanDialog(): void {
+    if (this.groupApplying()) {
+      return;
+    }
+    this.groupPlanDialog.set(undefined);
+    this.groupApplyError.set(undefined);
+  }
+
+  async confirmGroupPlanDialog(): Promise<void> {
+    const dialog = this.groupPlanDialog();
+    if (!dialog || this.groupApplying() || dialog.plan.blockers.length > 0) {
+      return;
+    }
+    const decision = this.groupDecisionById(dialog.groupId);
+    if (!decision) {
+      this.groupApplyError.set('找不到待执行的重复组。');
+      return;
+    }
+
+    this.groupApplying.set(true);
+    this.groupApplyError.set(undefined);
+    this.error.set(undefined);
+    try {
+      const response = await this.executeGroupDecision(decision);
+      const failed = response.results?.find((result) => !result.ok && !result.skipped);
+      if (response.blocked || response.error || failed) {
+        this.groupApplyError.set(response.error || failed?.error || '执行被本地 API 阻止。');
+        return;
+      }
+      if (response.scanInvalidated) {
+        this.groupApplyError.set(executionInvalidatedMessage(response));
+        return;
+      }
+      if (response.scan) {
+        this.replaceAnalysisResult(response.scan);
+      }
+      this.status.set('已应用该组，本轮分析不再显示。');
+      this.groupPlanDialog.set(undefined);
+    } catch (error) {
+      this.groupApplyError.set(messageFor(error));
+    } finally {
+      this.groupApplying.set(false);
+    }
+  }
+
+  prepareBatchPreview(): void {
+    this.analysisDisplayMode.set('preview');
+    this.operations.set(this.buildOperations(this.visiblePreviewGroups()));
   }
 
   async applyPlan(): Promise<void> {
     if (!this.canApply()) {
       return;
     }
-    const groups = this.allPreviewGroups();
-    const operations = this.buildOperations();
+    const groups = this.visiblePreviewGroups();
+    const operations = this.buildOperations(groups);
     this.operations.set(operations);
     this.phase.set('applying');
     this.applying.set(true);
@@ -640,11 +829,16 @@ export class WorkflowService {
           this.skipPendingOperations();
           break;
         }
-        this.applyGroupResult(group.id, response);
         if (response.scanInvalidated) {
+          if (response.verification && !response.verification.ok) {
+            this.failGroup(group.id, executionInvalidatedMessage(response));
+          } else {
+            this.applyGroupResult(group.id, response);
+          }
           this.skipPendingOperations();
           break;
         }
+        this.applyGroupResult(group.id, response);
       } catch (error) {
         this.failGroup(group.id, messageFor(error));
         this.skipPendingOperations();
@@ -654,23 +848,91 @@ export class WorkflowService {
 
     this.phase.set('summary');
     this.applying.set(false);
+    this.status.set(this.summaryLine());
   }
 
   async resetAll(): Promise<void> {
     await this.rescan();
   }
 
-  planForPreviewGroup(groupId: string): ExecutionPlan | undefined {
+  itemById(itemId: string): ItemSummary | undefined {
+    return this.scanResult()?.items.find((item) => item.id === itemId);
+  }
+
+  private restoreScanSnapshot(scan: ScanSnapshot): void {
+    this.scanSnapshot.set(scan);
+    this.scanProgress.set({
+      scanId: scan.scanId,
+      phase: 'completed',
+      totalVaults: scan.vaults.length,
+      scannedVaults: scan.vaults.length,
+      totalItems: scan.items.length,
+      scannedItems: scan.items.length,
+      vaults: summarizeVaults(scan.vaults, scan.items),
+      message: '已恢复本地扫描缓存。'
+    });
+    this.authState.set('authorized');
+    this.error.set(undefined);
+    this.status.set('已恢复本地扫描缓存。');
+  }
+
+  private restoreAnalysisResult(result: ScanResult): void {
+    this.scanResult.set(result);
+    this.restoreScanSnapshot({
+      scanId: result.scanId,
+      scannedAt: result.scannedAt,
+      vaults: result.vaults,
+      items: result.items
+    });
+    this.decisions.set(this.defaultDecisions(result));
+    this.skippedGroups.set({});
+    this.visibleSecretItems.set({});
+    this.revealingItems.set({});
+    this.revealedSecrets.set({});
+    this.reveal.set(false);
+    this.activeKind.set(firstAvailableKind(result.groups));
+    this.clearAnalysisFilters();
+    this.analysisDisplayMode.set('edit');
+    this.status.set(result.groups.length ? `已恢复本 tab 的分析缓存，剩余 ${result.groups.length} 组疑似重复。` : '已恢复本 tab 的分析缓存，没有剩余疑似重复。');
+  }
+
+  private replaceAnalysisResult(result: ScanResult): void {
+    this.scanResult.set(result);
+    this.scanSnapshot.set({
+      scanId: result.scanId,
+      scannedAt: result.scannedAt,
+      vaults: result.vaults,
+      items: result.items
+    });
+    if (!result.groups.some((group) => kindFromCandidateClass(group.candidateClass) === this.activeKind())) {
+      this.activeKind.set(firstAvailableKind(result.groups));
+    }
+    this.skippedGroups.set({});
+  }
+
+  private localPlanForGroup(groupId: string): ExecutionPlan | undefined {
     const group = this.groups().find((candidate) => candidate.id === groupId);
     const result = this.scanResult();
-    if (!group || !result) {
+    if (!group || !result || this.skippedGroups()[group.id]) {
       return undefined;
     }
     return this.createLocalPlan(group, result.items);
   }
 
-  itemById(itemId: string): ItemSummary | undefined {
-    return this.scanResult()?.items.find((item) => item.id === itemId);
+  private buildGroupPlanDialog(groupId: string, plan: ExecutionPlan): GroupPlanDialogView {
+    const group = this.groups().find((candidate) => candidate.id === groupId);
+    const result = this.scanResult();
+    const items = result && group
+      ? group.itemIds.map((id) => result.items.find((item) => item.id === id)).filter((item): item is ItemSummary => Boolean(item))
+      : [];
+    return {
+      groupId,
+      title: group ? `${groupUsername(group, items)} @ ${groupSite(group, items)}` : groupId,
+      subtitle: `${plan.summary.keep} 保留 · ${plan.summary.archive} 归档 · ${plan.summary.delete} 删除 · ${plan.summary.move} 迁移`,
+      plan,
+      actions: this.planActionPreviewRows(plan),
+      operationCount: plan.actions.filter((action) => action.type !== 'keep').length
+    };
   }
 
   private resetForScan(): void {
@@ -693,11 +955,15 @@ export class WorkflowService {
     this.analysisFilters.set(emptyAnalysisFilters());
     this.filterSectionsOpen.set({ ...defaultFilterSectionsOpen });
     this.domainFilterQuery.set('');
-    this.previewKind.set('similar');
-    this.phase.set('preview');
+    this.analysisDisplayMode.set('edit');
+    this.phase.set('summary');
     this.operations.set([]);
     this.applying.set(false);
     this.applyMessage.set(undefined);
+    this.groupPlanDialog.set(undefined);
+    this.groupPlanLoading.set({});
+    this.groupApplying.set(false);
+    this.groupApplyError.set(undefined);
   }
 
   private defaultDecisions(result: ScanResult): Record<string, ItemDecision> {
@@ -773,17 +1039,6 @@ export class WorkflowService {
       color: kindMeta[kind].color,
       bg: kindMeta[kind].bg,
       count: groups.filter((group) => kindFromCandidateClass(group.candidateClass) === kind).length
-    }));
-  }
-
-  private buildPreviewTabs(): KindTabView[] {
-    const groups = this.allPreviewGroups();
-    return kindOrder.map((kind) => ({
-      kind,
-      label: kindMeta[kind].label,
-      color: kindMeta[kind].color,
-      bg: kindMeta[kind].bg,
-      count: groups.filter((group) => group.kind === kind).length
     }));
   }
 
@@ -979,29 +1234,20 @@ export class WorkflowService {
     return this.groups()
       .filter((group) => !this.skippedGroups()[group.id])
       .map((group) => {
-        const kind = kindFromCandidateClass(group.candidateClass);
-        const meta = kindMeta[kind];
-        const items = group.itemIds.map((id) => itemById.get(id)).filter((item): item is ItemSummary => Boolean(item));
-        const after = items.map((item) => previewAfterLine(item, this.decisions()[item.id], result.vaults));
-        const changed = after.some((line) => line.deco === 'line-through' || line.tagColor === '#82aaff');
+        const groupView = this.toGroupView(group, itemById, result.vaults);
+        const plan = this.createLocalPlan(group, result.items);
         return {
+          ...groupView,
           id: group.id,
-          kind,
-          kindLabel: meta.label,
-          badgeBg: meta.bg,
-          badgeColor: meta.color,
-          username: groupUsername(group, items),
-          site: groupSite(group, items),
-          before: items.map((item) => ({ title: item.title, vaultName: item.vaultName })),
-          after,
-          plan: this.createLocalPlan(group, result.items)
+          plan,
+          actions: this.planActionPreviewRows(plan)
         };
       })
-      .filter((group) => group.before.length > 0 && group.after.length > 0 && group.plan && group.plan.actions.some((action) => action.type !== 'keep'));
+      .filter((group) => group.actions.length > 0 && group.plan && group.plan.actions.some((action) => action.type !== 'keep'));
   }
 
-  private countPlanOperations(): number {
-    return this.allPreviewGroups().reduce((total, group) => {
+  private countPlanOperations(groups: PreviewGroupView[]): number {
+    return groups.reduce((total, group) => {
       const actions = group.plan?.actions ?? [];
       return total + actions.filter((action) => action.type !== 'keep').length;
     }, 0);
@@ -1011,6 +1257,16 @@ export class WorkflowService {
     return createExecutionPlan(group.id, this.groupDecision(group, items), items, {
       requireKeep: group.candidateClass !== 'delete-suggestion'
     });
+  }
+
+  private planActionPreviewRows(plan: ExecutionPlan): PlanActionPreviewView[] {
+    const result = this.scanResult();
+    if (!result) {
+      return [];
+    }
+    const itemById = new Map(result.items.map((item) => [item.id, item]));
+    const group = result.groups.find((candidate) => candidate.id === plan.groupId);
+    return plan.actions.map((action) => describePlanAction(action, itemById.get(action.itemId), result.vaults, group));
   }
 
   private groupDecision(group: DuplicateGroup, items: ItemSummary[]): GroupDecision {
@@ -1040,8 +1296,8 @@ export class WorkflowService {
     return this.groupDecision(group, result.items);
   }
 
-  private buildOperations(): ApplyOperationView[] {
-    return this.allPreviewGroups().flatMap((group) => {
+  private buildOperations(groups: PreviewGroupView[]): ApplyOperationView[] {
+    return groups.flatMap((group) => {
       const plan = group.plan;
       if (!plan) {
         return [];
@@ -1435,28 +1691,94 @@ function strengthColor(strength: string): string {
   return '#727272';
 }
 
-function previewAfterLine(item: ItemSummary, decision: ItemDecision | undefined, vaults: VaultSummary[]) {
-  if (!decision?.keep) {
-    const removeAction = decision?.deleteMode === 'delete' ? 'delete' : 'archive';
+function describePlanAction(action: PlanAction, item: ItemSummary | undefined, vaults: VaultSummary[], group: DuplicateGroup | undefined): PlanActionPreviewView {
+  const title = item?.title || action.itemId;
+  const username = item?.usernames.find(Boolean) ?? '（无 username）';
+  const url = item?.urls[0] || '—';
+  const created = item?.createdAt ? item.createdAt.slice(0, 10) : '—';
+  const updated = item ? itemUpdatedDate(item) : '-';
+  const strength = item && group ? strengthLabel(item, group) : '—';
+  const vault = item?.vaultName || vaultName(vaults, action.vaultId);
+  if (action.type === 'keep') {
+    const targetVaultName = vaultName(vaults, action.targetVaultId);
+    const moved = action.targetVaultId !== action.vaultId;
     return {
-      title: item.title,
-      tag: removeAction === 'delete' ? '删除' : '归档',
-      tagColor: removeAction === 'delete' ? '#ff5370' : '#ffcb6b',
-      bg: 'transparent',
-      border: '#323232',
-      deco: 'line-through',
-      color: '#727272'
+      id: `${action.type}:${action.itemId}`,
+      itemId: action.itemId,
+      title,
+      username,
+      url,
+      created,
+      updated,
+      strength,
+      vaultName: vault,
+      opLabel: moved ? '迁移保留' : '保留',
+      targetLabel: moved ? targetVaultName : vault,
+      detail: moved ? `保留并迁移至 ${targetVaultName}` : `保留在 ${vault}`,
+      tone: moved ? 'move' : 'keep',
+      color: moved ? '#82aaff' : '#c3e88d',
+      bg: moved ? 'rgba(130,170,255,0.1)' : 'rgba(195,232,141,0.08)',
+      border: moved ? 'rgba(130,170,255,0.36)' : 'rgba(195,232,141,0.32)'
     };
   }
-  const moved = (decision.targetVaultId || item.vaultId) !== item.vaultId;
+  if (action.type === 'copy-to-vault-and-archive-source') {
+    const targetVaultName = vaultName(vaults, action.targetVaultId);
+    return {
+      id: `${action.type}:${action.itemId}`,
+      itemId: action.itemId,
+      title,
+      username,
+      url,
+      created,
+      updated,
+      strength,
+      vaultName: vault,
+      opLabel: '迁移',
+      targetLabel: targetVaultName,
+      detail: `复制到 ${targetVaultName}，成功后归档原 item`,
+      tone: 'move',
+      color: '#82aaff',
+      bg: 'rgba(130,170,255,0.1)',
+      border: 'rgba(130,170,255,0.36)'
+    };
+  }
+  if (action.type === 'delete') {
+    return {
+      id: `${action.type}:${action.itemId}`,
+      itemId: action.itemId,
+      title,
+      username,
+      url,
+      created,
+      updated,
+      strength,
+      vaultName: vault,
+      opLabel: '删除',
+      targetLabel: '永久删除',
+      detail: '从 1Password 永久删除，不进入归档',
+      tone: 'delete',
+      color: '#ff5370',
+      bg: 'rgba(255,83,112,0.1)',
+      border: 'rgba(255,83,112,0.42)'
+    };
+  }
   return {
-    title: item.title,
-    tag: moved ? `迁移 → ${vaultName(vaults, decision.targetVaultId || item.vaultId)}` : `保留 · ${item.vaultName}`,
-    tagColor: moved ? '#82aaff' : '#c3e88d',
-    bg: 'rgba(195,232,141,0.06)',
-    border: 'rgba(195,232,141,0.3)',
-    deco: 'none',
-    color: '#eeffff'
+    id: `${action.type}:${action.itemId}`,
+    itemId: action.itemId,
+    title,
+    username,
+    url,
+    created,
+    updated,
+    strength,
+    vaultName: vault,
+    opLabel: '归档',
+    targetLabel: '归档',
+    detail: '移动到 1Password 归档，可恢复',
+    tone: 'archive',
+    color: '#ffcb6b',
+    bg: 'rgba(255,203,107,0.09)',
+    border: 'rgba(255,203,107,0.34)'
   };
 }
 
@@ -1499,6 +1821,14 @@ function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
 
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function executionInvalidatedMessage(response: ExecuteResponse): string {
+  if (response.verification && !response.verification.ok) {
+    const detail = response.verification.results.find((result) => !result.ok)?.message;
+    return detail ? `${detail} 请重新扫描确认。` : '执行后校验失败，请重新扫描确认。';
+  }
+  return '部分操作失败，当前扫描结果已失效，请重新扫描后继续。';
 }
 
 function sleep(ms: number): Promise<void> {

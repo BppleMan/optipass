@@ -1,5 +1,10 @@
 <div class="op-shell">
-  <op-header [accountChip]="wf.accountChip()"></op-header>
+  <op-header
+    [accountChip]="wf.accountChip()"
+    [mutationsEnabled]="wf.mutationsEnabled()"
+    [mutationToggleDisabled]="wf.mutationToggleBusy() || wf.applying() || wf.groupApplying()"
+    (mutationsEnabledChange)="wf.setMutationsEnabled($event)"
+  ></op-header>
   <main class="op-main">
     <router-outlet></router-outlet>
   </main>

@@ -2,11 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import sdk from "@1password/sdk";
-import type { FileAttributes, Item, ItemCreateParams, ItemField, ItemFile, ItemSection, Website } from "@1password/sdk";
+import type { FileAttributes, Item, ItemCreateParams, ItemField, ItemFile, ItemListFilter, ItemSection, Website } from "@1password/sdk";
 import {
   ComparableField,
   ItemCategory,
   ItemSummary,
+  normalizeDuplicateFullUrl,
+  normalizeSimilarUrl,
   RevealedCredentialField,
   ScanProgressEvent,
   ScanSnapshot,
@@ -14,6 +16,7 @@ import {
   VaultScanSummary,
   VaultSummary
 } from "@optimize-password/core";
+import type { CopyToVaultResult, ItemStateSnapshot } from "./app.js";
 
 type OnePasswordClient = Awaited<ReturnType<typeof sdk.createClient>>;
 type RawItem = Item;
@@ -176,7 +179,7 @@ export class OnePasswordService {
     await client.items.delete(vaultId, onePasswordItemId);
   }
 
-  async copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<void> {
+  async copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<CopyToVaultResult> {
     const client = await this.requireClient();
     const cached = this.rawItems.get(appItemId);
     if (!cached) {
@@ -220,8 +223,39 @@ export class OnePasswordService {
       files,
       document
     };
-    await client.items.create(createParams);
+    const created = await client.items.create(createParams);
+    const createdItemId = String(readAny(created, "id") ?? "");
+    if (!createdItemId) {
+      throw new Error(`无法迁移 ${appItemId}：目标保险库的新 item 缺少 ID。`);
+    }
     await client.items.archive(sourceVaultId, rawItemId);
+    return { createdItemId };
+  }
+
+  async listItemStates(vaultId: string): Promise<ItemStateSnapshot> {
+    const client = await this.requireClient();
+    const activeFilter: ItemListFilter = {
+      type: "ByState",
+      content: {
+        active: true,
+        archived: false
+      }
+    };
+    const archivedFilter: ItemListFilter = {
+      type: "ByState",
+      content: {
+        active: false,
+        archived: true
+      }
+    };
+    const [activeOverviews, archivedOverviews] = await Promise.all([
+      withSdkTrace(client.items.list(vaultId, activeFilter), `读取保险库 ${vaultId} 的活跃项目列表`),
+      withSdkTrace(client.items.list(vaultId, archivedFilter), `读取保险库 ${vaultId} 的归档项目列表`)
+    ]);
+    return {
+      activeIds: activeOverviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean),
+      archivedIds: archivedOverviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean)
+    };
   }
 
   async revealCredentials(appItemId: string): Promise<RevealedCredentialField[]> {
@@ -421,6 +455,12 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     .filter(Boolean);
 
   const comparableFields = fields.flatMap((field) => toComparableField(field));
+  const analysisIdentityValues = uniqueSorted([
+    ...usernames,
+    ...comparableFields
+      .filter((field) => field.kind === "username" || field.kind === "email" || field.kind === "phone")
+      .map((field) => field.normalizedValue ?? "")
+  ].filter((value) => value.length > 0));
 
   return {
     id: appItemId,
@@ -440,8 +480,43 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     hasPasskey: fields.some((field) => isSignInWithField(field)),
     hasAttachments: files.length > 0 || Boolean(readAny(item, "document")),
     hasNotes: notes.trim().length > 0,
-    comparableFields
+    comparableFields,
+    analysis: {
+      notesValueHash: hashRawValue(notes),
+      exactUrlKeys: uniqueSorted(urls.map((url) => normalizeDuplicateFullUrl(url)).filter((url): url is string => Boolean(url))),
+      similarUrlKeys: uniqueSorted(urls.map((url) => normalizeSimilarUrl(url)).filter((url): url is string => Boolean(url))),
+      identityValues: analysisIdentityValues,
+      fieldSignatures: fields.map((field) => exactFieldSignature(field)).sort()
+    }
   };
+}
+
+function exactFieldSignature(field: ItemField): string {
+  const label = String(readAny(field, "title", "label", "id") ?? "field");
+  const value = String(readAny(field, "value") ?? "");
+  return JSON.stringify({
+    label,
+    fieldType: fieldType(field),
+    credentialKind: exactFieldCredentialKind(field),
+    valueHash: hashRawValue(value)
+  });
+}
+
+function exactFieldCredentialKind(field: ItemField): string {
+  const type = fieldType(field);
+  if (isSignInWithField(field)) {
+    return "passkey";
+  }
+  if (type.includes("totp")) {
+    return "totp";
+  }
+  if (isPasswordField(field)) {
+    return "password";
+  }
+  if (type.includes("concealed") || type.includes("secret")) {
+    return "secret";
+  }
+  return "non-credential";
 }
 
 function toComparableField(field: ItemField): ComparableField[] {
@@ -590,6 +665,14 @@ function isSignInWithField(field: ItemField): boolean {
 
 function hashValue(value: string): string {
   return createHash("sha256").update(value.normalize("NFKC")).digest("base64url");
+}
+
+function hashRawValue(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
 }
 
 function toIsoString(value: unknown): string | undefined {

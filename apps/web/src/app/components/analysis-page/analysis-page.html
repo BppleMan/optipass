@@ -10,12 +10,12 @@
     <div class="analysis-running">
       <h2>尚未生成分析结果</h2>
       <p>请先完成扫描，再从扫描页进入分析。</p>
-      <op-button size="sm" variant="ghost" label="← 返回扫描" (pressed)="wf.rescan()"></op-button>
+      <op-button size="sm" variant="ghost" label="← 返回扫描" (pressed)="wf.backToScan()"></op-button>
     </div>
   } @else {
     <div class="action-bar">
       <div class="action-left">
-        <op-button size="sm" variant="ghost" label="← 重新扫描" (pressed)="wf.rescan()"></op-button>
+        <op-button size="sm" variant="ghost" label="← 重新扫描" (pressed)="wf.backToScan()"></op-button>
         <div class="stats-line">
           <span>{{ wf.decisionStats().groups }} 组疑似重复</span>
           <span>保留 <em class="ok-text">{{ wf.decisionStats().keep }}</em></span>
@@ -26,13 +26,11 @@
       </div>
       <div class="action-right">
         <op-button size="sm" variant="ghost" label="全部采纳推荐" (pressed)="wf.acceptAllRecommendations()"></op-button>
-        <op-button size="sm" [label]="'生成计划 (' + wf.planOperationCount() + ' 项操作) →'" (pressed)="wf.goPreview()"></op-button>
+        <op-button size="sm" [label]="batchApplyLabel()" [disabled]="batchApplyDisabled()" (pressed)="handleBatchApply()"></op-button>
       </div>
     </div>
 
     <div class="analysis-control-row">
-      <op-tabs [tabs]="wf.kindTabs()" [active]="wf.activeKind()" (activeChange)="setKind($event)"></op-tabs>
-
       <div class="filter-summary">
         <div class="filter-total">显示 <strong>{{ wf.analysisFilterSummary().visible }}</strong> / {{ wf.analysisFilterSummary().total }} 组</div>
         <div class="filter-chip-row" aria-label="当前筛选条件">
@@ -117,21 +115,37 @@
       </aside>
 
       <div class="scroll-list-panel">
-        <div class="group-list">
-          @for (group of wf.visibleGroups(); track group.id) {
+        <div class="main-view-head">
+          <op-tabs
+            ariaLabel="主视图模式"
+            [tabs]="displayModeTabs"
+            [active]="wf.analysisDisplayMode()"
+            [showCount]="false"
+            (activeChange)="switchDisplayMode($event)"
+          ></op-tabs>
+          <op-tabs
+            ariaLabel="重复类型"
+            [tabs]="wf.kindTabs()"
+            [active]="wf.activeKind()"
+            (activeChange)="setKind($event)"
+          ></op-tabs>
+        </div>
+        <div #groupList class="group-list" [class.preview-mode]="wf.analysisDisplayMode() === 'preview'">
+          @if (wf.analysisDisplayMode() === 'edit') {
+            @for (group of wf.visibleGroups(); track group.id) {
             <div
               class="group-card"
+              [attr.data-group-id]="group.id"
               [attr.data-detail-group-id]="group.id"
               [class.detail-open]="activeDetailGroupId === group.id"
               [style.border-color]="group.cardBorder"
               [style.opacity]="group.opacity"
             >
             <div class="group-head">
-              <span class="mono group-username">{{ group.username }}</span>
-              <span class="muted">@</span>
               <span class="mono group-site">{{ group.site }}</span>
+              <span class="muted">@</span>
+              <span class="mono group-username">{{ group.username }}</span>
               <span class="head-spacer"></span>
-              <span class="item-count">{{ group.count }} 个 item</span>
               <button
                 type="button"
                 class="group-tool-button"
@@ -145,7 +159,19 @@
                 [disabled]="!hasPasswordItems(group)"
                 (click)="wf.toggleGroupReveal(group.id)"
               >{{ groupSecretsVisible(group) ? '隐藏密码' : '显示密码' }}</button>
-              <button type="button" class="skip-button" [style.color]="group.skipColor" (click)="wf.toggleGroupSkip(group.id)">{{ group.skipLabel }}</button>
+              <button
+                type="button"
+                class="group-tool-button apply-group-button"
+                [disabled]="!wf.canApplyGroup(group.id)"
+                (click)="wf.openGroupPlanDialog(group.id)"
+              >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
+              <button
+                type="button"
+                class="skip-button"
+                [style.color]="group.skipColor"
+                [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                (click)="wf.toggleGroupSkip(group.id); closeGroupDetail()"
+              >跳过此组</button>
             </div>
 
             <div class="item-rows">
@@ -222,8 +248,57 @@
               }
             </div>
             </div>
+            }
+          } @else {
+            @for (group of wf.visiblePreviewGroups(); track group.id) {
+              <div
+                class="group-card"
+                [attr.data-group-id]="group.id"
+                [attr.data-detail-group-id]="group.id"
+                [class.detail-open]="activeDetailGroupId === group.id"
+                [style.border-color]="group.cardBorder"
+                [style.opacity]="group.opacity"
+              >
+                <div class="group-head">
+                  <span class="mono group-site">{{ group.site }}</span>
+                  <span class="muted">@</span>
+                  <span class="mono group-username">{{ group.username }}</span>
+                  <span class="head-spacer"></span>
+                  <button
+                    type="button"
+                    class="group-tool-button"
+                    [class.active]="activeDetailGroupId === group.id"
+                    (click)="toggleGroupDetail(group.id)"
+                  >详情对比</button>
+                  <button
+                    type="button"
+                    class="group-tool-button"
+                    [class.active]="groupSecretsVisible(group)"
+                    [disabled]="!hasPasswordItems(group)"
+                    (click)="wf.toggleGroupReveal(group.id)"
+                  >{{ groupSecretsVisible(group) ? '隐藏密码' : '显示密码' }}</button>
+                  <button
+                    type="button"
+                    class="group-tool-button apply-group-button"
+                    [disabled]="!wf.canApplyGroup(group.id)"
+                    (click)="wf.openGroupPlanDialog(group.id)"
+                  >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
+                  <button
+                    type="button"
+                    class="skip-button"
+                    [style.color]="group.skipColor"
+                    [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                    (click)="wf.toggleGroupSkip(group.id); closeGroupDetail()"
+                  >跳过此组</button>
+                </div>
+
+                <div class="item-rows">
+                  <op-plan-action-group [group]="group"></op-plan-action-group>
+                </div>
+              </div>
+            }
           }
-          @if (wf.visibleGroups().length === 0) {
+          @if ((wf.analysisDisplayMode() === 'edit' ? wf.visibleGroups().length : wf.visiblePreviewGroups().length) === 0) {
             <div class="empty-box">
               {{ wf.analysisFilterSummary().activeCount > 0 ? '没有符合当前筛选条件的疑似重复组' : '此分类下没有疑似重复组' }}
             </div>
@@ -320,6 +395,92 @@
           </div>
         </div>
       </aside>
+    }
+
+    @if (wf.groupPlanDialog(); as dialog) {
+      <div class="op-modal-backdrop" (click)="wf.closeGroupPlanDialog()">
+        <div class="op-modal group-plan-modal" role="dialog" aria-modal="true" aria-labelledby="group-plan-title" (click)="$event.stopPropagation()">
+          <div class="op-modal-head">
+            <div>
+              <h2 id="group-plan-title">应用本组</h2>
+              <p class="modal-subtitle">
+                <span class="mono">{{ dialog.title }}</span>
+                <span>{{ dialog.subtitle }}</span>
+              </p>
+            </div>
+            <button type="button" class="modal-close" aria-label="关闭" [disabled]="wf.groupApplying()" (click)="wf.closeGroupPlanDialog()">X</button>
+          </div>
+
+          @if (dialog.plan.blockers.length) {
+            <div class="blocker-list">
+              @for (blocker of dialog.plan.blockers; track blocker) {
+                <p>{{ blocker }}</p>
+              }
+            </div>
+          }
+
+          @if (dialog.plan.warnings.length) {
+            <div class="warning-list">
+              @for (warning of dialog.plan.warnings; track warning) {
+                <p>{{ warning }}</p>
+              }
+            </div>
+          }
+
+          @if (wf.liveExecutionDisabled()) {
+            <div class="page-notice warn-text">真实 1Password 变更当前被后端保护禁用，此处只可预览计划。</div>
+          }
+
+          <div class="plan-action-list">
+            @for (action of dialog.actions; track action.id) {
+              <div class="plan-action-row" [style.background]="action.bg" [style.border-color]="action.border">
+                <span class="plan-op" [style.color]="action.color">{{ action.opLabel }}</span>
+                <strong>{{ action.title }}</strong>
+                <em>{{ action.vaultName }}</em>
+                <b [style.color]="action.color">{{ action.targetLabel }}</b>
+                <small>{{ action.detail }}</small>
+              </div>
+            }
+          </div>
+
+          @if (wf.groupApplyError()) {
+            <div class="page-notice danger-text">{{ wf.groupApplyError() }}</div>
+          }
+
+          <div class="modal-actions">
+            <op-button size="sm" variant="ghost" label="取消" [disabled]="wf.groupApplying()" (pressed)="wf.closeGroupPlanDialog()"></op-button>
+            <op-button
+              size="sm"
+              [label]="wf.groupApplying() ? '正在应用…' : '确认应用 (' + dialog.operationCount + ' 项操作)'"
+              [disabled]="wf.groupApplying() || wf.liveExecutionDisabled() || dialog.plan.blockers.length > 0"
+              (pressed)="wf.confirmGroupPlanDialog()"
+            ></op-button>
+          </div>
+        </div>
+      </div>
+    }
+
+    @if (wf.applying()) {
+      <div class="op-modal-backdrop">
+        <div class="op-modal apply-progress-modal" role="dialog" aria-modal="true" aria-labelledby="batch-apply-title">
+          <div class="op-modal-head">
+            <div>
+              <h2 id="batch-apply-title">正在应用计划</h2>
+              <p class="modal-subtitle">逐组写入 1Password，请勿关闭窗口</p>
+            </div>
+          </div>
+          <op-progress [value]="wf.applyPct()" color="#f07178"></op-progress>
+          <div class="op-list">
+            @for (operation of wf.operationRows(); track operation.id) {
+              <div class="op-row" [style.border-color]="operation.border" [style.opacity]="operation.opacity">
+                <span [style.color]="operation.iconColor" [style.animation]="operation.anim">{{ operation.icon }}</span>
+                <strong>{{ operation.label }}</strong>
+                <em [style.color]="operation.statusColor">{{ operation.statusText }}</em>
+              </div>
+            }
+          </div>
+        </div>
+      </div>
     }
   }
 </section>

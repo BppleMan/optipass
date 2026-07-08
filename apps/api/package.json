@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./dist/server.js",
   "scripts": {
-    "dev": "OP_FORCE_DRY_RUN=true tsx watch src/server.ts",
+    "dev": "tsx watch src/server.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "pnpm run clean && tsc -p tsconfig.json",
     "test": "vitest run",
@@ -13,8 +13,8 @@
     "start": "node dist/server.js",
     "serve:local": "node dist/serve-local.js --open",
     "helper": "node dist/helper.js",
-    "helper:dev": "OP_FORCE_DRY_RUN=true tsx src/helper.ts",
-    "serve:local:dev": "OP_FORCE_DRY_RUN=true tsx src/serve-local.ts --open"
+    "helper:dev": "tsx src/helper.ts",
+    "serve:local:dev": "tsx src/serve-local.ts --open"
   },
   "dependencies": {
     "@1password/sdk": "^0.4.0",

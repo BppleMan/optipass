@@ -13,8 +13,7 @@
 - 可以随时清空当前扫描结果和后端内存中的完整 item 缓存；这个动作不会改动 1Password 数据。
 - UI 不展示密码、TOTP secret、API key 等敏感值，只展示摘要和“是否存在”。
 - 删除默认建议使用归档，可恢复；永久删除需要显式选择，并在执行时输入 `永久删除` 短语确认。
-- 默认禁止真实归档、删除和跨保险库迁移；只有显式设置 `OP_ENABLE_MUTATIONS=true` 才允许后端调用真实变更接口。
-- `just dev-browser` 和 API 开发模式会强制设置 `OP_FORCE_DRY_RUN=true`，即使误设 `OP_ENABLE_MUTATIONS=true` 也不会允许真实变更。
+- 默认禁止真实归档、删除和跨保险库迁移；需要在程序状态栏中手动切换为“可写”后，才允许后端调用真实变更接口。
 
 ## 启动
 
@@ -42,7 +41,7 @@ OP_ACCOUNT_NAME="你的 1Password 账户名或 account_uuid" just dev-browser
 ```
 
 也可以在 UI 中选择“演示数据”检查交互流程。
-默认开发启动会强制启用 dry-run 保护，只允许真实扫描和试运行，不会改动 1Password 数据。
+默认启动为“只读”，只允许真实扫描和试运行，不会改动 1Password 数据；确认要执行真实变更时，可在状态栏切换为“可写”。
 
 如果要用 service account，可改用：
 
@@ -93,14 +92,7 @@ just dev-api
 just dev-ui
 ```
 
-确认要执行真实变更时，再显式开启：
-
-```bash
-cd apps/api
-OP_ENABLE_MUTATIONS=true pnpm start
-```
-
-如果环境中设置了 `OP_FORCE_DRY_RUN=true`，它会覆盖 `OP_ENABLE_MUTATIONS=true`，后端仍会禁止真实归档、删除和迁移。
+确认要执行真实变更时，不需要重启服务或设置环境变量，在页面状态栏把“只读”切换为“可写”即可。
 
 ## 当前能力
 
@@ -122,8 +114,8 @@ OP_ENABLE_MUTATIONS=true pnpm start
 - 执行计划会汇总保留、移动、归档、永久删除数量和受影响保险库，便于执行前核对影响面。
 - 执行计划会由后端规范化动作顺序：保留、跨保险库迁移、归档、永久删除。
 - 真实扫描下必须先成功试运行当前执行计划，试运行会返回后端校验结果，但不会调用归档、删除或迁移动作。
-- 未设置 `OP_ENABLE_MUTATIONS=true` 时，即使试运行通过，真实执行也会被后端阻止。
-- 设置了 `OP_FORCE_DRY_RUN=true` 时，真实执行也会被后端阻止；开发命令默认启用该保护。
+- 状态栏处于“只读”时，即使试运行通过，真实执行也会被后端阻止。
+- 状态栏切换为“可写”后，真实执行仍然必须先成功试运行当前执行计划。
 - 执行结果会显示成功/失败摘要和逐项结果，失败时保留错误原因用于核对。
 - 整组执行成功后会从当前扫描结果中移除该组，并自动进入下一组，适合连续处理较多重复项。
 - 如果真实执行中有任何动作失败，后续动作会被跳过，当前扫描会被标记为需要重新扫描，避免扩大部分失败的影响范围。
@@ -146,7 +138,7 @@ just build-tauri
 just smoke-mock
 ```
 
-`just smoke-mock` 会强制设置 `OP_FORCE_DRY_RUN=true`，并清空传给临时服务的 `OP_ACCOUNT_NAME`、`OP_SERVICE_ACCOUNT_TOKEN` 和 `OP_ENABLE_MUTATIONS`，只验证生产单服务模式、mock 扫描、鉴权和敏感值脱敏，不会连接或修改真实 1Password 数据。
+`just smoke-mock` 会清空传给临时服务的 `OP_ACCOUNT_NAME` 和 `OP_SERVICE_ACCOUNT_TOKEN`，只验证生产单服务模式、mock 扫描、鉴权、状态栏可写开关和敏感值脱敏，不会连接或修改真实 1Password 数据。
 
 ## 迁移说明
 

@@ -8,6 +8,11 @@ import { WorkflowService } from './workflow.service';
 describe('App', () => {
   const workflow = {
     accountChip: signal(''),
+    mutationsEnabled: signal(false),
+    mutationToggleBusy: signal(false),
+    applying: signal(false),
+    groupApplying: signal(false),
+    setMutationsEnabled: () => Promise.resolve(),
     loadSession: () => Promise.resolve()
   };
 
@@ -34,11 +39,10 @@ describe('App', () => {
     expect(compiled.textContent).toContain('Optipass');
   });
 
-  it('should expose the three-step workflow routes', () => {
+  it('should expose the scan and analysis workflow routes', () => {
     expect(routes.map((route) => route.path)).toEqual([
       'scan',
       'analysis',
-      'preview',
       '',
       '**'
     ]);

@@ -1,6 +1,7 @@
 import { signal } from '@angular/core';
 import { vi } from 'vitest';
-import type { DuplicateGroup, ItemSummary, ScanProgress, ScanResult, ScanSnapshot } from '@optimize-password/core';
+import { createExecutionPlan, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
+import type { ExecuteResponse } from './api.service';
 import { WorkflowService } from './workflow.service';
 
 describe('WorkflowService analysis filters', () => {
@@ -40,6 +41,26 @@ describe('WorkflowService analysis filters', () => {
 
     service.setActiveKind('identical');
     expect(service.analysisFilterSummary().chips).toEqual([]);
+  });
+
+  it('limits batch preview and apply operations to currently filtered groups', () => {
+    const service = createService();
+    service.scanResult.set(scanResult());
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
+    });
+
+    expect(service.planOperationCount()).toBe(2);
+
+    service.toggleAnalysisFilter('vaults', 'icloud', true);
+    service.prepareBatchPreview();
+
+    expect(service.visiblePreviewGroups().map((group) => group.id)).toEqual(['github-group']);
+    expect(service.planOperationCount()).toBe(1);
+    expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
   });
 
   it('clears backend scan state before returning to the scan page', async () => {
@@ -94,19 +115,200 @@ describe('WorkflowService analysis filters', () => {
     expect(service.scanSnapshot()).toEqual(scan);
     expect(service.scanDone()).toBe(true);
   });
+
+  it('restores cached tab analysis as completed scan state', async () => {
+    const result = scanResult();
+    const service = new WorkflowService(
+      {
+        session: signal({ token: 'test-session' }),
+        loadAnalysis: vi.fn(async () => result),
+        loadScan: vi.fn()
+      } as never,
+      { navigateByUrl: vi.fn() } as never
+    );
+
+    await service.restoreCachedState();
+
+    expect(service.scanResult()).toEqual(result);
+    expect(service.scanSnapshot()?.scanId).toBe(result.scanId);
+    expect(service.scanProgress()?.phase).toBe('completed');
+    expect(service.scanDone()).toBe(true);
+    expect(service.authState()).toBe('authorized');
+  });
+
+  it('restores global cached scan when the current tab has no analysis', async () => {
+    const scan = scanSnapshot();
+    const loadScan = vi.fn(async () => scan);
+    const service = new WorkflowService(
+      {
+        session: signal({ token: 'test-session' }),
+        loadAnalysis: vi.fn(async () => {
+          throw new Error('no analysis');
+        }),
+        loadScan
+      } as never,
+      { navigateByUrl: vi.fn() } as never
+    );
+
+    await service.restoreCachedState();
+
+    expect(loadScan).toHaveBeenCalledTimes(1);
+    expect(service.scanSnapshot()).toEqual(scan);
+    expect(service.scanResult()).toBeUndefined();
+    expect(service.scanProgress()?.phase).toBe('completed');
+    expect(service.scanDone()).toBe(true);
+  });
+
+  it('joins an active scan when no cached scan is available yet', async () => {
+    const scan = scanSnapshot();
+    const activeProgress = scanProgress(scan.scanId);
+    const streamScanEvents = vi.fn(async (_scanId, _eventsToken, onEvent: (event: unknown) => void) => {
+      onEvent({
+        type: 'completed',
+        progress: {
+          ...activeProgress,
+          phase: 'completed',
+          totalVaults: scan.vaults.length,
+          scannedVaults: scan.vaults.length,
+          totalItems: scan.items.length,
+          scannedItems: scan.items.length
+        },
+        scan
+      });
+    });
+    const service = new WorkflowService(
+      {
+        session: signal({ token: 'test-session' }),
+        loadAnalysis: vi.fn(async () => {
+          throw new Error('no analysis');
+        }),
+        loadScan: vi.fn(async () => {
+          throw new Error('no scan');
+        }),
+        loadActiveScan: vi.fn(async () => ({
+          scanId: scan.scanId,
+          mode: 'live',
+          progress: activeProgress,
+          eventsToken: 'events-token',
+          eventCount: 3
+        })),
+        streamScanEvents
+      } as never,
+      { navigateByUrl: vi.fn() } as never
+    );
+
+    await service.restoreCachedState();
+
+    expect(streamScanEvents).toHaveBeenCalledWith(
+      scan.scanId,
+      'events-token',
+      expect.any(Function),
+      expect.objectContaining({ after: 3 })
+    );
+    expect(service.scanSnapshot()).toEqual(scan);
+    expect(service.scanProgress()?.phase).toBe('completed');
+    expect(service.scanDone()).toBe(true);
+    expect(service.loading()).toBe(false);
+  });
+
+  it('shows verification failure when applying one group', async () => {
+    const result = scanResult();
+    const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => {
+      if (decision.dryRun) {
+        return { dryRun: true, dryRunKey: 'dry-run-key' };
+      }
+      return {
+        scanInvalidated: true,
+        results: [{ itemId: 'private:github-old', action: 'archive', ok: true }],
+        verification: {
+          ok: false,
+          results: [{
+            itemId: 'icloud:github-new',
+            vaultId: 'icloud',
+            action: 'keep',
+            ok: false,
+            severity: 'critical',
+            message: '执行后校验失败：保留项 GitHub 已不在原保险库的活跃列表中。'
+          }]
+        }
+      };
+    });
+    const service = createService({ execute, createPlan: planFrom(result) });
+    service.scanResult.set(result);
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
+    });
+
+    await service.openGroupPlanDialog('github-group');
+    await service.confirmGroupPlanDialog();
+
+    expect(service.groupApplyError()).toContain('执行后校验失败');
+    expect(service.groupApplyError()).toContain('请重新扫描确认');
+    expect(service.groupPlanDialog()).toBeDefined();
+  });
+
+  it('stops batch apply and skips pending groups after verification failure', async () => {
+    const result = scanResult();
+    const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => {
+      if (decision.dryRun) {
+        return { dryRun: true, dryRunKey: `dry-${decision.groupId}` };
+      }
+      return {
+        scanInvalidated: true,
+        results: [{ itemId: decision.items[1].itemId, action: 'archive', ok: true }],
+        verification: {
+          ok: false,
+          results: [{
+            itemId: decision.items[0].itemId,
+            vaultId: decision.items[0].targetVaultId ?? 'unknown',
+            action: 'keep',
+            ok: false,
+            severity: 'critical',
+            message: '执行后校验失败，请重新扫描确认。'
+          }]
+        }
+      };
+    });
+    const service = createService({ execute });
+    service.scanResult.set(result);
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
+    });
+
+    service.prepareBatchPreview();
+    await service.applyPlan();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ groupId: 'github-group', dryRun: true }));
+    expect(execute).toHaveBeenNthCalledWith(2, expect.objectContaining({ groupId: 'github-group', confirmedDryRunKey: 'dry-github-group' }));
+    expect(service.operations().filter((operation) => operation.groupId === 'github-group').map((operation) => operation.status)).toEqual(['failed']);
+    expect(service.operations().filter((operation) => operation.groupId === 'apple-group').map((operation) => operation.status)).toEqual(['skipped']);
+  });
 });
 
 function createService(overrides: {
   clearScan?: () => Promise<{ ok: boolean }>;
   navigateByUrl?: (url: string) => Promise<boolean>;
+  createPlan?: (decision: GroupDecision) => Promise<ReturnType<typeof createExecutionPlan>>;
+  execute?: (decision: GroupDecision & Record<string, unknown>) => Promise<ExecuteResponse>;
 } = {}): WorkflowService {
   return new WorkflowService(
     {
-      session: signal({ token: 'test-session' }),
-      clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true }))
+      session: signal({ token: 'test-session', enableMutations: true }),
+      clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true })),
+      createPlan: overrides.createPlan ?? vi.fn(async (decision: GroupDecision) => createExecutionPlan(decision.groupId, decision, scanResult().items)),
+      execute: overrides.execute ?? vi.fn()
     } as never,
     { navigateByUrl: overrides.navigateByUrl ?? vi.fn() } as never
   );
+}
+
+function planFrom(result: ScanResult): (decision: GroupDecision) => Promise<ReturnType<typeof createExecutionPlan>> {
+  return async (decision) => createExecutionPlan(decision.groupId, decision, result.items);
 }
 
 function scanResult(): ScanResult {

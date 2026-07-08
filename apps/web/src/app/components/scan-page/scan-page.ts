@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
@@ -10,10 +10,14 @@ import { WorkflowService } from '../../workflow.service';
   imports: [FormsModule, OpButtonComponent, OpProgressComponent],
   templateUrl: './scan-page.html'
 })
-export class ScanPageComponent {
+export class ScanPageComponent implements OnInit {
   errorDialogOpen = false;
 
   constructor(readonly wf: WorkflowService) {}
+
+  ngOnInit(): void {
+    void this.wf.restoreCachedState();
+  }
 
   scanButtonLabel(): string {
     if (this.wf.scanDone()) {

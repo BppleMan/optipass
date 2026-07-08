@@ -15,6 +15,7 @@ function createService(): PasswordService {
     archive: vi.fn(),
     delete: vi.fn(),
     copyToVaultAndArchiveSource: vi.fn(),
+    listItemStates: vi.fn(),
     clearCache: vi.fn()
   };
 }
@@ -61,7 +62,6 @@ describe("tauri helper", () => {
         mode: "tauri",
         webOrigins: ["http://tauri.localhost"],
         enableMutations: false,
-        forceDryRun: true,
         sessionToken: "helper-token"
       },
       onePassword: createService(),
