@@ -63,17 +63,31 @@ const kindMeta: Record<DuplicateKind, { label: string; color: string; bg: string
 };
 
 const categoryDisplay: Record<string, { label: string; order: number }> = {
-  login: { label: 'Login', order: 1 },
-  password: { label: 'Password', order: 2 },
-  'secure-note': { label: 'Secure Note', order: 3 },
-  'credit-card': { label: 'Credit Card', order: 4 },
-  'api-credential': { label: 'API Credential', order: 5 },
-  database: { label: 'Database', order: 6 },
-  'ssh-key': { label: 'SSH Key', order: 7 },
-  document: { label: 'Document', order: 8 },
-  identity: { label: 'Identity', order: 9 },
-  server: { label: 'Server', order: 10 },
-  other: { label: 'Other', order: 99 }
+  login: { label: '登录', order: 1 },
+  password: { label: '密码', order: 2 },
+  'secure-note': { label: '安全备注', order: 3 },
+  'credit-card': { label: '信用卡', order: 4 },
+  'api-credential': { label: 'API 凭据', order: 5 },
+  database: { label: '数据库', order: 6 },
+  'ssh-key': { label: 'SSH 密钥', order: 7 },
+  document: { label: '文档', order: 8 },
+  identity: { label: '身份', order: 9 },
+  server: { label: '服务器', order: 10 },
+  other: { label: '其他', order: 99 }
+};
+
+const categoryChipColors: Record<string, string> = {
+  login: '#82aaff',
+  password: '#f07178',
+  'secure-note': '#c792ea',
+  'credit-card': '#c3e88d',
+  'api-credential': '#ffcb6b',
+  database: '#89ddff',
+  'ssh-key': '#f78c6c',
+  document: '#b0bec5',
+  identity: '#c3e88d',
+  server: '#82aaff',
+  other: '#727272'
 };
 
 interface AnalysisFilterState {
@@ -156,6 +170,7 @@ export class WorkflowService {
   readonly phase = signal<'applying' | 'summary'>('summary');
   readonly operations = signal<ApplyOperationView[]>([]);
   readonly applying = signal(false);
+  readonly applyDialogOpen = signal(false);
   readonly applyMessage = signal<string | undefined>(undefined);
   readonly groupPlanDialog = signal<GroupPlanDialogView | undefined>(undefined);
   readonly groupPlanLoading = signal<Record<string, boolean>>({});
@@ -200,7 +215,6 @@ export class WorkflowService {
     }
     return '';
   });
-  readonly authHintClass = computed(() => this.authState() === 'failed' ? 'danger-text' : this.authState() === 'authorizing' ? 'warn-text' : 'ok-text');
   readonly groups = computed(() => (this.scanResult()?.groups ?? []).filter((group) => group.candidateClass !== 'misc-title'));
   readonly kindTabs = computed<KindTabView[]>(() => this.buildKindTabs());
   readonly activeKindGroups = computed<DuplicateGroupView[]>(() => this.buildActiveKindGroups());
@@ -215,15 +229,10 @@ export class WorkflowService {
   });
   readonly planOperationCount = computed(() => this.countPlanOperations(this.visiblePreviewGroups()));
   readonly previewEmpty = computed(() => this.visiblePreviewGroups().length === 0);
-  readonly liveExecutionDisabled = computed(() => {
-    const session = this.session();
-    return this.activeScanMode() === 'live' && session ? !session.enableMutations : false;
-  });
   readonly canApply = computed(() =>
     this.planOperationCount() > 0 &&
     !this.loading() &&
-    !this.applying() &&
-    !this.liveExecutionDisabled()
+    !this.applying()
   );
   readonly operationRows = computed<ApplyOperationRowView[]>(() => this.operations().map((operation) => toOperationRow(operation)));
   readonly applyPct = computed(() => {
@@ -277,7 +286,7 @@ export class WorkflowService {
     this.error.set(undefined);
     try {
       await this.api.setMutationsEnabled(enableMutations);
-      this.status.set(enableMutations ? '已切换为可写模式。' : '已切换为只读模式。');
+      this.status.set(enableMutations ? '已切换为可写模式。' : '已切换为试写模式。');
     } catch (error) {
       this.error.set(messageFor(error));
     } finally {
@@ -787,7 +796,7 @@ export class WorkflowService {
       if (response.scan) {
         this.replaceAnalysisResult(response.scan);
       }
-      this.status.set('已应用该组，本轮分析不再显示。');
+      this.status.set(response.dryRun ? '试写完成，未写入 1Password。' : '已应用该组，本轮分析不再显示。');
       this.groupPlanDialog.set(undefined);
     } catch (error) {
       this.groupApplyError.set(messageFor(error));
@@ -810,6 +819,7 @@ export class WorkflowService {
     this.operations.set(operations);
     this.phase.set('applying');
     this.applying.set(true);
+    this.applyDialogOpen.set(true);
     this.applyMessage.set(undefined);
 
     for (const group of groups) {
@@ -848,7 +858,14 @@ export class WorkflowService {
 
     this.phase.set('summary');
     this.applying.set(false);
-    this.status.set(this.summaryLine());
+    this.status.set(this.operations().some((operation) => operation.dryRun) ? `试写完成，${this.summaryLine()}` : this.summaryLine());
+  }
+
+  closeApplyDialog(): void {
+    if (this.applying()) {
+      return;
+    }
+    this.applyDialogOpen.set(false);
   }
 
   async resetAll(): Promise<void> {
@@ -1010,7 +1027,7 @@ export class WorkflowService {
     const started = scanned > 0 || this.authState() === 'authorized';
     return {
       id: vault.id,
-      icon: ['🔒', '💼', '🏠', '🗄'][index % 4],
+      iconIndex: index,
       name: `${vault.name} vault`,
       scanned,
       total,
@@ -1339,6 +1356,9 @@ export class WorkflowService {
       if (dryRun.blocked || !dryRun.dryRunKey) {
         return dryRun;
       }
+      if (!this.mutationsEnabled()) {
+        return dryRun;
+      }
       return this.api.execute({
         ...decision,
         confirmedDryRunKey: dryRun.dryRunKey,
@@ -1356,6 +1376,12 @@ export class WorkflowService {
   private applyGroupResult(groupId: string, response: ExecuteResponse): void {
     const results = response.results ?? [];
     if (results.length === 0) {
+      if (response.dryRun) {
+        this.operations.set(this.operations().map((operation) => operation.groupId === groupId
+          ? { ...operation, status: 'done' as ApplyStatus, dryRun: true }
+          : operation));
+        return;
+      }
       this.patchGroupOperations(groupId, 'done');
       return;
     }
@@ -1365,12 +1391,12 @@ export class WorkflowService {
       }
       const result = results.find((candidate) => candidate.itemId === operation.itemId);
       if (!result) {
-        return { ...operation, status: 'done' as ApplyStatus };
+        return { ...operation, status: 'done' as ApplyStatus, dryRun: response.dryRun || operation.dryRun };
       }
       if (result.skipped) {
         return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
       }
-      return { ...operation, status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus), error: result.error };
+      return { ...operation, status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus), error: result.error, dryRun: result.dryRun };
     });
     this.operations.set(next);
   }
@@ -1589,7 +1615,7 @@ function typeRowsForVault(vault: VaultScanSummary) {
       count,
       final: count,
       order: categoryDisplay[category]?.order ?? 50,
-      color: '#B0BEC5',
+      color: categoryChipColors[category] ?? '#82aaff',
       countColor: '#eeffff'
     }))
     .sort((a, b) => a.order - b.order)
@@ -1799,7 +1825,7 @@ function vaultName(vaults: VaultSummary[], vaultId: string): string {
 
 function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
   const statusText = operation.status === 'done'
-    ? '成功'
+    ? operation.dryRun ? '已试写' : '成功'
     : operation.status === 'failed'
       ? operation.error || '失败'
       : operation.status === 'running'

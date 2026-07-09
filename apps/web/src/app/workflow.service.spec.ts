@@ -288,6 +288,38 @@ describe('WorkflowService analysis filters', () => {
     expect(service.operations().filter((operation) => operation.groupId === 'github-group').map((operation) => operation.status)).toEqual(['failed']);
     expect(service.operations().filter((operation) => operation.groupId === 'apple-group').map((operation) => operation.status)).toEqual(['skipped']);
   });
+
+  it('keeps apply enabled in dry-run mode and does not submit a write execution', async () => {
+    const result = scanResult();
+    const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => ({
+      dryRun: true,
+      dryRunKey: `dry-${decision.groupId}`,
+      results: [{ itemId: decision.items[1].itemId, action: 'archive', ok: true, dryRun: true }]
+    }));
+    const service = createService({ execute, enableMutations: false });
+    service.scanResult.set(result);
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
+    });
+
+    service.prepareBatchPreview();
+    expect(service.canApply()).toBe(true);
+    expect(service.applyDialogOpen()).toBe(false);
+
+    await service.applyPlan();
+
+    expect(execute.mock.calls.length).toBeGreaterThan(0);
+    expect(execute.mock.calls.every(([decision]) => decision.dryRun === true)).toBe(true);
+    expect(execute.mock.calls.every(([decision]) => !('confirmedDryRunKey' in decision))).toBe(true);
+    expect(service.operations().every((operation) => operation.status === 'done' && operation.dryRun)).toBe(true);
+    expect(service.applyDialogOpen()).toBe(true);
+    expect(service.status()).toContain('试写完成');
+
+    service.closeApplyDialog();
+
+    expect(service.applyDialogOpen()).toBe(false);
+  });
 });
 
 function createService(overrides: {
@@ -295,10 +327,11 @@ function createService(overrides: {
   navigateByUrl?: (url: string) => Promise<boolean>;
   createPlan?: (decision: GroupDecision) => Promise<ReturnType<typeof createExecutionPlan>>;
   execute?: (decision: GroupDecision & Record<string, unknown>) => Promise<ExecuteResponse>;
+  enableMutations?: boolean;
 } = {}): WorkflowService {
   return new WorkflowService(
     {
-      session: signal({ token: 'test-session', enableMutations: true }),
+      session: signal({ token: 'test-session', enableMutations: overrides.enableMutations ?? true }),
       clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true })),
       createPlan: overrides.createPlan ?? vi.fn(async (decision: GroupDecision) => createExecutionPlan(decision.groupId, decision, scanResult().items)),
       execute: overrides.execute ?? vi.fn()

@@ -491,13 +491,13 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (plan.blockers.length > 0) {
       return { plan, results: [], blocked: true };
     }
-    if (decision.dryRun || latestScanMode === "mock") {
+    if (decision.dryRun || latestScanMode === "mock" || !enableMutations) {
       const shouldAdvanceMockScan = !decision.dryRun && latestScanMode === "mock";
       if (shouldAdvanceMockScan) {
         state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
         state.dryRunKey = undefined;
         state.skippedGroups = [];
-      } else if (decision.dryRun) {
+      } else if (decision.dryRun || latestScanMode === "live") {
         state.dryRunKey = dryRunKeyFor(decision, plan.actions);
       }
 
@@ -510,7 +510,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
           dryRun: true
         })),
         dryRun: true,
-        dryRunKey: decision.dryRun ? state.dryRunKey : undefined,
+        dryRunKey: decision.dryRun || (!enableMutations && latestScanMode === "live") ? state.dryRunKey : undefined,
         completedGroupId: shouldAdvanceMockScan ? decision.groupId : undefined,
         scan: shouldAdvanceMockScan && state.analysis ? redactScanResultForClient(state.analysis) : undefined
       };
@@ -552,15 +552,6 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         results: [],
         blocked: true,
         error: "当前仍有扫描任务运行中，请等待扫描完成并重新分析后再执行真实变更。"
-      };
-    }
-
-    if (!enableMutations) {
-      return {
-        plan,
-        results: [],
-        blocked: true,
-        error: mutationDisabledMessage()
       };
     }
 
@@ -1081,10 +1072,6 @@ function validateTargetVaults(decision: GroupDecision, scan: ScanResult): string
 }
 
 class ClientInputError extends Error {
-}
-
-function mutationDisabledMessage(): string {
-  return "真实 1Password 变更当前已在状态栏关闭。请先在状态栏切换为可写，再执行真实归档、删除或迁移。";
 }
 
 async function executePlanActions(actions: PlanAction[], latestScan: ScanResult, onePassword: PasswordService): Promise<ExecuteActionResult[]> {
