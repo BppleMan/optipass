@@ -1,11 +1,11 @@
-import { Component, HostBinding, computed, input } from '@angular/core';
-import { hexToRgb, resolveVaultIcon } from '../icon-library';
+import { Component, computed, input } from '@angular/core';
+import { resolveItemTypeIcon } from '../icon-library';
 
 @Component({
-  selector: 'op-vault-icon',
+  selector: 'op-item-type-icon',
   standalone: true,
   template: `
-    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
       @for (shape of definition().shapes; track $index) {
         @switch (shape.kind) {
           @case ('circle') {
@@ -66,17 +66,11 @@ import { hexToRgb, resolveVaultIcon } from '../icon-library';
     </svg>
   `
 })
-export class VaultIconComponent {
-  readonly name = input('');
-  readonly index = input(0);
+export class ItemTypeIconComponent {
+  readonly type = input('other');
   readonly strokeWidth = input(2);
 
-  private readonly resolved = computed(() => resolveVaultIcon(this.name(), this.index()));
+  private readonly resolved = computed(() => resolveItemTypeIcon(this.type()));
   readonly color = computed(() => this.resolved().color);
   readonly definition = computed(() => this.resolved().definition);
-
-  @HostBinding('style.background')
-  get tileBackground(): string {
-    return `linear-gradient(rgba(${hexToRgb(this.color())}, 0.1), rgba(${hexToRgb(this.color())}, 0.1)), #323232`;
-  }
 }

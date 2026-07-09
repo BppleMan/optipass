@@ -73,6 +73,7 @@ const categoryDisplay: Record<string, { label: string; order: number }> = {
   document: { label: '文档', order: 8 },
   identity: { label: '身份', order: 9 },
   server: { label: '服务器', order: 10 },
+  'software-license': { label: '软件许可', order: 11 },
   other: { label: '其他', order: 99 }
 };
 
@@ -87,6 +88,7 @@ const categoryChipColors: Record<string, string> = {
   document: '#b0bec5',
   identity: '#c3e88d',
   server: '#82aaff',
+  'software-license': '#ffcb6b',
   other: '#727272'
 };
 
@@ -1204,7 +1206,9 @@ export class WorkflowService {
       detailRows: itemDetailRows(item),
       vaultOptions: vaults.map((vault) => ({
         id: vault.id,
-        label: vault.id === item.vaultId ? `${vault.name}（原）` : `迁移至 ${vault.name}`
+        label: vault.id === item.vaultId ? `${vault.name}（原）` : `迁移至 ${vault.name}`,
+        name: vault.name,
+        current: vault.id === item.vaultId
       }))
     };
   }
@@ -1611,6 +1615,7 @@ function typeRowsForVault(vault: VaultScanSummary) {
   return Object.entries(vault.categoryCounts)
     .filter(([, count]) => count > 0)
     .map(([category, count]) => ({
+      category,
       name: categoryDisplay[category]?.label ?? category,
       count,
       final: count,

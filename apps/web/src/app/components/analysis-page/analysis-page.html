@@ -99,6 +99,9 @@
                           [ngModel]="option.selected"
                           (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
                         >
+                        @if (section.id === 'vaults') {
+                          <op-vault-icon class="filter-vault-icon" [name]="option.label"></op-vault-icon>
+                        }
                         <span>{{ option.label }}</span>
                         <em>{{ option.count }}</em>
                       </label>
@@ -219,29 +222,99 @@
                     <span [style.background]="item.strengthBg" [style.color]="item.strengthColor">{{ item.strength }}</span>
                   </div>
                   <div class="updated-cell">{{ item.updated }}</div>
-                  <div class="vault-name">📁 {{ item.vaultName }}</div>
+                  <div class="vault-name">
+                    <op-vault-icon class="row-vault-icon" [name]="item.vaultName"></op-vault-icon>
+                    <span>{{ item.vaultName }}</span>
+                  </div>
                   <div class="action-cell">
                     @if (item.keep) {
-                      <select
-                        [ngModel]="item.targetVault"
-                        (ngModelChange)="wf.updateTargetVault(item.id, $event)"
-                        [disabled]="group.skipped"
-                      >
-                        @for (vault of item.vaultOptions; track vault.id) {
-                          <option [value]="vault.id">{{ vault.label }}</option>
+                      <div class="action-menu" [class.open]="openActionMenuId === item.id + ':vault'" (click)="$event.stopPropagation()">
+                        <button
+                          type="button"
+                          class="action-menu-trigger"
+                          [disabled]="group.skipped"
+                          [attr.aria-expanded]="openActionMenuId === item.id + ':vault'"
+                          (click)="toggleActionMenu(item.id + ':vault', $event)"
+                        >
+                          <op-vault-icon class="action-menu-icon" [name]="selectedVaultOption(item).name"></op-vault-icon>
+                          <span>{{ selectedVaultOption(item).label }}</span>
+                          <b aria-hidden="true">▾</b>
+                        </button>
+                        @if (openActionMenuId === item.id + ':vault') {
+                          <div
+                            class="action-menu-popover"
+                            role="listbox"
+                            [style.top.px]="actionMenuFrame.top"
+                            [style.left.px]="actionMenuFrame.left"
+                            [style.width.px]="actionMenuFrame.width"
+                          >
+                            @for (vault of item.vaultOptions; track vault.id) {
+                              <button
+                                type="button"
+                                class="action-menu-option"
+                                [class.selected]="vault.id === item.targetVault"
+                                role="option"
+                                [attr.aria-selected]="vault.id === item.targetVault"
+                                (click)="selectTargetVault(item, vault.id, $event)"
+                              >
+                                <op-vault-icon class="action-menu-icon" [name]="vault.name"></op-vault-icon>
+                                <span>{{ vault.label }}</span>
+                              </button>
+                            }
+                          </div>
                         }
-                      </select>
+                      </div>
                     } @else {
-                      <select
-                        [ngModel]="item.removeAction"
-                        (ngModelChange)="wf.updateRemoveAction(item.id, $event)"
-                        [disabled]="group.skipped"
-                        [style.border-color]="item.removeBorder"
-                        [style.color]="item.removeColor"
+                      <div
+                        class="action-menu"
+                        [class.open]="openActionMenuId === item.id + ':remove'"
+                        [style.--action-color]="item.removeColor"
+                        (click)="$event.stopPropagation()"
                       >
-                        <option value="archive">归档（可恢复）</option>
-                        <option value="delete">删除</option>
-                      </select>
+                        <button
+                          type="button"
+                          class="action-menu-trigger remove-trigger"
+                          [disabled]="group.skipped"
+                          [attr.aria-expanded]="openActionMenuId === item.id + ':remove'"
+                          (click)="toggleActionMenu(item.id + ':remove', $event)"
+                        >
+                          <span class="action-kind-icon">{{ removeActionIcon(item.removeAction) }}</span>
+                          <span>{{ removeActionLabel(item.removeAction) }}</span>
+                          <b aria-hidden="true">▾</b>
+                        </button>
+                        @if (openActionMenuId === item.id + ':remove') {
+                          <div
+                            class="action-menu-popover"
+                            role="listbox"
+                            [style.top.px]="actionMenuFrame.top"
+                            [style.left.px]="actionMenuFrame.left"
+                            [style.width.px]="actionMenuFrame.width"
+                          >
+                            <button
+                              type="button"
+                              class="action-menu-option"
+                              [class.selected]="item.removeAction === 'archive'"
+                              role="option"
+                              [attr.aria-selected]="item.removeAction === 'archive'"
+                              (click)="selectRemoveAction(item, 'archive', $event)"
+                            >
+                              <span class="action-kind-icon archive">↧</span>
+                              <span>归档（可恢复）</span>
+                            </button>
+                            <button
+                              type="button"
+                              class="action-menu-option danger"
+                              [class.selected]="item.removeAction === 'delete'"
+                              role="option"
+                              [attr.aria-selected]="item.removeAction === 'delete'"
+                              (click)="selectRemoveAction(item, 'delete', $event)"
+                            >
+                              <span class="action-kind-icon delete">×</span>
+                              <span>删除</span>
+                            </button>
+                          </div>
+                        }
+                      </div>
                     }
                   </div>
                 </div>

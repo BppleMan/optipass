@@ -35,7 +35,32 @@
     <div class="scan-summary-metrics">
       @for (metric of summaryMetrics(); track metric.label) {
         <div class="scan-summary-metric">
-          <span class="summary-icon" [style.color]="metric.color">{{ metric.icon }}</span>
+          <span class="summary-icon" [style.color]="metric.color">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              @switch (metric.kind) {
+                @case ('items') {
+                  <path d="M7 7.5 H17" />
+                  <path d="M7 12 H17" />
+                  <path d="M7 16.5 H14" />
+                  <rect x="4.5" y="4.5" width="15" height="15" rx="3" />
+                }
+                @case ('vaults') {
+                  <path d="M8 5.5 H16 L19 8.5 V18.5 H5 V8.5 Z" />
+                  <path d="M8 5.5 V10 H16 V5.5" />
+                  <path d="M9 14 H15" />
+                }
+                @case ('failed') {
+                  <path d="M12 4.5 L19.5 12 L12 19.5 L4.5 12 Z" />
+                  <path d="M12 8.5 V12.6" />
+                  <circle cx="12" cy="15.7" r="0.8" />
+                }
+                @case ('done') {
+                  <circle cx="12" cy="12" r="7.5" />
+                  <path d="M8.5 12.2 L11 14.7 L15.8 9.7" />
+                }
+              }
+            </svg>
+          </span>
           <strong>{{ metric.value }}</strong>
           <small>{{ metric.label }}</small>
         </div>
@@ -51,11 +76,12 @@
       } @else {
         @for (vault of wf.scanRows(); track vault.id) {
         <div class="vault-card">
-          <op-vault-icon class="vault-icon" [index]="vault.iconIndex"></op-vault-icon>
+          <op-vault-icon class="vault-icon" [name]="vault.name" [index]="vault.iconIndex"></op-vault-icon>
           <strong class="vault-name-label">{{ vault.name }}</strong>
           <div class="type-chip-row">
             @for (type of vault.typeRows; track type.name) {
             <div class="type-chip" [style.color]="type.color">
+              <op-item-type-icon class="type-chip-icon" [type]="type.category"></op-item-type-icon>
               <span>{{ type.name }}</span>
               <strong>{{ type.count }}</strong>
             </div>
