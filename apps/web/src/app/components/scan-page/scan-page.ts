@@ -3,13 +3,14 @@ import { FormsModule } from '@angular/forms';
 import { AuthToastBridgeComponent } from '../auth-toast-bridge/auth-toast-bridge';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
+import { ItemTypeIconComponent } from '../item-type-icon/item-type-icon';
 import { VaultIconComponent } from '../vault-icon/vault-icon';
 import { WorkflowService } from '../../workflow.service';
 
 @Component({
   selector: 'op-scan-page',
   standalone: true,
-  imports: [FormsModule, AuthToastBridgeComponent, OpButtonComponent, OpProgressComponent, VaultIconComponent],
+  imports: [FormsModule, AuthToastBridgeComponent, OpButtonComponent, OpProgressComponent, VaultIconComponent, ItemTypeIconComponent],
   templateUrl: './scan-page.html'
 })
 export class ScanPageComponent implements OnInit {
@@ -151,12 +152,12 @@ export class ScanPageComponent implements OnInit {
     return this.wf.overallPct();
   }
 
-  summaryMetrics(): Array<{ label: string; value: string; icon: string; color: string }> {
+  summaryMetrics(): Array<{ label: string; value: string; kind: 'items' | 'vaults' | 'failed' | 'done'; color: string }> {
     return [
-      { label: '总 items', value: String(this.wf.totalItems()), icon: '▰', color: '#82aaff' },
-      { label: '已扫描 vault', value: String(this.scannedVaults()), icon: '□', color: '#c3e88d' },
-      { label: '异常 vault', value: String(this.failedVaults()), icon: '▱', color: '#c792ea' },
-      { label: '扫描完成', value: `${this.displayOverallPct()}%`, icon: '✓', color: '#ffcb6b' }
+      { label: '总 items', value: String(this.wf.totalItems()), kind: 'items', color: '#82aaff' },
+      { label: '已扫描 vault', value: String(this.scannedVaults()), kind: 'vaults', color: '#c3e88d' },
+      { label: '异常 vault', value: String(this.failedVaults()), kind: 'failed', color: '#c792ea' },
+      { label: '扫描完成', value: `${this.displayOverallPct()}%`, kind: 'done', color: '#ffcb6b' }
     ];
   }
 

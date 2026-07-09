@@ -1,5 +1,5 @@
-import { Component, effect, untracked } from '@angular/core';
-import { toast } from 'ngx-sonner';
+import { Component, effect } from '@angular/core';
+import { opToast } from '../op-toast/op-toast';
 import { WorkflowService } from '../../workflow.service';
 
 const AUTH_TOAST_ID = 'scan-auth-hint';
@@ -12,6 +12,7 @@ const AUTH_TOAST_ID = 'scan-auth-hint';
 })
 export class AuthToastBridgeComponent {
   private lastAuthToastKey = '';
+  private pendingToastKey = '';
 
   constructor(readonly wf: WorkflowService) {
     effect(() => {
@@ -22,16 +23,19 @@ export class AuthToastBridgeComponent {
         return;
       }
       this.lastAuthToastKey = toastKey;
+      this.pendingToastKey = toastKey;
 
-      // ngx-sonner stores toasts in Angular signals and reads them while updating.
-      // Keep that third-party signal store out of this effect's dependency graph.
-      untracked(() => this.syncAuthToast(message, state));
+      queueMicrotask(() => {
+        if (this.pendingToastKey === toastKey) {
+          this.syncAuthToast(message, state);
+        }
+      });
     });
   }
 
   private syncAuthToast(message: string | undefined, state: string): void {
     if (!message) {
-      toast.dismiss(AUTH_TOAST_ID);
+      opToast.dismiss(AUTH_TOAST_ID);
       return;
     }
 
@@ -41,15 +45,15 @@ export class AuthToastBridgeComponent {
     };
 
     if (state === 'failed') {
-      toast.error(message, options);
+      opToast.error(message, options);
       return;
     }
 
     if (state === 'authorizing') {
-      toast.warning(message, options);
+      opToast.warning(message, options);
       return;
     }
 
-    toast.success(message, options);
+    opToast.success(message, options);
   }
 }

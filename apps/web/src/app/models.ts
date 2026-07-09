@@ -11,6 +11,7 @@ export type RemoveAction = 'archive' | 'delete';
 export type ApplyStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
 export interface TypeCountView {
+  category: string;
   name: string;
   count: number;
   final: number;
@@ -57,6 +58,8 @@ export interface CredentialChipView {
 export interface VaultOptionView {
   id: string;
   label: string;
+  name: string;
+  current: boolean;
 }
 
 export type ItemDetailFieldKey = 'username' | 'title' | 'url' | 'credentials' | 'strength' | 'vault' | 'category' | 'updated' | 'created' | 'tags';

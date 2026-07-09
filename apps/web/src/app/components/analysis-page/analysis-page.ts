@@ -1,16 +1,17 @@
-import { Component, ElementRef, OnInit, ViewChild } from '@angular/core';
+import { Component, ElementRef, HostListener, OnInit, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
 import { OpTabsComponent } from '../op-tabs/op-tabs';
 import { PlanActionGroupComponent } from './plan-action-group/plan-action-group';
+import { VaultIconComponent } from '../vault-icon/vault-icon';
 import { WorkflowService } from '../../workflow.service';
-import type { AnalysisDisplayMode, DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey, TabView } from '../../models';
+import type { AnalysisDisplayMode, DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey, RemoveAction, TabView, VaultOptionView } from '../../models';
 
 @Component({
   selector: 'op-analysis-page',
   standalone: true,
-  imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent, PlanActionGroupComponent],
+  imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent, PlanActionGroupComponent, VaultIconComponent],
   templateUrl: './analysis-page.html'
 })
 export class AnalysisPageComponent implements OnInit {
@@ -20,6 +21,8 @@ export class AnalysisPageComponent implements OnInit {
   ];
 
   activeDetailGroupId: string | undefined;
+  openActionMenuId: string | undefined;
+  actionMenuFrame = { top: 0, left: 0, width: 180 };
 
   @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
 
@@ -27,6 +30,16 @@ export class AnalysisPageComponent implements OnInit {
 
   ngOnInit(): void {
     void this.wf.restoreCachedState();
+  }
+
+  @HostListener('document:click')
+  closeActionMenu(): void {
+    this.openActionMenuId = undefined;
+  }
+
+  @HostListener('window:resize')
+  closeActionMenuOnResize(): void {
+    this.closeActionMenu();
   }
 
   setKind(kind: string): void {
@@ -49,6 +62,49 @@ export class AnalysisPageComponent implements OnInit {
 
   closeGroupDetail(): void {
     this.activeDetailGroupId = undefined;
+  }
+
+  toggleActionMenu(menuId: string, event: MouseEvent): void {
+    event.stopPropagation();
+    if (this.openActionMenuId === menuId) {
+      this.openActionMenuId = undefined;
+      return;
+    }
+    const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined;
+    const rect = trigger?.getBoundingClientRect();
+    const width = Math.max(180, rect?.width ?? 0);
+    this.actionMenuFrame = {
+      top: (rect?.bottom ?? 0) + 5,
+      left: Math.max(8, (rect?.right ?? width) - width),
+      width
+    };
+    this.openActionMenuId = menuId;
+  }
+
+  selectTargetVault(item: DuplicateItemView, vaultId: string, event: MouseEvent): void {
+    event.stopPropagation();
+    this.wf.updateTargetVault(item.id, vaultId);
+    this.openActionMenuId = undefined;
+  }
+
+  selectRemoveAction(item: DuplicateItemView, action: RemoveAction, event: MouseEvent): void {
+    event.stopPropagation();
+    this.wf.updateRemoveAction(item.id, action);
+    this.openActionMenuId = undefined;
+  }
+
+  selectedVaultOption(item: DuplicateItemView): VaultOptionView {
+    return item.vaultOptions.find((vault) => vault.id === item.targetVault)
+      ?? item.vaultOptions[0]
+      ?? { id: item.vaultId, label: item.vaultName, name: item.vaultName, current: true };
+  }
+
+  removeActionLabel(action: RemoveAction): string {
+    return action === 'delete' ? '删除' : '归档（可恢复）';
+  }
+
+  removeActionIcon(action: RemoveAction): string {
+    return action === 'delete' ? '×' : '↧';
   }
 
   switchDisplayMode(mode: string): void {

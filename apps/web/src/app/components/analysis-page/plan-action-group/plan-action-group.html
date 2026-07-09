@@ -21,7 +21,10 @@
       <strong class="plan-username">{{ action.username }}</strong>
       <span class="plan-title">{{ action.title }}</span>
       <span class="plan-url">{{ action.url }}</span>
-      <em class="plan-label">{{ action.vaultName }}</em>
+      <em class="plan-label plan-vault-label">
+        <op-vault-icon class="plan-vault-icon" [name]="action.vaultName"></op-vault-icon>
+        <span>{{ action.vaultName }}</span>
+      </em>
       <span class="plan-label">{{ action.created }}</span>
       <span class="plan-label">{{ action.updated }}</span>
     </div>
