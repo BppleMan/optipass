@@ -18,4 +18,4 @@ The Tauri dev server loads `apps/web` from Angular's dev server. Rust starts the
 just build-tauri
 ```
 
-The build flow compiles core, compiles the API helper, builds the Angular UI, then lets Tauri's `beforeBundleCommand` package API resources plus the Bun runtime before bundling.
+The build flow compiles core, compiles the API helper, builds the Angular UI, then prepares API resources plus the Bun runtime in `beforeBuildCommand` so Tauri's Rust build script can validate bundle resource paths before packaging.

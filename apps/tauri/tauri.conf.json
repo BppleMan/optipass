@@ -6,8 +6,7 @@
   "build": {
     "beforeDevCommand": "pnpm run dev:ui",
     "devUrl": "http://127.0.0.1:4200",
-    "beforeBuildCommand": "pnpm run prepare:build",
-    "beforeBundleCommand": "pnpm run prepare:resources",
+    "beforeBuildCommand": "pnpm run prepare:build && pnpm run prepare:resources",
     "frontendDist": "../web/dist/web/browser"
   },
   "app": {
