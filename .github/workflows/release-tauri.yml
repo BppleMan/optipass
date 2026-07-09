@@ -1,0 +1,158 @@
+name: Release Tauri DMG
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build macOS DMG and release
+    runs-on: macos-15
+
+    env:
+      CI: "true"
+      GH_TOKEN: ${{ github.token }}
+      PNPM_VERSION: "11.9.0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tags
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags
+
+          tag_name="${GITHUB_REF_NAME}"
+          tag_commit="$(git rev-list -n 1 "$tag_name")"
+
+          previous_tag="$(
+            git tag --merged "$tag_commit" --sort=-version:refname |
+              grep -v -Fx "$tag_name" |
+              head -n 1 || true
+          )"
+
+          {
+            echo "name=$tag_name"
+            echo "asset_name=${tag_name//\//-}"
+            echo "commit=$tag_commit"
+            echo "previous=$previous_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: |
+            packages/core/pnpm-lock.yaml
+            apps/api/pnpm-lock.yaml
+            apps/web/pnpm-lock.yaml
+            apps/tauri/pnpm-lock.yaml
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            apps/tauri/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Cache bundled Bun runtime
+        uses: actions/cache@v4
+        with:
+          path: apps/tauri/resources/runtime/bun/bun
+          key: bun-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/tauri/scripts/prepare-bun-runtime.sh') }}
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pnpm --dir packages/core install --frozen-lockfile
+          pnpm --dir packages/core build
+          pnpm --dir apps/api install --frozen-lockfile
+          pnpm --dir apps/web install --frozen-lockfile
+          pnpm --dir apps/tauri install --frozen-lockfile
+
+      - name: Build Tauri DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pnpm --dir apps/tauri tauri build --bundles dmg
+
+      - name: Stage release assets
+        id: assets
+        shell: bash
+        env:
+          RELEASE_ASSET_TAG: ${{ steps.tag.outputs.asset_name }}
+        run: |
+          set -euo pipefail
+
+          dist_dir="$PWD/dist/release"
+          mkdir -p "$dist_dir"
+
+          dmg_path="$(find apps/tauri/target/release/bundle/dmg -maxdepth 1 -type f -name "*.dmg" -print -quit)"
+
+          if [[ -z "$dmg_path" ]]; then
+            echo "::error::Cannot find packaged .dmg under apps/tauri/target/release/bundle/dmg."
+            exit 1
+          fi
+
+          dmg_asset="$dist_dir/Optipass-$RELEASE_ASSET_TAG-macos-arm64.dmg"
+
+          cp "$dmg_path" "$dmg_asset"
+
+          echo "dmg=$dmg_asset" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: optipass-${{ steps.tag.outputs.asset_name }}-macos-arm64
+          path: ${{ steps.assets.outputs.dmg }}
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+          PREVIOUS_TAG: ${{ steps.tag.outputs.previous }}
+          DMG_ASSET: ${{ steps.assets.outputs.dmg }}
+        run: |
+          set -euo pipefail
+
+          release_args=(
+            "$RELEASE_TAG"
+            "$DMG_ASSET"
+            --verify-tag
+            --generate-notes
+          )
+
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            release_args+=(--notes-start-tag "$PREVIOUS_TAG")
+          fi
+
+          gh release create "${release_args[@]}"
