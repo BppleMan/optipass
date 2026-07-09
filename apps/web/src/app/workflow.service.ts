@@ -201,7 +201,6 @@ export class WorkflowService {
     }
     return '';
   });
-  readonly authHintClass = computed(() => this.authState() === 'failed' ? 'danger-text' : this.authState() === 'authorizing' ? 'warn-text' : 'ok-text');
   readonly groups = computed(() => (this.scanResult()?.groups ?? []).filter((group) => group.candidateClass !== 'misc-title'));
   readonly kindTabs = computed<KindTabView[]>(() => this.buildKindTabs());
   readonly activeKindGroups = computed<DuplicateGroupView[]>(() => this.buildActiveKindGroups());
