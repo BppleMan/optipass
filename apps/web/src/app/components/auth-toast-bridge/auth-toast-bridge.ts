@@ -7,7 +7,8 @@ const AUTH_TOAST_ID = 'scan-auth-hint';
 @Component({
   selector: 'op-auth-toast-bridge',
   standalone: true,
-  template: ''
+  template: '',
+  styles: [':host { display: none; }']
 })
 export class AuthToastBridgeComponent {
   private lastAuthToastKey = '';

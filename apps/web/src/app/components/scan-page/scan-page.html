@@ -1,9 +1,20 @@
 <section data-screen-label="page1-连接与扫描" class="scan-page">
   <op-auth-toast-bridge></op-auth-toast-bridge>
 
-  <div class="connect-card">
-    <h1>连接 1Password</h1>
-    <p>输入 1Password 账户名并点击「扫描」，在桌面端确认授权后，Optipass 会通过 1Password SDK 读取本机数据；整个过程仅在本机运行，凭据数据不会离开你的设备。</p>
+  <div
+    class="connect-card"
+    [class.connect-waiting]="scanStatusTone() === 'waiting'"
+    [class.connect-scanning]="scanStatusTone() === 'scanning'"
+    [class.connect-done]="scanStatusTone() === 'done'"
+    [class.connect-failed]="scanStatusTone() === 'failed'"
+  >
+    <div class="connect-status-mark" aria-hidden="true">{{ connectionIcon() }}</div>
+    <div class="connect-main">
+      <div class="connect-copy">
+        <h1>{{ connectionTitle() }}</h1>
+        <p>Optipass 会通过 1Password SDK 读取本机数据；整个过程仅在本机运行，凭据数据不会离开你的设备。</p>
+      </div>
+    </div>
     <form class="connect-form" (ngSubmit)="wf.startScan()">
       <input
         type="text"
@@ -15,57 +26,48 @@
         [disabled]="scanControlsDisabled()"
       >
       <op-button type="submit" size="sm" [label]="scanButtonLabel()" [disabled]="scanControlsDisabled()"></op-button>
+      <op-button size="sm" variant="ghost" label="重新扫描" [disabled]="rescanDisabled()" (pressed)="wf.rescan()"></op-button>
+      <op-button size="sm" label="开始分析 →" [disabled]="!wf.scanDone()" (pressed)="wf.startAnalysis()"></op-button>
     </form>
   </div>
 
-  <div
-    class="scan-progress-card"
-    [class.waiting]="scanStatusTone() === 'waiting'"
-    [class.scanning]="scanStatusTone() === 'scanning'"
-    [class.done]="scanStatusTone() === 'done'"
-    [class.failed]="scanStatusTone() === 'failed'"
-  >
-    <span class="scan-state">{{ scanStatusLabel() }}</span>
-    @if (wf.scanFailed() && wf.error()) {
-      <button type="button" class="scan-error-summary" (click)="openErrorDialog()">{{ wf.error() }}</button>
-    } @else {
-      <op-progress [value]="wf.overallPct()" [color]="scanProgressColor()"></op-progress>
-      <span class="scan-count">{{ wf.scannedTotal() }} / {{ wf.totalItems() || '—' }}</span>
-    }
-    <op-button size="sm" variant="ghost" label="重新扫描" [disabled]="rescanDisabled()" (pressed)="wf.rescan()"></op-button>
-    <op-button size="sm" label="开始分析 →" [disabled]="!wf.scanDone()" (pressed)="wf.startAnalysis()"></op-button>
+  <div class="scan-summary-card">
+    <div class="scan-summary-metrics">
+      @for (metric of summaryMetrics(); track metric.label) {
+        <div class="scan-summary-metric">
+          <span class="summary-icon" [style.color]="metric.color">{{ metric.icon }}</span>
+          <strong>{{ metric.value }}</strong>
+          <small>{{ metric.label }}</small>
+        </div>
+      }
+    </div>
+    <op-progress [value]="displayOverallPct()" [color]="scanProgressColor()"></op-progress>
   </div>
 
   <div class="scan-list-panel">
-    @if (wf.scanRows().length === 0) {
-      <div class="empty-box">尚未连接 · 连接后将在此列出各 vault 及其 item 类型统计</div>
-    }
-
     <div class="vault-list">
-      @for (vault of wf.scanRows(); track vault.id) {
+      @if (wf.scanRows().length === 0) {
+        <div class="vault-empty-row">尚未连接 · 连接后将在此列出各 vault 及其 item 类型统计</div>
+      } @else {
+        @for (vault of wf.scanRows(); track vault.id) {
         <div class="vault-card">
-          <div class="vault-meta">
-            <op-vault-icon class="vault-icon" [index]="vault.iconIndex"></op-vault-icon>
-            <strong class="vault-name-label">{{ vault.name }}</strong>
-          </div>
-          <div class="vault-main">
-            <div class="vault-progress-row">
-              <op-progress [value]="vault.pct" [color]="vault.barColor"></op-progress>
-              <span>{{ vault.scanned }} / {{ vault.total }}</span>
+          <op-vault-icon class="vault-icon" [index]="vault.iconIndex"></op-vault-icon>
+          <strong class="vault-name-label">{{ vault.name }}</strong>
+          <div class="type-chip-row">
+            @for (type of vault.typeRows; track type.name) {
+            <div class="type-chip" [style.color]="type.color">
+              <span>{{ type.name }}</span>
+              <strong>{{ type.count }}</strong>
             </div>
-            @if (vault.started) {
-              <div class="type-chip-row">
-                @for (type of vault.typeRows; track type.name) {
-                  <div class="type-chip">
-                    <span [style.color]="type.color">{{ type.name }}</span>
-                    <strong [style.color]="type.countColor">{{ type.count }}</strong>
-                  </div>
-                }
-              </div>
             }
           </div>
-          <span class="vault-status" [style.color]="vault.statusColor">{{ vault.status }}</span>
+          <span class="vault-total">{{ vault.total }}</span>
+          <span class="vault-status" [style.color]="vault.statusColor">
+            <span class="vault-status-icon" aria-hidden="true">{{ statusIcon(vault.status) }}</span>
+            {{ vault.status }}
+          </span>
         </div>
+        }
       }
     </div>
   </div>

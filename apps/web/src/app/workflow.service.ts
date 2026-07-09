@@ -76,6 +76,20 @@ const categoryDisplay: Record<string, { label: string; order: number }> = {
   other: { label: '其他', order: 99 }
 };
 
+const categoryChipColors: Record<string, string> = {
+  login: '#82aaff',
+  password: '#f07178',
+  'secure-note': '#c792ea',
+  'credit-card': '#c3e88d',
+  'api-credential': '#ffcb6b',
+  database: '#89ddff',
+  'ssh-key': '#f78c6c',
+  document: '#b0bec5',
+  identity: '#c3e88d',
+  server: '#82aaff',
+  other: '#727272'
+};
+
 interface AnalysisFilterState {
   years: string[];
   vaultIds: string[];
@@ -1601,7 +1615,7 @@ function typeRowsForVault(vault: VaultScanSummary) {
       count,
       final: count,
       order: categoryDisplay[category]?.order ?? 50,
-      color: '#B0BEC5',
+      color: categoryChipColors[category] ?? '#82aaff',
       countColor: '#eeffff'
     }))
     .sort((a, b) => a.order - b.order)
