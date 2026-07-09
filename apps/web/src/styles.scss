@@ -95,7 +95,7 @@ select:disabled {
 .account-chip,
 .mutation-switch,
 .section-row span,
-.vault-title-row span:last-child,
+.vault-progress-row span,
 .cred-line em,
 .strength-cell em,
 .filter-total,
@@ -543,10 +543,20 @@ op-analysis-page {
   background: #292929;
   border: 1px solid #3a3a3a;
   border-radius: 12px;
-  padding: 16px 20px;
+  padding: 8px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
+}
+
+.vault-meta {
+  width: 96px;
+  flex: 0 0 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
 }
 
 .vault-icon {
@@ -562,45 +572,72 @@ op-analysis-page {
   flex-shrink: 0;
 }
 
+.vault-icon svg {
+  display: block;
+}
+
+.vault-name-label {
+  max-width: 100%;
+  color: #eeffff;
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .vault-main {
   flex: 1;
   min-width: 0;
-}
-
-.vault-title-row {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.vault-progress-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
+  width: 100%;
 }
 
-.vault-title-row span:first-child {
-  font-size: 14px;
-  font-weight: 600;
+.vault-progress-row op-progress {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: block;
 }
 
-.vault-title-row span:last-child {
+.vault-progress-row op-progress .op-progress {
+  width: 100%;
+}
+
+.vault-progress-row span {
+  flex: 0 0 84px;
+  width: 84px;
   color: #b0bec5;
   font-size: 12px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .type-chip-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
 }
 
 .type-chip {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
-  border-radius: 7px;
+  padding: 2px 8px;
+  border-radius: 6px;
   background: #1a1a1a;
   border: 1px solid #323232;
-  font-size: 11.5px;
+  font-size: 10px;
 }
 
 .type-chip strong {
@@ -609,8 +646,8 @@ op-analysis-page {
 
 .vault-status {
   font-size: 12px;
-  width: 68px;
-  text-align: right;
+  width: 44px;
+  text-align: center;
   flex-shrink: 0;
 }
 

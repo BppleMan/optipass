@@ -988,7 +988,7 @@ describe("api app", () => {
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
   });
 
-  it("blocks live mutations unless they are explicitly enabled", async () => {
+  it("treats live execution as dry-run unless mutations are explicitly enabled", async () => {
     await app.close();
     service = createService();
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
@@ -1024,8 +1024,9 @@ describe("api app", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().blocked).toBe(true);
-    expect(response.json().error).toContain("真实 1Password 变更");
+    expect(response.json().dryRun).toBe(true);
+    expect(response.json().dryRunKey).toEqual(expect.any(String));
+    expect(response.json().results.every((result: { dryRun?: boolean }) => result.dryRun)).toBe(true);
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();

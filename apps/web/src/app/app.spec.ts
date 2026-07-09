@@ -36,7 +36,8 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     await fixture.whenStable();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.textContent).toContain('Optipass');
+    expect(compiled.textContent).toContain('1Password 查重工具');
+    expect(compiled.textContent).toContain('试写');
   });
 
   it('should expose the scan and analysis workflow routes', () => {

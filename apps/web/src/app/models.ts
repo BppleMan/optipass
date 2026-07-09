@@ -20,7 +20,7 @@ export interface TypeCountView {
 
 export interface ScanVaultRow {
   id: string;
-  icon: string;
+  iconIndex: number;
   name: string;
   scanned: number;
   total: number;
@@ -224,6 +224,7 @@ export interface ApplyOperationView {
   type: 'archive' | 'delete' | 'move';
   label: string;
   status: ApplyStatus;
+  dryRun?: boolean;
   error?: string;
 }
 

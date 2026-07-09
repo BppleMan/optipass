@@ -427,10 +427,6 @@
             </div>
           }
 
-          @if (wf.liveExecutionDisabled()) {
-            <div class="page-notice warn-text">真实 1Password 变更当前被后端保护禁用，此处只可预览计划。</div>
-          }
-
           <div class="plan-action-list">
             @for (action of dialog.actions; track action.id) {
               <div class="plan-action-row" [style.background]="action.bg" [style.border-color]="action.border">
@@ -452,7 +448,7 @@
             <op-button
               size="sm"
               [label]="wf.groupApplying() ? '正在应用…' : '确认应用 (' + dialog.operationCount + ' 项操作)'"
-              [disabled]="wf.groupApplying() || wf.liveExecutionDisabled() || dialog.plan.blockers.length > 0"
+              [disabled]="wf.groupApplying() || dialog.plan.blockers.length > 0"
               (pressed)="wf.confirmGroupPlanDialog()"
             ></op-button>
           </div>
@@ -460,14 +456,15 @@
       </div>
     }
 
-    @if (wf.applying()) {
+    @if (wf.applyDialogOpen()) {
       <div class="op-modal-backdrop">
         <div class="op-modal apply-progress-modal" role="dialog" aria-modal="true" aria-labelledby="batch-apply-title">
           <div class="op-modal-head">
             <div>
-              <h2 id="batch-apply-title">正在应用计划</h2>
-              <p class="modal-subtitle">逐组写入 1Password，请勿关闭窗口</p>
+              <h2 id="batch-apply-title">{{ wf.applying() ? '正在应用计划' : '应用结果' }}</h2>
+              <p class="modal-subtitle">{{ wf.applying() ? '逐组执行计划，请勿关闭窗口' : wf.summaryLine() }}</p>
             </div>
+            <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="wf.applying()" (click)="wf.closeApplyDialog()">X</button>
           </div>
           <op-progress [value]="wf.applyPct()" color="#f07178"></op-progress>
           <div class="op-list">
@@ -479,6 +476,11 @@
               </div>
             }
           </div>
+          @if (!wf.applying()) {
+            <div class="modal-actions">
+              <op-button size="sm" variant="ghost" label="关闭" (pressed)="wf.closeApplyDialog()"></op-button>
+            </div>
+          }
         </div>
       </div>
     }

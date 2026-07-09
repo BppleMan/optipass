@@ -13,13 +13,13 @@
     [class.enabled]="mutationsEnabled()"
     [attr.aria-pressed]="mutationsEnabled()"
     [disabled]="mutationToggleDisabled()"
-    [attr.title]="mutationsEnabled() ? '真实 1Password 变更已开启' : '真实 1Password 变更已关闭'"
+    [attr.title]="mutationsEnabled() ? '可写模式：应用计划会写入 1Password' : '试写模式：应用计划只执行 dry-run'"
     (click)="toggleMutations()"
   >
     <span class="mutation-switch-track" aria-hidden="true">
       <i></i>
     </span>
-    <strong>{{ mutationsEnabled() ? '可写' : '只读' }}</strong>
+    <strong>{{ mutationsEnabled() ? '可写' : '试写' }}</strong>
   </button>
   @if (accountChip()) {
     <div class="account-chip">

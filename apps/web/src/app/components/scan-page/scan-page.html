@@ -27,13 +27,15 @@
     <div class="vault-list">
       @for (vault of wf.scanRows(); track vault.id) {
         <div class="vault-card">
-          <div class="vault-icon">{{ vault.icon }}</div>
+          <div class="vault-meta">
+            <op-vault-icon class="vault-icon" [index]="vault.iconIndex"></op-vault-icon>
+            <strong class="vault-name-label">{{ vault.name }}</strong>
+          </div>
           <div class="vault-main">
-            <div class="vault-title-row">
-              <span>{{ vault.name }}</span>
+            <div class="vault-progress-row">
+              <op-progress [value]="vault.pct" [color]="vault.barColor"></op-progress>
               <span>{{ vault.scanned }} / {{ vault.total }}</span>
             </div>
-            <op-progress [value]="vault.pct" [color]="vault.barColor"></op-progress>
             @if (vault.started) {
               <div class="type-chip-row">
                 @for (type of vault.typeRows; track type.name) {

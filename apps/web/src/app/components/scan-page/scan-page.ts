@@ -2,12 +2,13 @@ import { Component, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
+import { VaultIconComponent } from '../vault-icon/vault-icon';
 import { WorkflowService } from '../../workflow.service';
 
 @Component({
   selector: 'op-scan-page',
   standalone: true,
-  imports: [FormsModule, OpButtonComponent, OpProgressComponent],
+  imports: [FormsModule, OpButtonComponent, OpProgressComponent, VaultIconComponent],
   templateUrl: './scan-page.html'
 })
 export class ScanPageComponent implements OnInit {

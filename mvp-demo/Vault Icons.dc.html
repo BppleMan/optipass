@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: #17181c; }
+  * { box-sizing: border-box; }
+  a { color: #f07178; } a:hover { color: #ff8a92; }
+</style>
+</helmet>
+
+<section style="padding: 48px; font-family: 'IBM Plex Sans', 'PingFang SC', sans-serif; color: #eeffff;">
+  <h2 style="margin: 0 0 6px; font-size: 18px; font-weight: 700;">Vault 图标集 · 20 个</h2>
+  <p style="margin: 0 0 28px; font-size: 13px; color: #727272;">非语义几何图形，按序号循环分配给 vault 列表。统一 24×24 viewBox、2px 圆角描边，配色循环使用主 page 的六个点缀色。</p>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 40px; align-items: flex-start;">
+
+    <!-- Icon grid -->
+    <div style="width: 560px; background: #212121; border: 1px solid #323232; border-radius: 16px; padding: 24px;">
+      <div style="font-size: 12px; color: #727272; margin-bottom: 16px;">全部图标 · tile 样式与列表一致（36px · #323232 底 · 微量同色染底）</div>
+      <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 18px;">
+        <sc-for list="{{ icons }}" as="ic" hint-placeholder-count="20">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <div style="width: 44px; height: 44px; border-radius: 11px; background: {{ ic.tileBg }}; border: 1px solid #3a3a3a; display: flex; align-items: center; justify-content: center;">{{ ic.svg }}</div>
+            <span style="font-size: 10.5px; color: #727272; font-family: 'IBM Plex Mono', monospace;">{{ ic.idx }} {{ ic.name }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- In-context preview -->
+    <div style="width: 480px; background: #212121; border: 1px solid #323232; border-radius: 16px; padding: 24px;">
+      <div style="font-size: 12px; color: #727272; margin-bottom: 16px;">Vault 列表实景 · 按顺序取图标</div>
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <sc-for list="{{ previewRows }}" as="v" hint-placeholder-count="5">
+          <div style="background: #292929; border: 1px solid #3a3a3a; border-radius: 12px; padding: 14px 18px; display: flex; align-items: center; gap: 14px;">
+            <div style="width: 36px; height: 36px; border-radius: 9px; background: {{ v.tileBg }}; border: 1px solid #3a3a3a; display: flex; align-items: center; justify-content: center;">{{ v.svg }}</div>
+            <div style="flex: 1;">
+              <div style="font-size: 14px; font-weight: 600;">{{ v.name }}</div>
+              <div style="font-size: 11.5px; color: #727272; font-family: 'IBM Plex Mono', monospace; margin-top: 2px;">{{ v.count }} items</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: {&quot;width&quot;: 1180, &quot;height&quot;: 720},
+  &quot;accentTint&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;样式&quot;},
+  &quot;monoColor&quot;: {&quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;#B0BEC5&quot;, &quot;options&quot;: [&quot;#B0BEC5&quot;, &quot;#eeffff&quot;, &quot;#f07178&quot;, &quot;#82aaff&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;样式&quot;},
+  &quot;strokeWidth&quot;: {&quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 2, &quot;min&quot;: 1.5, &quot;max&quot;: 3, &quot;step&quot;: 0.25, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;样式&quot;}
+}">
+class Component extends DCLogic {
+  renderVals() {
+    const e = React.createElement;
+    const P = ['#f07178', '#82aaff', '#c3e88d', '#ffcb6b', '#c792ea', '#89ddff'];
+    const useAccent = this.props.accentTint ?? true;
+    const mono = this.props.monoColor ?? '#B0BEC5';
+    const sw = this.props.strokeWidth ?? 2;
+
+    // 20 non-semantic geometric glyphs, 24x24, stroke-based
+    const s = (color) => ({ fill: 'none', stroke: color, strokeWidth: sw, strokeLinecap: 'round', strokeLinejoin: 'round' });
+    const defs = [
+      ['circle',   c => [e('circle', { key: 1, cx: 12, cy: 12, r: 7, ...s(c) })]],
+      ['triangle', c => [e('path', { key: 1, d: 'M12 5 L19 18 L5 18 Z', ...s(c) })]],
+      ['square',   c => [e('rect', { key: 1, x: 6, y: 6, width: 12, height: 12, rx: 2, ...s(c) })]],
+      ['diamond',  c => [e('path', { key: 1, d: 'M12 4 L20 12 L12 20 L4 12 Z', ...s(c) })]],
+      ['hexagon',  c => [e('path', { key: 1, d: 'M12 4 L18.9 8 L18.9 16 L12 20 L5.1 16 L5.1 8 Z', ...s(c) })]],
+      ['rings',    c => [e('circle', { key: 1, cx: 9.5, cy: 12, r: 5.5, ...s(c) }), e('circle', { key: 2, cx: 14.5, cy: 12, r: 5.5, ...s(c) })]],
+      ['wave',     c => [e('path', { key: 1, d: 'M4 9 Q8 5 12 9 T20 9', ...s(c) }), e('path', { key: 2, d: 'M4 15 Q8 11 12 15 T20 15', ...s(c) })]],
+      ['grid',     c => [e('path', { key: 1, d: 'M9 4 V20 M15 4 V20 M4 9 H20 M4 15 H20', ...s(c) })]],
+      ['arc',      c => [e('path', { key: 1, d: 'M5 17 A 9 9 0 0 1 19 17', ...s(c) }), e('circle', { key: 2, cx: 12, cy: 17, r: 1.6, fill: c, stroke: 'none' })]],
+      ['plus',     c => [e('path', { key: 1, d: 'M12 5 V19 M5 12 H19', ...s(c) })]],
+      ['aster',    c => [e('path', { key: 1, d: 'M12 5 V19 M6 8.5 L18 15.5 M18 8.5 L6 15.5', ...s(c) })]],
+      ['halves',   c => [e('circle', { key: 1, cx: 12, cy: 12, r: 7, ...s(c) }), e('path', { key: 2, d: 'M12 5 A 7 7 0 0 1 12 19 Z', fill: c, stroke: 'none' })]],
+      ['stack',    c => [e('path', { key: 1, d: 'M5 8 H19 M5 12 H19 M5 16 H19', ...s(c) })]],
+      ['orbit',    c => [e('circle', { key: 1, cx: 12, cy: 12, r: 4, ...s(c) }), e('circle', { key: 2, cx: 12, cy: 12, r: 8.5, ...s({ ...s(c), stroke: c }), strokeDasharray: '3.2 3.6' })]],
+      ['steps',    c => [e('path', { key: 1, d: 'M5 18 V13 H10 V8 H15 V5 H19', ...s(c) })]],
+      ['dots',     c => [7, 12, 17].flatMap((x, i) => [7, 12, 17].map((y, j) => (i + j) % 2 === 0 ? e('circle', { key: i + '-' + j, cx: x, cy: y, r: 1.8, fill: c, stroke: 'none' }) : null))],
+      ['bolt',     c => [e('path', { key: 1, d: 'M13 4 L6.5 13.5 H11.5 L11 20 L17.5 10.5 H12.5 Z', ...s(c) })]],
+      ['moon',     c => [e('path', { key: 1, d: 'M16.5 14.5 A 7 7 0 1 1 9.5 5.5 A 5.6 5.6 0 0 0 16.5 14.5 Z', ...s(c) })]],
+      ['target',   c => [e('circle', { key: 1, cx: 12, cy: 12, r: 7.5, ...s(c) }), e('circle', { key: 2, cx: 12, cy: 12, r: 2.6, fill: c, stroke: 'none' })]],
+      ['spiral',   c => [e('path', { key: 1, d: 'M12 12 m0 -1.5 a1.5 1.5 0 0 1 1.5 1.5 a3 3 0 0 1 -3 3 a4.8 4.8 0 0 1 -4.8 -4.8 a6.8 6.8 0 0 1 6.8 -6.8 a8.4 8.4 0 0 1 8.4 8.4', ...s(c) })]],
+      ['cross-d',  c => [e('path', { key: 1, d: 'M6 6 L18 18 M18 6 L6 18', ...s(c) })]],
+      ['pie',      c => [e('circle', { key: 1, cx: 12, cy: 12, r: 7.5, ...s(c) }), e('path', { key: 2, d: 'M12 12 L12 4.5 A 7.5 7.5 0 0 1 19.5 12 Z', fill: c, stroke: 'none' })]],
+      ['zigzag',   c => [e('path', { key: 1, d: 'M4 15 L8 9 L12 15 L16 9 L20 15', ...s(c) })]],
+      ['squares',  c => [e('rect', { key: 1, x: 5, y: 5, width: 9, height: 9, rx: 2, ...s(c) }), e('rect', { key: 2, x: 10, y: 10, width: 9, height: 9, rx: 2, ...s(c) })]],
+      ['tri-dot',  c => [e('circle', { key: 1, cx: 12, cy: 6.5, r: 2, fill: c, stroke: 'none' }), e('circle', { key: 2, cx: 6.5, cy: 16.5, r: 2, fill: c, stroke: 'none' }), e('circle', { key: 3, cx: 17.5, cy: 16.5, r: 2, fill: c, stroke: 'none' }), e('path', { key: 4, d: 'M12 6.5 L6.5 16.5 L17.5 16.5 Z', ...s(c), strokeWidth: 1.4 })]],
+      ['bars',     c => [e('path', { key: 1, d: 'M6.5 18 V11 M12 18 V6 M17.5 18 V14', ...s(c) })]],
+      ['hourglass',c => [e('path', { key: 1, d: 'M7 5 H17 L12 12 L17 19 H7 L12 12 Z', ...s(c) })]],
+      ['fan',      c => [e('path', { key: 1, d: 'M12 19 L12 5 M12 19 L5.5 8 M12 19 L18.5 8', ...s(c) }), e('path', { key: 2, d: 'M8 12.5 A 8 8 0 0 1 16 12.5', ...s(c) })]],
+      ['knot',     c => [e('path', { key: 1, d: 'M8 6 A 4.5 4.5 0 0 0 8 15 H16 A 4.5 4.5 0 0 0 16 6 Z', ...s(c) }), e('path', { key: 2, d: 'M8 18 H16', ...s(c) })]],
+      ['comet',    c => [e('circle', { key: 1, cx: 15.5, cy: 8.5, r: 3.2, ...s(c) }), e('path', { key: 2, d: 'M11 13 L5 19 M14 15.5 L10.5 19 M8.5 10 L5 13.5', ...s(c) })]],
+      ['pent',     c => [e('path', { key: 1, d: 'M12 4.5 L19 9.8 L16.3 18 H7.7 L5 9.8 Z', ...s(c) })]],
+      ['eclipse',  c => [e('circle', { key: 1, cx: 10, cy: 12, r: 6.5, ...s(c) }), e('path', { key: 2, d: 'M14 6.8 A 6.5 6.5 0 0 1 14 17.2', ...s(c) })]],
+      ['chevrons', c => [e('path', { key: 1, d: 'M8 5 L13 12 L8 19 M14 5 L19 12 L14 19', ...s(c) })]],
+      ['ripple',   c => [e('circle', { key: 1, cx: 12, cy: 12, r: 2.2, fill: c, stroke: 'none' }), e('path', { key: 2, d: 'M6.5 6.5 A 7.8 7.8 0 0 0 6.5 17.5 M17.5 6.5 A 7.8 7.8 0 0 1 17.5 17.5', ...s(c) })]],
+      ['ladder',   c => [e('path', { key: 1, d: 'M8 4 V20 M16 4 V20 M8 8.5 H16 M8 13 H16 M8 17.5 H16', ...s(c), strokeWidth: 1.7 })]],
+      ['petal',    c => [e('path', { key: 1, d: 'M12 12 C6 6 12 3 12 12 C18 6 21 12 12 12 C18 18 12 21 12 12 C6 18 3 12 12 12 Z', ...s(c) })]],
+      ['slash',    c => [e('path', { key: 1, d: 'M7 19 L13 5 M11.5 19 L17.5 5', ...s(c) })]],
+      ['crescent', c => [e('circle', { key: 1, cx: 12, cy: 12, r: 7.5, ...s(c) }), e('path', { key: 2, d: 'M8 7 A 7 7 0 0 0 8 17', ...s(c) })]],
+      ['tetris',   c => [e('path', { key: 1, d: 'M6 18 V10 H12 V6 H18 V14 H12 V18 Z', ...s(c) })]],
+      ['infinity', c => [e('path', { key: 1, d: 'M12 12 C9.5 8.5 4.5 8.5 4.5 12 C4.5 15.5 9.5 15.5 12 12 C14.5 8.5 19.5 8.5 19.5 12 C19.5 15.5 14.5 15.5 12 12 Z', ...s(c) })]],
+    ];
+
+    const hexToRgba = (h, a) => 'rgba(' + parseInt(h.slice(1, 3), 16) + ',' + parseInt(h.slice(3, 5), 16) + ',' + parseInt(h.slice(5, 7), 16) + ',' + a + ')';
+
+    const build = (i, size) => {
+      const [name, fn] = defs[i % defs.length];
+      const color = useAccent ? P[i % P.length] : mono;
+      return {
+        name,
+        color,
+        idx: String(i + 1).padStart(2, '0'),
+        tileBg: useAccent ? 'linear-gradient(#323232,#323232), ' + hexToRgba(color, 0.10) : '#323232',
+        svg: e('svg', { width: size, height: size, viewBox: '0 0 24 24' }, fn(color)),
+      };
+    };
+
+    // tileBg: simple blend — use rgba over #323232 via background-color composite
+    const buildTile = (i, size) => {
+      const t = build(i, size);
+      t.tileBg = useAccent ? hexToRgba(t.color, 0.10) : '#323232';
+      return t;
+    };
+
+    const icons = defs.map((_, i) => buildTile(i, 22));
+
+    const vaultNames = ['Personal', 'Work', 'Shared Family', 'Finance', 'Dev Secrets', 'Archive'];
+    const counts = [128, 342, 57, 89, 203, 41];
+    const previewRows = vaultNames.map((name, i) => ({ name, count: counts[i], svg: buildTile(i, 20).svg, tileBg: buildTile(i, 20).tileBg }));
+
+    return { icons, previewRows };
+  }
+}
+</script>
+</body>
+</html>
