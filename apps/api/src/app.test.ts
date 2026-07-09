@@ -197,6 +197,22 @@ describe("api app", () => {
     expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
+  it("allows mutation mode PATCH requests through CORS preflight", async () => {
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/api/session/mutations",
+      headers: {
+        origin: "http://127.0.0.1:4200",
+        "access-control-request-method": "PATCH",
+        "access-control-request-headers": "x-session-token,x-tab-id,content-type"
+      }
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:4200");
+    expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
+  });
+
   it("describes the local session mode and runtime capabilities", async () => {
     const response = await app.inject({
       method: "GET",

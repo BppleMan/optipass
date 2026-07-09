@@ -157,6 +157,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   await server.register(cors, {
     origin: config.webOrigins,
     credentials: false,
+    methods: ["GET", "HEAD", "POST", "PATCH", "OPTIONS"],
     allowedHeaders: ["content-type", "x-session-token", "x-tab-id"]
   });
 
