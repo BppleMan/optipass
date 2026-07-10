@@ -118,6 +118,9 @@ export interface DuplicateItemView {
   secretVisible: boolean;
   credentialSignature: string;
   credChips: CredentialChipView[];
+  tags: string[];
+  removedTags: string[];
+  remainingTagCount: number;
   detailRows: ItemDetailRowView[];
   vaultOptions: VaultOptionView[];
 }
@@ -198,7 +201,9 @@ export interface PlanActionPreviewView {
   opLabel: string;
   targetLabel: string;
   detail: string;
-  tone: 'keep' | 'archive' | 'delete' | 'move';
+  tone: 'keep' | 'archive' | 'delete' | 'move' | 'tags';
+  removedTags: string[];
+  retainedTags: string[];
   color: string;
   bg: string;
   border: string;
@@ -217,7 +222,7 @@ export interface ApplyOperationView {
   id: string;
   groupId: string;
   itemId: string;
-  type: 'archive' | 'delete' | 'move';
+  type: 'archive' | 'delete' | 'move' | 'tags';
   label: string;
   status: ApplyStatus;
   dryRun?: boolean;

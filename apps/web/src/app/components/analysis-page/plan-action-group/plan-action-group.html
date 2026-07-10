@@ -19,7 +19,12 @@
     <div class="plan-action-row plan-mode-row" [style.background]="action.bg" [style.border-color]="action.border">
       <span class="plan-op" [style.color]="action.color">{{ action.opLabel }}</span>
       <strong class="plan-username">{{ action.username }}</strong>
-      <span class="plan-title">{{ action.title }}</span>
+      <span class="plan-title">
+        <span>{{ action.title }}</span>
+        @if (action.removedTags.length > 0) {
+          <em class="plan-tag-change" [attr.title]="'移除：' + action.removedTags.join('、')">−{{ action.removedTags.length }} 标签</em>
+        }
+      </span>
       <span class="plan-url">{{ action.url }}</span>
       <em class="plan-label plan-vault-label">
         <op-vault-icon class="plan-vault-icon" [name]="action.vaultName"></op-vault-icon>

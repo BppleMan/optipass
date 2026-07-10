@@ -47,6 +47,8 @@ export function createExecutionPlan(
     }
 
     const targetVaultId = decision.targetVaultId || item.vaultId;
+    const removeTags = Array.from(new Set(decision.removeTags ?? []))
+      .filter((tag) => item.tags.includes(tag));
 
     if (decision.keep && targetVaultId !== item.vaultId) {
       if (item.hasPasskey) {
@@ -57,11 +59,20 @@ export function createExecutionPlan(
         type: "copy-to-vault-and-archive-source" as const,
         itemId: item.id,
         vaultId: item.vaultId,
-        targetVaultId
+        targetVaultId,
+        removeTags
       };
     }
 
     if (decision.keep) {
+      if (removeTags.length > 0) {
+        return {
+          type: "update-tags" as const,
+          itemId: item.id,
+          vaultId: item.vaultId,
+          removeTags
+        };
+      }
       return {
         type: "keep" as const,
         itemId: item.id,
@@ -95,6 +106,8 @@ function summarizeActions(actions: PlanAction[]): ExecutionPlanSummary {
     archive: 0,
     delete: 0,
     move: 0,
+    tagUpdate: 0,
+    removedTagCount: 0,
     affectedVaultIds: []
   };
 
@@ -102,12 +115,20 @@ function summarizeActions(actions: PlanAction[]): ExecutionPlanSummary {
     affectedVaultIds.add(action.vaultId);
     if (action.type === "keep") {
       summary.keep += 1;
+    } else if (action.type === "update-tags") {
+      summary.keep += 1;
+      summary.tagUpdate += 1;
+      summary.removedTagCount += action.removeTags.length;
     } else if (action.type === "archive") {
       summary.archive += 1;
     } else if (action.type === "delete") {
       summary.delete += 1;
     } else if (action.type === "copy-to-vault-and-archive-source") {
       summary.move += 1;
+      if (action.removeTags.length > 0) {
+        summary.tagUpdate += 1;
+        summary.removedTagCount += action.removeTags.length;
+      }
       affectedVaultIds.add(action.targetVaultId);
     }
   }
@@ -126,11 +147,13 @@ function actionPriority(action: PlanAction): number {
   switch (action.type) {
     case "keep":
       return 0;
-    case "copy-to-vault-and-archive-source":
+    case "update-tags":
       return 1;
-    case "archive":
+    case "copy-to-vault-and-archive-source":
       return 2;
-    case "delete":
+    case "archive":
       return 3;
+    case "delete":
+      return 4;
   }
 }

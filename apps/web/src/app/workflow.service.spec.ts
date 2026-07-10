@@ -20,6 +20,50 @@ describe('WorkflowService analysis filters', () => {
     ]);
   });
 
+  it('keeps tag removal as a reversible draft and includes it in the plan', () => {
+    const service = createService();
+    const result = scanResult();
+    result.items[0].tags = ['CSV Import', 'work'];
+    service.scanResult.set(result);
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', removeTags: [] },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
+    });
+
+    service.toggleTagRemoval('icloud:github-new', 'CSV Import');
+
+    const itemView = service.visibleGroups()[0].items[0];
+    const plan = service.allPreviewGroups()[0].plan!;
+    expect(itemView.removedTags).toEqual(['CSV Import']);
+    expect(itemView.remainingTagCount).toBe(1);
+    expect(plan.actions).toContainEqual({
+      type: 'update-tags',
+      itemId: 'icloud:github-new',
+      vaultId: 'icloud',
+      removeTags: ['CSV Import']
+    });
+
+    service.toggleTagRemoval('icloud:github-new', 'CSV Import');
+    expect(service.visibleGroups()[0].items[0].removedTags).toEqual([]);
+  });
+
+  it('applies a shared tag removal only to kept items in the group', () => {
+    const service = createService();
+    const result = scanResult();
+    result.items[0].tags = ['CSV Import'];
+    result.items[1].tags = ['CSV Import'];
+    service.scanResult.set(result);
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
+    });
+
+    service.removeTagFromGroup('github-group', 'CSV Import');
+
+    expect(service.decisions()['icloud:github-new'].removeTags).toEqual(['CSV Import']);
+    expect(service.decisions()['private:github-old'].removeTags).toBeUndefined();
+  });
+
   it('uses OR within one filter section and AND across different sections', () => {
     const service = createService();
     service.scanResult.set(scanResult());

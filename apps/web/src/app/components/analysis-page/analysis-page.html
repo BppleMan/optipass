@@ -244,7 +244,9 @@
                   </div>
                   <div class="identity-cell">
                     <strong class="identity-username">{{ item.username }}</strong>
-                    <small class="identity-title">{{ item.title }}</small>
+                    <div class="identity-meta-line">
+                      <small class="identity-title">{{ item.title }}</small>
+                    </div>
                   </div>
                   <div class="url-cell">
                     <span>{{ item.url }}</span>
@@ -255,6 +257,28 @@
                         <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
                         <em [style.color]="chip.textColor">{{ chip.text }}</em>
                       </div>
+                    }
+                  </div>
+                  <div class="tags-cell">
+                    @if (item.tags.length > 0) {
+                      <button
+                        type="button"
+                        class="tag-column-trigger"
+                        [class.changed]="item.removedTags.length > 0"
+                        [attr.aria-label]="item.tags.length + ' 个标签' + (item.removedTags.length > 0 ? '，应用后剩余 ' + item.remainingTagCount + ' 个' : '')"
+                        (mouseenter)="showTagPopover($event, group, item)"
+                        (focus)="showTagPopover($event, group, item)"
+                        (mouseleave)="scheduleTagPopoverClose()"
+                        (click)="showTagPopover($event, group, item)"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h9.2L20 12.3 12.3 20 4 11.7V5.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><circle cx="8.3" cy="9.7" r="1.2" fill="currentColor"></circle></svg>
+                        <span>{{ item.tags.length }}</span>
+                        @if (item.removedTags.length > 0) {
+                          <em>→{{ item.remainingTagCount }}</em>
+                        }
+                      </button>
+                    } @else {
+                      <span class="tag-column-empty">—</span>
                     }
                   </div>
                   <div class="updated-cell">{{ item.updated }}</div>
@@ -355,6 +379,67 @@
       </div>
     </div>
 
+    @if (tagPopover; as popover) {
+      @if (tagPopoverGroup(); as popoverGroup) {
+        @if (tagPopoverItem(); as popoverItem) {
+          <div
+            class="tag-list-overlay"
+            [class.above]="popover.above"
+            [style.left.px]="popover.left"
+            [style.top.px]="popover.top"
+            role="dialog"
+            [attr.aria-label]="popoverItem.title + ' 的标签'"
+            (mouseenter)="cancelTagPopoverClose()"
+            (mouseleave)="scheduleTagPopoverClose()"
+            (focusin)="cancelTagPopoverClose()"
+            (focusout)="scheduleTagPopoverClose()"
+          >
+            <div class="tag-list-overlay-head">
+              <span>标签</span>
+              <small>{{ popoverItem.tags.length }} 个</small>
+              @if (popoverItem.removedTags.length > 0) {
+                <em>移除 {{ popoverItem.removedTags.length }}</em>
+              }
+            </div>
+            <div class="tag-list-overlay-items">
+              @for (tag of popoverItem.tags; track tag) {
+                <div class="tag-list-overlay-item">
+                  <button
+                    type="button"
+                    [class.removed]="popoverItem.removedTags.includes(tag)"
+                    [class.shared]="tagSharedAcrossGroup(popoverGroup, tag)"
+                    [disabled]="!popoverItem.keep"
+                    [attr.aria-label]="(popoverItem.removedTags.includes(tag) ? '撤销移除标签 ' : '移除标签 ') + tag"
+                    [attr.title]="tag"
+                    (click)="requestTagRemoval(popoverGroup, popoverItem, tag)"
+                  >
+                    <span>{{ tag }}</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      @if (popoverItem.removedTags.includes(tag)) {
+                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                      } @else {
+                        <path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                      }
+                    </svg>
+                  </button>
+                  @if (tagPromptFor(popoverItem.id, tag)) {
+                    <div class="tag-list-scope">
+                      <strong>移除“{{ tag }}”</strong>
+                      <button type="button" (click)="applyTagScope('item')">仅此 item</button>
+                      <button type="button" (click)="applyTagScope('group')">本组 {{ tagScopePrompt?.eligibleCount }} 个保留/迁移项</button>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+            @if (!popoverItem.keep) {
+              <small class="tag-list-overlay-note">当前处置不会更新标签</small>
+            }
+          </div>
+        }
+      }
+    }
+
     @if (detailGroup(); as detailGroup) {
       <aside class="group-detail-drawer" role="dialog" aria-modal="false" aria-label="组内 item 详情对比">
         <div class="drawer-head">
@@ -432,7 +517,7 @@
         <div class="drawer-strip-clip">
           <div class="drawer-card-strip scrollable">
             @for (item of detailGroup.items; track item.id) {
-              <article class="drawer-item-card" [class.keep]="item.keep">
+              <article class="drawer-item-card" [class.keep]="item.keep" [attr.data-drawer-item-id]="item.id">
                 <div class="drawer-item-head">
                   <div class="drawer-item-title">
                     <strong [class.diff]="fieldDifferent(detailGroup, 'username')" [attr.title]="item.username">{{ item.username }}</strong>
@@ -467,6 +552,9 @@
                       [class.credential]="field.tone === 'credential'"
                       [class.warning]="field.tone === 'warning'"
                       [class.vault]="field.key === 'vault'"
+                      [class.tags]="field.key === 'tags'"
+                      [class.inactive]="field.key === 'tags' && !item.keep"
+                      [attr.tabindex]="field.key === 'tags' ? -1 : null"
                     >
                       <span>{{ field.label }}</span>
                       @if (field.key === 'credentials') {
@@ -501,6 +589,55 @@
                         <div class="drawer-time-line">
                           @for (part of detailTimeParts(item); track $index) {
                             <span>{{ part }}</span>
+                          }
+                        </div>
+                      } @else if (field.key === 'tags') {
+                        <div class="drawer-tag-field">
+                          @if (item.tags.length === 0) {
+                            <span class="drawer-tag-empty">无标签</span>
+                          } @else {
+                            <div class="drawer-tag-list">
+                              @for (tag of visibleTags(item); track tag) {
+                                <div class="drawer-tag-chip-wrap">
+                                  <button
+                                    type="button"
+                                    class="drawer-tag-chip"
+                                    [class.removed]="item.removedTags.includes(tag)"
+                                    [class.shared]="tagSharedAcrossGroup(detailGroup, tag)"
+                                    [disabled]="!item.keep"
+                                    [attr.aria-label]="(item.removedTags.includes(tag) ? '撤销移除标签 ' : '移除标签 ') + tag"
+                                    [attr.title]="tag"
+                                    (click)="requestTagRemoval(detailGroup, item, tag)"
+                                  >
+                                    <span>{{ tag }}</span>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                      @if (item.removedTags.includes(tag)) {
+                                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                                      } @else {
+                                        <path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                                      }
+                                    </svg>
+                                  </button>
+                                  @if (tagPromptFor(item.id, tag)) {
+                                    <div class="tag-scope-popover">
+                                      <strong>移除“{{ tag }}”</strong>
+                                      <button type="button" (click)="applyTagScope('item')">仅此 item</button>
+                                      <button type="button" (click)="applyTagScope('group')">本组 {{ tagScopePrompt?.eligibleCount }} 个保留/迁移项</button>
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              @if (hiddenTagCount(item) > 0) {
+                                <button type="button" class="drawer-tag-more" (click)="toggleTagExpansion(item.id)">+{{ hiddenTagCount(item) }}</button>
+                              } @else if (item.tags.length > 2) {
+                                <button type="button" class="drawer-tag-more" (click)="toggleTagExpansion(item.id)">收起</button>
+                              }
+                            </div>
+                          }
+                          @if (!item.keep && item.tags.length > 0) {
+                            <small>当前处置不会更新标签</small>
+                          } @else if (item.removedTags.length > 0) {
+                            <small>应用后移除 {{ item.removedTags.length }} 个，保留 {{ item.remainingTagCount }} 个</small>
                           }
                         </div>
                       } @else {
@@ -548,12 +685,21 @@
 
           <div class="plan-action-list">
             @for (action of dialog.actions; track action.id) {
-              <div class="plan-action-row" [style.background]="action.bg" [style.border-color]="action.border">
+              <div class="plan-action-row" [class.has-tag-changes]="action.removedTags.length > 0" [style.background]="action.bg" [style.border-color]="action.border">
                 <span class="plan-op" [style.color]="action.color">{{ action.opLabel }}</span>
                 <strong>{{ action.title }}</strong>
                 <em>{{ action.vaultName }}</em>
                 <b [style.color]="action.color">{{ action.targetLabel }}</b>
                 <small>{{ action.detail }}</small>
+                @if (action.removedTags.length > 0) {
+                  <div class="plan-tag-diff">
+                    <span>移除</span>
+                    @for (tag of action.removedTags; track tag) {
+                      <em [attr.title]="tag">{{ tag }}</em>
+                    }
+                    <b>保留 {{ action.retainedTags.length }} 个</b>
+                  </div>
+                }
               </div>
             }
           </div>

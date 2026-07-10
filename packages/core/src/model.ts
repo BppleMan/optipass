@@ -239,6 +239,7 @@ export interface ItemDecision {
   keep: boolean;
   targetVaultId?: string;
   deleteMode?: "archive" | "delete";
+  removeTags?: string[];
 }
 
 export interface GroupDecision {
@@ -255,6 +256,12 @@ export type PlanAction =
       targetVaultId: string;
     }
   | {
+      type: "update-tags";
+      itemId: string;
+      vaultId: string;
+      removeTags: string[];
+    }
+  | {
       type: "archive" | "delete";
       itemId: string;
       vaultId: string;
@@ -264,6 +271,7 @@ export type PlanAction =
       itemId: string;
       vaultId: string;
       targetVaultId: string;
+      removeTags: string[];
     };
 
 export interface ExecutionPlan {
@@ -281,5 +289,7 @@ export interface ExecutionPlanSummary {
   archive: number;
   delete: number;
   move: number;
+  tagUpdate: number;
+  removedTagCount: number;
   affectedVaultIds: string[];
 }

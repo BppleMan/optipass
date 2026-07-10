@@ -606,6 +606,45 @@ export class WorkflowService {
     this.decisions.set({ ...this.decisions(), [itemId]: { ...current, deleteMode: removeAction } });
   }
 
+  toggleTagRemoval(itemId: string, tag: string): void {
+    const current = this.decisions()[itemId];
+    if (!current) {
+      return;
+    }
+    const removeTags = new Set(current.removeTags ?? []);
+    if (removeTags.has(tag)) {
+      removeTags.delete(tag);
+    } else {
+      removeTags.add(tag);
+    }
+    this.decisions.set({
+      ...this.decisions(),
+      [itemId]: { ...current, removeTags: Array.from(removeTags) }
+    });
+  }
+
+  removeTagFromGroup(groupId: string, tag: string): void {
+    const group = this.groups().find((candidate) => candidate.id === groupId);
+    const result = this.scanResult();
+    if (!group || !result) {
+      return;
+    }
+    const itemById = new Map(result.items.map((item) => [item.id, item]));
+    const next = { ...this.decisions() };
+    for (const itemId of group.itemIds) {
+      const current = next[itemId];
+      const item = itemById.get(itemId);
+      if (!current?.keep || !item?.tags.includes(tag)) {
+        continue;
+      }
+      next[itemId] = {
+        ...current,
+        removeTags: Array.from(new Set([...(current.removeTags ?? []), tag]))
+      };
+    }
+    this.decisions.set(next);
+  }
+
   updateGroupRemoveAction(groupId: string, removeAction: RemoveAction): void {
     const group = this.groups().find((candidate) => candidate.id === groupId);
     if (!group) {
@@ -935,7 +974,7 @@ export class WorkflowService {
     return {
       groupId,
       title: group ? `${groupUsername(group, items)} @ ${groupSite(group, items)}` : groupId,
-      subtitle: `${plan.summary.keep} 保留 · ${plan.summary.archive} 归档 · ${plan.summary.delete} 删除 · ${plan.summary.move} 迁移`,
+      subtitle: `${plan.summary.keep} 保留 · ${plan.summary.archive} 归档 · ${plan.summary.delete} 删除 · ${plan.summary.move} 迁移${plan.summary.tagUpdate > 0 ? ` · ${plan.summary.tagUpdate} 项标签修改 / 移除 ${plan.summary.removedTagCount} 个` : ''}`,
       plan,
       actions: this.planActionPreviewRows(plan),
       operationCount: plan.actions.filter((action) => action.type !== 'keep').length
@@ -991,7 +1030,8 @@ export class WorkflowService {
           itemId: item.id,
           keep,
           targetVaultId: item.vaultId,
-          deleteMode: 'archive'
+          deleteMode: 'archive',
+          removeTags: []
         };
       }
     }
@@ -1161,7 +1201,8 @@ export class WorkflowService {
       itemId: item.id,
       keep: false,
       targetVaultId: item.vaultId,
-      deleteMode: 'archive'
+      deleteMode: 'archive',
+      removeTags: []
     };
     const removeAction = removeActionFromDecision(decision);
     const username = item.usernames.find(Boolean) ?? '（无 username）';
@@ -1184,6 +1225,9 @@ export class WorkflowService {
       secretVisible: Boolean(this.visibleSecretItems()[item.id]),
       credentialSignature: credentialCompareValue(item),
       credChips,
+      tags: item.tags,
+      removedTags: decision.removeTags ?? [],
+      remainingTagCount: item.tags.filter((tag) => !(decision.removeTags ?? []).includes(tag)).length,
       detailRows: itemDetailRows(item),
       vaultOptions: vaults.map((vault) => ({
         id: vault.id,
@@ -1282,7 +1326,8 @@ export class WorkflowService {
           itemId,
           keep: decision?.keep ?? false,
           targetVaultId: decision?.targetVaultId || item?.vaultId,
-          deleteMode: decision?.deleteMode ?? 'archive'
+          deleteMode: decision?.deleteMode ?? 'archive',
+          removeTags: decision?.removeTags ?? []
         };
       })
     };
@@ -1319,7 +1364,17 @@ export class WorkflowService {
         groupId,
         itemId: action.itemId,
         type: 'move',
-        label: `迁移「${title}」：${item?.vaultName ?? action.vaultId} → ${targetName}`,
+        label: `迁移「${title}」：${item?.vaultName ?? action.vaultId} → ${targetName}${action.removeTags.length > 0 ? `，同时${removedTagsLabel(action.removeTags)}` : ''}`,
+        status: 'pending'
+      };
+    }
+    if (action.type === 'update-tags') {
+      return {
+        id: `op-${action.itemId}`,
+        groupId,
+        itemId: action.itemId,
+        type: 'tags',
+        label: `更新「${title}」：${removedTagsLabel(action.removeTags)}`,
         status: 'pending'
       };
     }
@@ -1735,6 +1790,29 @@ function describePlanAction(action: PlanAction, item: ItemSummary | undefined, v
   const created = item?.createdAt ? item.createdAt.slice(0, 10) : '—';
   const updated = item ? itemUpdatedDate(item) : '-';
   const vault = item?.vaultName || vaultName(vaults, action.vaultId);
+  const removedTags = 'removeTags' in action ? action.removeTags : [];
+  const retainedTags = item?.tags.filter((tag) => !removedTags.includes(tag)) ?? [];
+  if (action.type === 'update-tags') {
+    return {
+      id: `${action.type}:${action.itemId}`,
+      itemId: action.itemId,
+      title,
+      username,
+      url,
+      created,
+      updated,
+      vaultName: vault,
+      opLabel: '标签',
+      targetLabel: `移除 ${removedTags.length} 个`,
+      detail: `保留在 ${vault}，更新标签`,
+      tone: 'tags',
+      removedTags,
+      retainedTags,
+      color: '#c792ea',
+      bg: 'rgba(199,146,234,0.1)',
+      border: 'rgba(199,146,234,0.38)'
+    };
+  }
   if (action.type === 'keep') {
     const targetVaultName = vaultName(vaults, action.targetVaultId);
     const moved = action.targetVaultId !== action.vaultId;
@@ -1751,6 +1829,8 @@ function describePlanAction(action: PlanAction, item: ItemSummary | undefined, v
       targetLabel: moved ? targetVaultName : vault,
       detail: moved ? `保留并迁移至 ${targetVaultName}` : `保留在 ${vault}`,
       tone: moved ? 'move' : 'keep',
+      removedTags,
+      retainedTags,
       color: moved ? '#82aaff' : '#c3e88d',
       bg: moved ? 'rgba(130,170,255,0.1)' : 'rgba(195,232,141,0.08)',
       border: moved ? 'rgba(130,170,255,0.36)' : 'rgba(195,232,141,0.32)'
@@ -1771,6 +1851,8 @@ function describePlanAction(action: PlanAction, item: ItemSummary | undefined, v
       targetLabel: targetVaultName,
       detail: `复制到 ${targetVaultName}，成功后归档原 item`,
       tone: 'move',
+      removedTags,
+      retainedTags,
       color: '#82aaff',
       bg: 'rgba(130,170,255,0.1)',
       border: 'rgba(130,170,255,0.36)'
@@ -1790,6 +1872,8 @@ function describePlanAction(action: PlanAction, item: ItemSummary | undefined, v
       targetLabel: '永久删除',
       detail: '从 1Password 永久删除，不进入归档',
       tone: 'delete',
+      removedTags,
+      retainedTags,
       color: '#ff5370',
       bg: 'rgba(255,83,112,0.1)',
       border: 'rgba(255,83,112,0.42)'
@@ -1808,10 +1892,16 @@ function describePlanAction(action: PlanAction, item: ItemSummary | undefined, v
     targetLabel: '归档',
     detail: '移动到 1Password 归档，可恢复',
     tone: 'archive',
+    removedTags,
+    retainedTags,
     color: '#ffcb6b',
     bg: 'rgba(255,203,107,0.09)',
     border: 'rgba(255,203,107,0.34)'
   };
+}
+
+function removedTagsLabel(tags: string[]): string {
+  return `移除标签${tags.map((tag) => `「${tag}」`).join('、')}`;
 }
 
 function itemDetailRows(item: ItemSummary): Array<{ key: 'updated' | 'created' | 'tags'; label: string; value: string }> {

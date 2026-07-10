@@ -32,7 +32,8 @@ export interface PasswordService {
   revealCredentials(appItemId: string): Promise<RevealedCredentialField[]>;
   archive(vaultId: string, onePasswordItemId: string): Promise<void>;
   delete(vaultId: string, onePasswordItemId: string): Promise<void>;
-  copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<CopyToVaultResult>;
+  removeTags(appItemId: string, removeTags: string[]): Promise<void>;
+  copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string, removeTags?: string[]): Promise<CopyToVaultResult>;
   listItemStates(vaultId: string): Promise<ItemStateSnapshot>;
   clearCache(): void;
 }
@@ -826,7 +827,8 @@ const decisionSchema = z.object({
       itemId: z.string(),
       keep: z.boolean(),
       targetVaultId: z.string().optional(),
-      deleteMode: z.enum(["archive", "delete"]).optional()
+      deleteMode: z.enum(["archive", "delete"]).optional(),
+      removeTags: z.array(z.string().min(1)).optional()
     })
   )
 });
@@ -1093,12 +1095,14 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
     }
 
     try {
-      if (action.type === "archive") {
+      if (action.type === "update-tags") {
+        await onePassword.removeTags(item.id, action.removeTags);
+      } else if (action.type === "archive") {
         await onePassword.archive(item.vaultId, item.onePasswordItemId);
       } else if (action.type === "delete") {
         await onePassword.delete(item.vaultId, item.onePasswordItemId);
       } else if (action.type === "copy-to-vault-and-archive-source") {
-        const copyResult = await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId);
+        const copyResult = await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId, action.removeTags);
         results.push({
           itemId: action.itemId,
           action: action.type,
@@ -1236,6 +1240,21 @@ function verifyPlanAgainstSnapshots(
           ok: false,
           severity: "critical",
           message: `执行后校验失败：保留项 ${item.title} 已不在原保险库的活跃列表中。`
+        });
+      }
+      continue;
+    }
+
+    if (action.type === "update-tags") {
+      allow(item.vaultId, sourceItemId, "active");
+      if (sourceAfter !== "active") {
+        failures.push({
+          itemId: sourceItemId,
+          vaultId: item.vaultId,
+          action: action.type,
+          ok: false,
+          severity: "critical",
+          message: `执行后校验失败：标签更新项 ${item.title} 已不在原保险库的活跃列表中。`
         });
       }
       continue;
@@ -1385,6 +1404,9 @@ function mutationActionError(action: PlanAction, error: unknown): string {
   }
   if (action.type === "copy-to-vault-and-archive-source") {
     return `迁移失败：${detail}`;
+  }
+  if (action.type === "update-tags") {
+    return `标签更新失败：${detail}`;
   }
   return `执行失败：${detail}`;
 }

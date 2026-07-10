@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optipass Angular Standards"
+  short_description: "Build maintainable Optipass Angular UI code"
+  default_prompt: "Use $angular-coding-standards to implement this Optipass Angular UI change."

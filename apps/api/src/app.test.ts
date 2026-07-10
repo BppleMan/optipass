@@ -15,6 +15,7 @@ function createService(): PasswordService {
     revealCredentials: vi.fn(),
     archive: vi.fn(),
     delete: vi.fn(),
+    removeTags: vi.fn(),
     copyToVaultAndArchiveSource: vi.fn(),
     listItemStates: vi.fn(),
     clearCache: vi.fn()

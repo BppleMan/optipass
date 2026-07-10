@@ -11,6 +11,14 @@ import type { AnalysisDisplayMode, DetailCompareFieldKey, DetailCompareFieldView
 
 type GroupRemovalMode = RemoveAction | 'manual';
 
+type TagPopoverState = {
+  groupId: string;
+  itemId: string;
+  left: number;
+  top: number;
+  above: boolean;
+};
+
 @Component({
   selector: 'op-analysis-page',
   standalone: true,
@@ -24,6 +32,10 @@ export class AnalysisPageComponent implements OnInit {
   ];
 
   activeDetailGroupId: string | undefined;
+  tagScopePrompt: { groupId: string; itemId: string; tag: string; eligibleCount: number } | undefined;
+  tagPopover: TagPopoverState | undefined;
+  private readonly expandedTagItems = new Set<string>();
+  private tagPopoverCloseTimer: number | undefined;
 
   @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
 
@@ -53,6 +65,108 @@ export class AnalysisPageComponent implements OnInit {
 
   closeGroupDetail(): void {
     this.activeDetailGroupId = undefined;
+    this.tagScopePrompt = undefined;
+  }
+
+  showTagPopover(event: Event, group: DuplicateGroupView, item: DuplicateItemView): void {
+    this.cancelTagPopoverClose();
+    const trigger = event.currentTarget as HTMLElement | null;
+    if (!trigger) {
+      return;
+    }
+    const rect = trigger.getBoundingClientRect();
+    const width = 276;
+    const height = 220;
+    const above = rect.bottom + height > window.innerHeight - 12 && rect.top > height;
+    this.tagPopover = {
+      groupId: group.id,
+      itemId: item.id,
+      left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
+      top: above ? rect.top - 8 : rect.bottom + 8,
+      above
+    };
+  }
+
+  scheduleTagPopoverClose(): void {
+    this.cancelTagPopoverClose();
+    this.tagPopoverCloseTimer = window.setTimeout(() => this.closeTagPopover(), 140);
+  }
+
+  cancelTagPopoverClose(): void {
+    if (this.tagPopoverCloseTimer !== undefined) {
+      window.clearTimeout(this.tagPopoverCloseTimer);
+      this.tagPopoverCloseTimer = undefined;
+    }
+  }
+
+  closeTagPopover(): void {
+    this.cancelTagPopoverClose();
+    this.tagPopover = undefined;
+    this.tagScopePrompt = undefined;
+  }
+
+  tagPopoverGroup(): DuplicateGroupView | undefined {
+    const groupId = this.tagPopover?.groupId;
+    if (!groupId) {
+      return undefined;
+    }
+    return this.wf.visibleGroups().find((group) => group.id === groupId);
+  }
+
+  tagPopoverItem(): DuplicateItemView | undefined {
+    const itemId = this.tagPopover?.itemId;
+    return itemId ? this.tagPopoverGroup()?.items.find((item) => item.id === itemId) : undefined;
+  }
+
+  visibleTags(item: DuplicateItemView): string[] {
+    return this.expandedTagItems.has(item.id) ? item.tags : item.tags.slice(0, 2);
+  }
+
+  hiddenTagCount(item: DuplicateItemView): number {
+    return Math.max(0, item.tags.length - this.visibleTags(item).length);
+  }
+
+  toggleTagExpansion(itemId: string): void {
+    if (this.expandedTagItems.has(itemId)) {
+      this.expandedTagItems.delete(itemId);
+    } else {
+      this.expandedTagItems.add(itemId);
+    }
+  }
+
+  requestTagRemoval(group: DuplicateGroupView, item: DuplicateItemView, tag: string): void {
+    if (item.removedTags.includes(tag)) {
+      this.wf.toggleTagRemoval(item.id, tag);
+      this.tagScopePrompt = undefined;
+      return;
+    }
+    const eligibleCount = group.items.filter((candidate) => candidate.keep && candidate.tags.includes(tag)).length;
+    if (eligibleCount > 1) {
+      this.tagScopePrompt = { groupId: group.id, itemId: item.id, tag, eligibleCount };
+      return;
+    }
+    this.wf.toggleTagRemoval(item.id, tag);
+  }
+
+  applyTagScope(scope: 'item' | 'group'): void {
+    const prompt = this.tagScopePrompt;
+    if (!prompt) {
+      return;
+    }
+    if (scope === 'group') {
+      this.wf.removeTagFromGroup(prompt.groupId, prompt.tag);
+    } else {
+      this.wf.toggleTagRemoval(prompt.itemId, prompt.tag);
+    }
+    this.tagScopePrompt = undefined;
+  }
+
+  tagPromptFor(itemId: string, tag: string): boolean {
+    return this.tagScopePrompt?.itemId === itemId && this.tagScopePrompt.tag === tag;
+  }
+
+  tagSharedAcrossGroup(group: DuplicateGroupView, tag: string): boolean {
+    return group.items.length > 1 && group.items.every((item) => item.tags.includes(tag));
   }
 
   setItemDecision(item: DuplicateItemView, mode: 'keep' | RemoveAction): void {
