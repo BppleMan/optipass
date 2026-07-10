@@ -1,0 +1,192 @@
+:host {
+    display: block;
+    min-width: 0;
+
+    .blocker-list,
+    .warning-list {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+    }
+
+    .blocker-list {
+        border: 1px solid rgba(255, 83, 112, 0.35);
+        background: rgba(255, 83, 112, 0.08);
+    }
+
+    .warning-list {
+        border: 1px solid rgba(255, 203, 107, 0.32);
+        background: rgba(255, 203, 107, 0.08);
+    }
+
+    .blocker-list p,
+    .warning-list p {
+        margin: 0;
+        font-size: 12.5px;
+    }
+
+    .blocker-list p {
+        color: #FF5370;
+    }
+
+    .warning-list p {
+        color: #FFCB6B;
+    }
+
+    .plan-action-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+        max-height: 420px;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
+
+    .plan-mode-list {
+        min-width: 0;
+        overflow: visible;
+        padding-right: 0;
+        gap: 0;
+    }
+
+    .plan-mode-row {
+        display: grid;
+        grid-template-columns: 52px minmax(112px, 1fr) minmax(112px, 1fr) 78px 78px;
+        grid-template-areas:
+            "op username title vault vault"
+            "op url url created updated";
+        align-items: center;
+        gap: 5px 10px;
+        min-height: 54px;
+        padding: 7px 8px;
+        border-width: 0 0 1px;
+        border-style: solid;
+        border-radius: 0;
+    }
+
+    .plan-mode-row:last-child {
+        border-bottom: 0;
+    }
+
+    .plan-op {
+        grid-area: op;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        padding: 4px 8px;
+        border-radius: 7px;
+        background: rgba(0, 0, 0, 0.16);
+        font-size: 10px;
+        font-weight: 750;
+    }
+
+    .plan-username,
+    .plan-title,
+    .plan-url,
+    .plan-label,
+    .plan-created,
+    .plan-updated {
+        display: block;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .plan-username {
+        grid-area: username;
+        color: #EEFFFF;
+        font-size: 12.8px;
+        font-weight: 760;
+    }
+
+    .plan-title {
+        grid-area: title;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: #B0BEC5;
+        font-size: 11.5px;
+    }
+
+    .plan-title > span,
+    .plan-vault-label span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .plan-tag-change {
+        flex: 0 0 auto;
+        padding: 1px 5px;
+        border-radius: 5px;
+        background: rgba(199, 146, 234, 0.14);
+        color: #C792EA;
+        font-size: 9px;
+        font-style: normal;
+        font-weight: 700;
+    }
+
+    .plan-url {
+        grid-area: url;
+        color: #8F9DA3;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 11.5px;
+    }
+
+    .plan-label {
+        height: 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 6px;
+        border: 1px solid rgba(176, 190, 197, 0.14);
+        border-radius: 6px;
+        background: rgba(176, 190, 197, 0.055);
+        color: #9AA8AE;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 10px;
+        font-style: normal;
+        font-weight: 650;
+        line-height: 18px;
+    }
+
+    .plan-vault-label {
+        grid-area: vault;
+        justify-content: flex-start;
+        gap: 4px;
+    }
+
+    .plan-vault-icon {
+        flex: 0 0 14px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        border-radius: 4px;
+    }
+
+    .plan-vault-icon svg {
+        width: 10px;
+        height: 10px;
+    }
+
+    .plan-created,
+    .plan-updated {
+        color: #B0BEC5;
+        font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+        font-size: 12px;
+    }
+
+    .plan-created {
+        grid-area: created;
+    }
+
+    .plan-updated {
+        grid-area: updated;
+    }
+}

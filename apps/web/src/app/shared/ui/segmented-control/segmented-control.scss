@@ -1,0 +1,83 @@
+:host {
+    display: inline-flex;
+    min-width: 0;
+
+    .segmented-control {
+        --selection-count: 1;
+        position: relative;
+        isolation: isolate;
+        display: inline-grid;
+        grid-template-columns: repeat(var(--selection-count), minmax(0, 1fr));
+        align-items: center;
+        border: 1px solid #3F3F3F;
+        border-radius: 7px;
+        background: #242424;
+        overflow: hidden;
+    }
+
+    .selection-indicator {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: calc(var(--selection-index) * (100% / var(--selection-count)));
+        z-index: 0;
+        width: calc(100% / var(--selection-count));
+        transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.18s ease;
+    }
+
+    .segment-divider {
+        position: absolute;
+        top: 4px;
+        bottom: 4px;
+        left: calc(var(--divider-index) * (100% / var(--selection-count)));
+        z-index: 2;
+        width: 1px;
+        background: rgba(176, 190, 197, 0.14);
+        pointer-events: none;
+    }
+
+    .segment-item {
+        position: relative;
+        z-index: 1;
+        min-width: 0;
+        height: 26px;
+        padding: 0 8px;
+        border: 0;
+        background: transparent;
+        color: #727272;
+        font-size: 10.8px;
+        font-weight: 700;
+        white-space: nowrap;
+        transition: color 0.18s ease;
+    }
+
+    .segment-item.selected {
+        color: var(--segment-active-color);
+    }
+
+    .segment-item:disabled:not(.selected) {
+        opacity: 1;
+    }
+
+    .segment-item svg {
+        width: 15px;
+        height: 15px;
+        display: block;
+        margin: auto;
+    }
+
+    &[data-size="compact"] .segment-item {
+        width: 28px;
+        padding: 0;
+    }
+
+    &[data-size="comfortable"] .segment-item {
+        width: 32px;
+        padding: 0;
+    }
+
+    &[data-size="regular"] .segment-item {
+        width: 36px;
+        padding: 0;
+    }
+}

@@ -1,0 +1,345 @@
+:host {
+    .vault-card {
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      padding: 8px;
+      display: flex;
+      align-items: center;
+      column-gap: 8px;
+      border-bottom: 1px solid #3a3a3a;
+    }
+    
+    .vault-card:last-child {
+      border-bottom: 0;
+    }
+    
+    .vault-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: #323232;
+      border: 1px solid #3a3a3a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    
+    .vault-icon svg {
+      display: block;
+    }
+    
+    .vault-name-label {
+      flex: 0 0 84px;
+      min-width: 0;
+      color: #eeffff;
+      font-size: 11.5px;
+      font-weight: 650;
+      line-height: 1.2;
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    
+    .type-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    
+    .type-chip {
+      display: flex;
+      align-items: center;
+      row-gap: 0;
+      column-gap: 4px;
+      padding: 4px 7px;
+      border-radius: 8px;
+      background: color-mix(in srgb, currentColor 14%, #1a1a1a);
+      border: 1px solid color-mix(in srgb, currentColor 36%, #323232);
+      font-size: 11px;
+      color: #82aaff;
+    }
+    
+    .type-chip-icon {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .type-chip-icon svg {
+      display: block;
+    }
+    
+    .type-chip strong {
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #eeffff;
+    }
+    
+    .vault-empty-row {
+      flex: 1;
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #727272;
+      font-size: 12.5px;
+    }
+    
+    .vault-total {
+      flex: 0 0 54px;
+      color: #eeffff;
+      font-size: 16px;
+      font-weight: 500;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      text-align: right;
+      white-space: nowrap;
+    }
+    
+    .vault-status {
+      font-size: 12px;
+      width: 66px;
+      text-align: center;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    
+    .vault-status-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 1px solid currentColor;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      line-height: 1;
+    }
+    
+    .scan-summary-card {
+      flex-shrink: 0;
+      background: #292929;
+      border: 1px solid #3a3a3a;
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    
+    .scan-summary-metrics {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    
+    .scan-summary-card > op-progress {
+      width: 100%;
+      display: block;
+    }
+    
+    .scan-summary-card > op-progress .op-progress {
+      height: 4px;
+    }
+    
+    .scan-summary-metric {
+      flex: 1;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 32px minmax(0, max-content);
+      grid-template-rows: auto auto;
+      column-gap: 8px;
+      align-items: center;
+    }
+    
+    .summary-icon {
+      grid-row: 1 / span 2;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, currentColor 72%, #3a3a3a);
+      background:
+        linear-gradient(color-mix(in srgb, currentColor 14%, transparent), color-mix(in srgb, currentColor 8%, transparent)),
+        #323232;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .summary-icon svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.9;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    
+    .summary-icon circle[r="0.8"] {
+      fill: currentColor;
+      stroke: none;
+    }
+    
+    .scan-summary-metric strong {
+      color: #eeffff;
+      font-size: 16px;
+      font-weight: 500;
+      line-height: 1;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    
+    .scan-summary-metric small {
+      color: #b0bec5;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    
+    .op-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 36px;
+      background: rgba(0, 0, 0, 0.62);
+    }
+    
+    .op-modal {
+      width: min(560px, 100%);
+      border: 1px solid #3a3a3a;
+      border-radius: 12px;
+      background: #292929;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+      padding: 18px;
+    }
+    
+    .op-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    
+    .op-modal-head h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    
+    .modal-close {
+      width: 30px;
+      height: 30px;
+      border: 1px solid #3f3f3f;
+      border-radius: 8px;
+      background: #1a1a1a;
+      color: #b0bec5;
+      font-size: 12px;
+    }
+    
+    .modal-close:hover {
+      border-color: #82aaff;
+      color: #eeffff;
+    }
+    
+    .op-modal p {
+      margin: 0;
+      color: #ff9cac;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 12.5px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    
+    .group-plan-modal {
+      width: min(760px, 100%);
+      max-height: min(720px, calc(100vh - 72px));
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    
+    .group-plan-modal .op-modal-head {
+      align-items: flex-start;
+      flex-shrink: 0;
+    }
+    
+    .group-plan-modal .modal-subtitle,
+    .apply-progress-modal .modal-subtitle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 6px;
+      color: #b0bec5;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: normal;
+    }
+    
+    .group-plan-modal .modal-subtitle span:last-child {
+      color: #727272;
+    }
+    
+    .warning-list {
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(255, 203, 107, 0.08);
+      border: 1px solid rgba(255, 203, 107, 0.3);
+    }
+    
+    .warning-list p {
+      margin: 0;
+      color: #ffcb6b;
+      font-family: inherit;
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
+    
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-shrink: 0;
+      padding-top: 14px;
+    }
+    
+    .apply-progress-modal {
+      width: min(680px, 100%);
+      max-height: min(720px, calc(100vh - 72px));
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow: hidden;
+    }
+    
+    .apply-progress-modal .op-progress {
+      flex-shrink: 0;
+      height: 6px;
+    }
+    
+    .apply-progress-modal .op-list {
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    
+}

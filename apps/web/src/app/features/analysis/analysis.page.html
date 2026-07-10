@@ -1,0 +1,713 @@
+<section data-screen-label="page2-分析结果" class="analysis-page">
+  @if (wf.analyzing()) {
+    <div class="analysis-running">
+      <div class="spinner"></div>
+      <h2>正在本地分析…</h2>
+      <p>仅比对内存中的数据，不会再次访问 1Password<br>规则：相同 URL × 相同登录身份</p>
+      <div class="analysis-progress"><op-progress [value]="wf.analysisPct()" color="#82aaff"></op-progress></div>
+    </div>
+  } @else if (!wf.scanResult()) {
+    <div class="analysis-running">
+      <h2>尚未生成分析结果</h2>
+      <p>请先完成扫描，再从扫描页进入分析。</p>
+      <op-button size="sm" variant="ghost" label="← 返回扫描" (pressed)="wf.backToScan()"></op-button>
+    </div>
+  } @else {
+    <div class="action-bar">
+      <div class="action-left">
+        <op-button size="sm" variant="ghost" label="← 重新扫描" (pressed)="wf.backToScan()"></op-button>
+        <div class="stats-line">
+          <span>{{ wf.decisionStats().groups }} 组疑似重复</span>
+          <span>保留 <em class="ok-text">{{ wf.decisionStats().keep }}</em></span>
+          <span>归档 <em class="warn-text">{{ wf.decisionStats().archive }}</em></span>
+          <span>删除 <em class="danger-text">{{ wf.decisionStats().delete }}</em></span>
+          <span>迁移 <em class="info-text">{{ wf.decisionStats().move }}</em></span>
+        </div>
+      </div>
+      <div class="action-right">
+        <op-button size="sm" variant="ghost" label="全部采纳推荐" (pressed)="wf.acceptAllRecommendations()"></op-button>
+        <op-button size="sm" [label]="batchApplyLabel()" [disabled]="batchApplyDisabled()" (pressed)="handleBatchApply()"></op-button>
+      </div>
+    </div>
+
+    <div class="analysis-control-row">
+      <div class="filter-summary">
+        <div class="filter-total">显示 <strong>{{ wf.analysisFilterSummary().visible }}</strong> / {{ wf.analysisFilterSummary().total }} 组</div>
+        <div class="filter-chip-row" aria-label="当前筛选条件">
+          @if (wf.analysisFilterSummary().chips.length === 0) {
+            <span class="filter-empty">未筛选</span>
+          }
+          @for (chip of wf.analysisFilterSummary().chips; track chip.key + ':' + chip.id) {
+            <button
+              type="button"
+              class="filter-chip"
+              [attr.aria-label]="'移除筛选 ' + chip.label"
+              (click)="wf.removeAnalysisFilter(chip.key, chip.id)"
+            >
+              <span>{{ chip.label }}</span>
+              <em aria-hidden="true">×</em>
+            </button>
+          }
+        </div>
+        @if (wf.analysisFilterSummary().activeCount > 0) {
+          <button type="button" class="filter-clear" (click)="wf.clearAnalysisFilters()">清空筛选</button>
+        }
+      </div>
+    </div>
+
+    <div class="analysis-content">
+      <aside class="analysis-filter-sidebar" aria-label="筛选重复组">
+        @for (section of wf.analysisFilterSections(); track section.id) {
+          <div
+            class="filter-section"
+            [class.domain-section]="section.id === 'domains'"
+            [class.expanded]="section.expanded"
+            [class.collapsed]="!section.expanded"
+          >
+            <button
+              type="button"
+              class="filter-section-toggle"
+              [attr.aria-expanded]="section.expanded"
+              (click)="wf.toggleAnalysisFilterSection(section.id)"
+            >
+              <span>{{ section.label }}</span>
+              <em>{{ section.countLabel }}</em>
+              <b aria-hidden="true">▾</b>
+            </button>
+            <div
+              class="filter-section-body"
+              [class.expanded]="section.expanded"
+              [attr.aria-hidden]="!section.expanded"
+              [attr.inert]="section.expanded ? null : ''"
+            >
+              <div class="filter-section-body-inner">
+                @if (section.searchable) {
+                  <input
+                    type="search"
+                    class="filter-search"
+                    placeholder="搜索 domain"
+                    [ngModel]="section.query"
+                    (ngModelChange)="wf.updateDomainFilterQuery($event)"
+                  >
+                }
+                <div class="filter-option-clip">
+                  <div class="filter-option-list" [class.scrollable]="section.id === 'domains'">
+                    @for (option of section.options; track option.id) {
+                      <label class="filter-option">
+                        <input
+                          type="checkbox"
+                          [ngModel]="option.selected"
+                          (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
+                        >
+                        @if (section.id === 'vaults') {
+                          <op-vault-icon class="filter-vault-icon" [name]="option.label"></op-vault-icon>
+                        }
+                        <span>{{ option.label }}</span>
+                        <em>{{ option.count }}</em>
+                      </label>
+                    }
+                    @if (section.options.length === 0) {
+                      <div class="filter-option-empty">{{ section.emptyText }}</div>
+                    }
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        }
+      </aside>
+
+      <div class="scroll-list-panel">
+        <div class="main-view-head">
+          <op-tabs
+            ariaLabel="重复类型"
+            [tabs]="wf.kindTabs()"
+            [active]="wf.activeKind()"
+            (activeChange)="setKind($event)"
+          ></op-tabs>
+          <op-tabs
+            class="display-mode-tabs"
+            ariaLabel="主视图模式"
+            [tabs]="displayModeTabs"
+            [active]="wf.analysisDisplayMode()"
+            [showCount]="false"
+            (activeChange)="switchDisplayMode($event)"
+          ></op-tabs>
+        </div>
+        <div #groupList class="group-list" [class.preview-mode]="wf.analysisDisplayMode() === 'preview'">
+          @if (wf.analysisDisplayMode() === 'edit') {
+            @for (group of wf.visibleGroups(); track group.id) {
+            <div
+              class="group-card"
+              [attr.data-group-id]="group.id"
+              [attr.data-detail-group-id]="group.id"
+              [class.detail-open]="activeDetailGroupId === group.id"
+              [style.border-color]="group.cardBorder"
+              [style.opacity]="group.opacity"
+            >
+            <div class="group-head">
+              <span class="mono group-site">{{ group.site }}</span>
+              <span class="muted">@</span>
+              <span class="mono group-username">{{ group.username }}</span>
+              <span class="head-spacer"></span>
+              <op-segmented-control
+                [items]="groupRemovalItems"
+                [value]="groupRemovalMode(group)"
+                [disabled]="group.skipped"
+                ariaLabel="统一设置本组非保留项"
+                size="regular"
+                (valueChange)="onGroupRemovalChange(group, $event)"
+              ></op-segmented-control>
+              <button
+                type="button"
+                class="group-tool-button group-icon-button"
+                [class.active]="activeDetailGroupId === group.id"
+                aria-label="详情对比"
+                title="详情对比"
+                (click)="toggleGroupDetail(group.id)"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                  <rect x="13.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                  <path d="M6 9h2M6 12h2M16 9h2M16 12h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="group-tool-button group-icon-button"
+                [class.active]="groupSecretsVisible(group)"
+                aria-label="显示或隐藏本组密码"
+                title="显示或隐藏本组密码"
+                (click)="wf.toggleGroupReveal(group.id)"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
+                  <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="group-tool-button apply-group-button"
+                [disabled]="!wf.canApplyGroup(group.id)"
+                (click)="wf.openGroupPlanDialog(group.id)"
+              >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
+              <button
+                type="button"
+                class="skip-button group-icon-button"
+                [style.color]="group.skipColor"
+                [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                [attr.aria-label]="group.skipLabel"
+                [attr.title]="group.skipLabel"
+                (click)="wf.toggleGroupSkip(group.id); closeGroupDetail()"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  @if (group.skipped) {
+                    <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                  } @else {
+                    <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                    <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                  }
+                </svg>
+              </button>
+            </div>
+
+            <div class="item-rows">
+              @for (item of group.items; track item.id) {
+                <div class="decision-row" [style.background]="item.rowBg">
+                  <op-segmented-control
+                    [items]="itemDecisionItems"
+                    [value]="itemDecisionValue(item)"
+                    [disabled]="group.skipped"
+                    [ariaLabel]="'设置 ' + item.title + ' 的去留策略'"
+                    (valueChange)="onItemDecisionChange(item, $event)"
+                  ></op-segmented-control>
+                  <div class="identity-cell">
+                    <strong class="identity-username">{{ item.username }}</strong>
+                    <div class="identity-meta-line">
+                      <small class="identity-title">{{ item.title }}</small>
+                    </div>
+                  </div>
+                  <div class="url-cell">
+                    <span>{{ item.url }}</span>
+                  </div>
+                  <div class="credential-stack">
+                    @for (chip of item.credChips; track $index) {
+                      <div class="cred-line">
+                        <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
+                        <em [style.color]="chip.textColor">{{ chip.text }}</em>
+                      </div>
+                    }
+                  </div>
+                  <div class="tags-cell">
+                    @if (item.tags.length > 0) {
+                      <button
+                        type="button"
+                        class="tag-column-trigger"
+                        [class.changed]="item.removedTags.length > 0"
+                        [attr.aria-label]="item.tags.length + ' 个标签' + (item.removedTags.length > 0 ? '，应用后剩余 ' + item.remainingTagCount + ' 个' : '')"
+                        (mouseenter)="enterTagPopoverTrigger($event, group, item)"
+                        (focus)="focusTagPopoverTrigger($event, group, item)"
+                        (mouseleave)="leaveTagPopoverTrigger($event)"
+                        (blur)="blurTagPopoverTrigger($event)"
+                        (click)="showTagPopover($event, group, item)"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h9.2L20 12.3 12.3 20 4 11.7V5.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><circle cx="8.3" cy="9.7" r="1.2" fill="currentColor"></circle></svg>
+                        <span>{{ item.tags.length }}</span>
+                        @if (item.removedTags.length > 0) {
+                          <em>→{{ item.remainingTagCount }}</em>
+                        }
+                      </button>
+                    } @else {
+                      <span class="tag-column-empty">—</span>
+                    }
+                  </div>
+                  <div class="updated-cell">{{ item.updated }}</div>
+                  <div class="vault-select">
+                    <op-vault-select
+                      [options]="item.vaultOptions"
+                      [value]="item.targetVault"
+                      [disabled]="group.skipped || !item.keep"
+                      [ariaLabel]="'选择 ' + item.title + ' 的保留保险库'"
+                      (valueChange)="wf.updateTargetVault(item.id, $event)"
+                    ></op-vault-select>
+                  </div>
+                </div>
+              }
+            </div>
+            </div>
+            }
+          } @else {
+            @for (group of wf.visiblePreviewGroups(); track group.id) {
+              <div
+                class="group-card"
+                [attr.data-group-id]="group.id"
+                [attr.data-detail-group-id]="group.id"
+                [class.detail-open]="activeDetailGroupId === group.id"
+                [style.border-color]="group.cardBorder"
+                [style.opacity]="group.opacity"
+              >
+                <div class="group-head">
+                  <span class="mono group-site">{{ group.site }}</span>
+                  <span class="muted">@</span>
+                  <span class="mono group-username">{{ group.username }}</span>
+                  <span class="head-spacer"></span>
+                  <button
+                    type="button"
+                    class="group-tool-button group-icon-button"
+                    [class.active]="activeDetailGroupId === group.id"
+                    aria-label="详情对比"
+                    title="详情对比"
+                    (click)="toggleGroupDetail(group.id)"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="3.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                      <rect x="13.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                      <path d="M6 9h2M6 12h2M16 9h2M16 12h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="group-tool-button group-icon-button"
+                    [class.active]="groupSecretsVisible(group)"
+                    aria-label="显示或隐藏本组密码"
+                    title="显示或隐藏本组密码"
+                    (click)="wf.toggleGroupReveal(group.id)"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
+                      <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="group-tool-button apply-group-button"
+                    [disabled]="!wf.canApplyGroup(group.id)"
+                    (click)="wf.openGroupPlanDialog(group.id)"
+                  >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
+                  <button
+                    type="button"
+                    class="skip-button group-icon-button"
+                    [style.color]="group.skipColor"
+                    [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                    [attr.aria-label]="group.skipped ? '恢复此组' : '跳过此组'"
+                    [attr.title]="group.skipped ? '恢复此组' : '跳过此组'"
+                    (click)="wf.toggleGroupSkip(group.id); closeGroupDetail()"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      @if (group.skipped) {
+                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                      } @else {
+                        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                        <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                      }
+                    </svg>
+                  </button>
+                </div>
+
+                <div class="item-rows">
+                  <op-plan-action-group [group]="group"></op-plan-action-group>
+                </div>
+              </div>
+            }
+          }
+          @if ((wf.analysisDisplayMode() === 'edit' ? wf.visibleGroups().length : wf.visiblePreviewGroups().length) === 0) {
+            <div class="empty-box">
+              {{ wf.analysisFilterSummary().activeCount > 0 ? '没有符合当前筛选条件的疑似重复组' : '此分类下没有疑似重复组' }}
+            </div>
+          }
+        </div>
+      </div>
+    </div>
+
+    @if (tagPopover; as popover) {
+      @if (tagPopoverGroup(); as popoverGroup) {
+        @if (tagPopoverItem(); as popoverItem) {
+          <div
+            #tagPopoverOverlay
+            class="tag-list-overlay"
+            [class.above]="popover.above"
+            [style.left.px]="popover.left"
+            [style.top.px]="popover.top"
+            role="dialog"
+            [attr.aria-label]="popoverItem.title + ' 的标签'"
+            (mouseenter)="enterTagPopoverOverlay()"
+            (mouseleave)="leaveTagPopoverOverlay($event)"
+            (focusin)="focusTagPopoverOverlay()"
+            (focusout)="blurTagPopoverOverlay($event)"
+          >
+            <div class="tag-list-overlay-head">
+              <span>标签</span>
+              <small>{{ popoverItem.tags.length }} 个</small>
+              @if (popoverItem.removedTags.length > 0) {
+                <em>移除 {{ popoverItem.removedTags.length }}</em>
+              }
+            </div>
+            <div class="tag-list-overlay-items">
+              @for (tag of popoverItem.tags; track tag) {
+                <div class="tag-list-overlay-item">
+                  <button
+                    type="button"
+                    [class.removed]="popoverItem.removedTags.includes(tag)"
+                    [class.shared]="tagSharedAcrossGroup(popoverGroup, tag)"
+                    [disabled]="!popoverItem.keep"
+                    [attr.aria-label]="(popoverItem.removedTags.includes(tag) ? '撤销移除标签 ' : '移除标签 ') + tag"
+                    [attr.title]="tag"
+                    (click)="requestTagRemoval(popoverGroup, popoverItem, tag)"
+                  >
+                    <span>{{ tag }}</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      @if (popoverItem.removedTags.includes(tag)) {
+                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                      } @else {
+                        <path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                      }
+                    </svg>
+                  </button>
+                  @if (tagPromptFor(popoverItem.id, tag)) {
+                    <div class="tag-list-scope">
+                      <strong>移除“{{ tag }}”</strong>
+                      <button type="button" (click)="applyTagScope('item')">仅此 item</button>
+                      <button type="button" (click)="applyTagScope('group')">本组 {{ tagScopePrompt?.eligibleCount }} 个保留/迁移项</button>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+            @if (!popoverItem.keep) {
+              <small class="tag-list-overlay-note">当前处置不会更新标签</small>
+            }
+          </div>
+        }
+      }
+    }
+
+    @if (detailGroup(); as detailGroup) {
+      <aside class="group-detail-drawer" role="dialog" aria-modal="false" aria-label="组内 item 详情对比">
+        <div class="drawer-head">
+          <div class="drawer-head-main">
+            <h2>组内详情对比</h2>
+            <p>
+              <span class="mono">{{ detailGroup.username }}</span>
+              <span class="muted">@</span>
+              <span class="mono muted">{{ detailGroup.site }}</span>
+            </p>
+          </div>
+          <div class="drawer-group-actions">
+            <op-segmented-control
+              [items]="groupRemovalItems"
+              [value]="groupRemovalMode(detailGroup)"
+              [disabled]="detailGroup.skipped"
+              ariaLabel="统一设置本组非保留项"
+              size="regular"
+              (valueChange)="onGroupRemovalChange(detailGroup, $event)"
+            ></op-segmented-control>
+            <button
+              type="button"
+              class="group-tool-button group-icon-button"
+              [class.active]="groupSecretsVisible(detailGroup)"
+              aria-label="显示或隐藏本组密码"
+              title="显示或隐藏本组密码"
+              (click)="wf.toggleGroupReveal(detailGroup.id)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
+                <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="group-tool-button apply-group-button"
+              [disabled]="!wf.canApplyGroup(detailGroup.id)"
+              (click)="wf.openGroupPlanDialog(detailGroup.id)"
+            >{{ wf.groupPlanLoading()[detailGroup.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(detailGroup.id) + ')' }}</button>
+            <button
+              type="button"
+              class="skip-button group-icon-button"
+              [style.color]="detailGroup.skipColor"
+              [disabled]="wf.groupPlanLoading()[detailGroup.id] || wf.groupApplying()"
+              [attr.aria-label]="detailGroup.skipLabel"
+              [attr.title]="detailGroup.skipLabel"
+              (click)="wf.toggleGroupSkip(detailGroup.id); closeGroupDetail()"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                @if (detailGroup.skipped) {
+                  <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                } @else {
+                  <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                  <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                }
+              </svg>
+            </button>
+          </div>
+          <button type="button" class="drawer-close" aria-label="关闭详情对比" (click)="closeGroupDetail()">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="drawer-strip-clip">
+          <div class="drawer-card-strip scrollable">
+            @for (item of detailGroup.items; track item.id) {
+              <article class="drawer-item-card" [class.keep]="item.keep" [attr.data-drawer-item-id]="item.id">
+                <div class="drawer-item-head">
+                  <div class="drawer-item-title">
+                    <strong [class.diff]="fieldDifferent(detailGroup, 'username')" [attr.title]="item.username">{{ item.username }}</strong>
+                    <small [class.diff]="fieldDifferent(detailGroup, 'title')" [attr.title]="item.title">{{ item.title }}</small>
+                  </div>
+                  <op-segmented-control
+                    [items]="itemDecisionItems"
+                    [value]="itemDecisionValue(item)"
+                    [ariaLabel]="'设置 ' + item.title + ' 的处置方式'"
+                    size="comfortable"
+                    (valueChange)="onItemDecisionChange(item, $event)"
+                  ></op-segmented-control>
+                </div>
+
+                <div class="drawer-compare-table">
+                  @for (field of detailFields(detailGroup, item); track field.key) {
+                    <div
+                      class="drawer-compare-row"
+                      [class.diff]="field.different"
+                      [class.url]="field.tone === 'url'"
+                      [class.credential]="field.tone === 'credential'"
+                      [class.warning]="field.tone === 'warning'"
+                      [class.vault]="field.key === 'vault'"
+                      [class.tags]="field.key === 'tags'"
+                      [class.inactive]="field.key === 'tags' && !item.keep"
+                      [attr.tabindex]="field.key === 'tags' ? -1 : null"
+                    >
+                      <span>{{ field.label }}</span>
+                      @if (field.key === 'credentials') {
+                        <div class="drawer-credential-line">
+                          @for (chip of item.credChips; track $index) {
+                            <div class="drawer-credential-entry">
+                              <span class="drawer-credential-kind" [class.password]="chip.kind === 'password'" [class.secret]="chip.kind === 'secret'" [class.totp]="chip.kind === 'totp'" [class.passkey]="chip.kind === 'passkey'" [class.missing]="chip.kind === 'missing'">{{ chip.label }}</span>
+                              <em
+                                class="drawer-credential-value"
+                                [class.masked]="chip.kind !== 'passkey' && chip.kind !== 'missing' && !item.secretVisible"
+                                [class.revealed]="chip.kind !== 'passkey' && chip.kind !== 'missing' && item.secretVisible"
+                              >{{ chip.text }}</em>
+                            </div>
+                          }
+                        </div>
+                      } @else if (field.key === 'vault') {
+                        @if (item.keep) {
+                          <op-vault-select
+                            class="drawer-vault-picker"
+                            [options]="item.vaultOptions"
+                            [value]="item.targetVault"
+                            [ariaLabel]="'选择 ' + item.title + ' 的保留位置'"
+                            (valueChange)="wf.updateTargetVault(item.id, $event)"
+                          ></op-vault-select>
+                        } @else {
+                          <div class="drawer-vault-static">
+                            <op-vault-icon class="vault-picker-icon" [name]="item.vaultName"></op-vault-icon>
+                            <strong>{{ item.vaultName }}</strong>
+                          </div>
+                        }
+                      } @else if (field.key === 'time') {
+                        <div class="drawer-time-line">
+                          @for (part of detailTimeParts(item); track $index) {
+                            <span>{{ part }}</span>
+                          }
+                        </div>
+                      } @else if (field.key === 'tags') {
+                        <div class="drawer-tag-field">
+                          @if (item.tags.length === 0) {
+                            <span class="drawer-tag-empty">无标签</span>
+                          } @else {
+                            <div class="drawer-tag-list">
+                              @for (tag of visibleTags(item); track tag) {
+                                <div class="drawer-tag-chip-wrap">
+                                  <button
+                                    type="button"
+                                    class="drawer-tag-chip"
+                                    [class.removed]="item.removedTags.includes(tag)"
+                                    [class.shared]="tagSharedAcrossGroup(detailGroup, tag)"
+                                    [disabled]="!item.keep"
+                                    [attr.aria-label]="(item.removedTags.includes(tag) ? '撤销移除标签 ' : '移除标签 ') + tag"
+                                    [attr.title]="tag"
+                                    (click)="requestTagRemoval(detailGroup, item, tag)"
+                                  >
+                                    <span>{{ tag }}</span>
+                                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                                      @if (item.removedTags.includes(tag)) {
+                                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                                      } @else {
+                                        <path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                                      }
+                                    </svg>
+                                  </button>
+                                  @if (tagPromptFor(item.id, tag)) {
+                                    <div class="tag-scope-popover">
+                                      <strong>移除“{{ tag }}”</strong>
+                                      <button type="button" (click)="applyTagScope('item')">仅此 item</button>
+                                      <button type="button" (click)="applyTagScope('group')">本组 {{ tagScopePrompt?.eligibleCount }} 个保留/迁移项</button>
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              @if (hiddenTagCount(item) > 0) {
+                                <button type="button" class="drawer-tag-more" (click)="toggleTagExpansion(item.id)">+{{ hiddenTagCount(item) }}</button>
+                              } @else if (item.tags.length > 2) {
+                                <button type="button" class="drawer-tag-more" (click)="toggleTagExpansion(item.id)">收起</button>
+                              }
+                            </div>
+                          }
+                          @if (!item.keep && item.tags.length > 0) {
+                            <small>当前处置不会更新标签</small>
+                          } @else if (item.removedTags.length > 0) {
+                            <small>应用后移除 {{ item.removedTags.length }} 个，保留 {{ item.remainingTagCount }} 个</small>
+                          }
+                        </div>
+                      } @else {
+                        <strong>{{ field.value }}</strong>
+                      }
+                    </div>
+                  }
+                </div>
+              </article>
+            }
+          </div>
+        </div>
+      </aside>
+    }
+
+    @if (wf.groupPlanDialog(); as dialog) {
+      <div class="op-modal-backdrop" (click)="wf.closeGroupPlanDialog()">
+        <div class="op-modal group-plan-modal" role="dialog" aria-modal="true" aria-labelledby="group-plan-title" (click)="$event.stopPropagation()">
+          <div class="op-modal-head">
+            <div>
+              <h2 id="group-plan-title">应用本组</h2>
+              <p class="modal-subtitle">
+                <span class="mono">{{ dialog.title }}</span>
+                <span>{{ dialog.subtitle }}</span>
+              </p>
+            </div>
+            <button type="button" class="modal-close" aria-label="关闭" [disabled]="wf.groupApplying()" (click)="wf.closeGroupPlanDialog()">X</button>
+          </div>
+
+          @if (dialog.plan.blockers.length) {
+            <div class="blocker-list">
+              @for (blocker of dialog.plan.blockers; track blocker) {
+                <p>{{ blocker }}</p>
+              }
+            </div>
+          }
+
+          @if (dialog.plan.warnings.length) {
+            <div class="warning-list">
+              @for (warning of dialog.plan.warnings; track warning) {
+                <p>{{ warning }}</p>
+              }
+            </div>
+          }
+
+          <div class="plan-action-list">
+            @for (action of dialog.actions; track action.id) {
+              <div class="plan-action-row" [class.has-tag-changes]="action.removedTags.length > 0" [style.background]="action.bg" [style.border-color]="action.border">
+                <span class="plan-op" [style.color]="action.color">{{ action.opLabel }}</span>
+                <strong>{{ action.title }}</strong>
+                <em>{{ action.vaultName }}</em>
+                <b [style.color]="action.color">{{ action.targetLabel }}</b>
+                <small>{{ action.detail }}</small>
+                @if (action.removedTags.length > 0) {
+                  <div class="plan-tag-diff">
+                    <span>移除</span>
+                    @for (tag of action.removedTags; track tag) {
+                      <em [attr.title]="tag">{{ tag }}</em>
+                    }
+                    <b>保留 {{ action.retainedTags.length }} 个</b>
+                  </div>
+                }
+              </div>
+            }
+          </div>
+
+          @if (wf.groupApplyError()) {
+            <div class="page-notice danger-text">{{ wf.groupApplyError() }}</div>
+          }
+
+          <div class="modal-actions">
+            <op-button size="sm" variant="ghost" label="取消" [disabled]="wf.groupApplying()" (pressed)="wf.closeGroupPlanDialog()"></op-button>
+            <op-button
+              size="sm"
+              [label]="wf.groupApplying() ? '正在应用…' : '确认应用 (' + dialog.operationCount + ' 项操作)'"
+              [disabled]="wf.groupApplying() || dialog.plan.blockers.length > 0"
+              (pressed)="wf.confirmGroupPlanDialog()"
+            ></op-button>
+          </div>
+        </div>
+      </div>
+    }
+
+    @if (wf.applyDialogOpen()) {
+      <div class="op-modal-backdrop">
+        <div class="op-modal apply-progress-modal" role="dialog" aria-modal="true" aria-labelledby="batch-apply-title">
+          <div class="op-modal-head">
+            <div>
+              <h2 id="batch-apply-title">{{ wf.applying() ? '正在应用计划' : '应用结果' }}</h2>
+              <p class="modal-subtitle">{{ wf.applying() ? '逐组执行计划，请勿关闭窗口' : wf.summaryLine() }}</p>
+            </div>
+            <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="wf.applying()" (click)="wf.closeApplyDialog()">X</button>
+          </div>
+          <op-progress [value]="wf.applyPct()" color="#f07178"></op-progress>
+          <div class="op-list">
+            @for (operation of wf.operationRows(); track operation.id) {
+              <div class="op-row" [style.border-color]="operation.border" [style.opacity]="operation.opacity">
+                <span [style.color]="operation.iconColor" [style.animation]="operation.anim">{{ operation.icon }}</span>
+                <strong>{{ operation.label }}</strong>
+                <em [style.color]="operation.statusColor">{{ operation.statusText }}</em>
+              </div>
+            }
+          </div>
+          @if (!wf.applying()) {
+            <div class="modal-actions">
+              <op-button size="sm" variant="ghost" label="关闭" (pressed)="wf.closeApplyDialog()"></op-button>
+            </div>
+          }
+        </div>
+      </div>
+    }
+  }
+</section>

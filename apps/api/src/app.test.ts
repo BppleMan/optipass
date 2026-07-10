@@ -430,6 +430,26 @@ describe("api app", () => {
     expect(response.json().message).toContain("Desktop App 授权需要账户名或 account_uuid");
   });
 
+  it("exposes the completed Desktop Auth account for scan-cache recovery", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+
+    const start = await startScan(app, { mode: "live", accountName: "example-account" });
+    await waitForScan(app, start.scanId);
+
+    const resumedSession = await app.inject({ method: "GET", url: "/api/session" });
+    expect(resumedSession.statusCode).toBe(200);
+    expect(resumedSession.json()).toMatchObject({ resumeAccountName: "example-account" });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/scan/clear",
+      headers: { "x-session-token": token }
+    });
+
+    const clearedSession = await app.inject({ method: "GET", url: "/api/session" });
+    expect(clearedSession.json()).not.toHaveProperty("resumeAccountName");
+  });
+
   it("rejects a new scan while another scan is still running", async () => {
     vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
     }));

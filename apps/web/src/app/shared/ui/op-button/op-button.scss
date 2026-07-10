@@ -1,0 +1,40 @@
+:host {
+    display: inline-block;
+
+    .op-button {
+        min-width: 112px;
+        padding: 10px 18px;
+        border: none;
+        border-radius: 10px;
+        color: #FFFFFF;
+        font-size: 14px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    
+    .op-button-sm {
+        min-width: 90px;
+        height: 34px;
+        padding: 6px 13px;
+        border-radius: 8px;
+        font-size: 13px;
+    }
+    
+    .op-button-primary {
+        background: var(--op-color-accent);
+    }
+    
+    .op-button-primary:hover:not(:disabled) {
+        background: #FF7F86;
+    }
+    
+    .op-button-ghost {
+        border: 1px solid #3F3F3F;
+        background: transparent;
+        color: var(--op-color-text);
+    }
+    
+    .op-button-ghost:hover:not(:disabled) {
+        border-color: #82AAFF;
+    }
+}

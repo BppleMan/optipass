@@ -130,6 +130,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   let enableMutations = config.enableMutations;
   let latestScan: ScanSnapshot | undefined;
   let latestScanMode: ScanMode | undefined;
+  let latestScanAccountName: string | undefined;
   let activeMutationScanId: string | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
   const scanJobs = new Map<string, ScanJob>();
@@ -211,6 +212,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       token: config.sessionToken,
       mode,
       accountName: config.accountName,
+      resumeAccountName: latestScanAccountName,
       apiBaseUrl: `http://${config.host}:${config.port}`,
       enableMutations,
       hasServiceAccountToken: Boolean(config.serviceAccountToken),
@@ -275,6 +277,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     latestScan = undefined;
     latestScanMode = undefined;
+    latestScanAccountName = undefined;
     tabStates.delete(tabIdFor(request));
     cancelScanJobs(scanJobs);
     scanJobs.clear();
@@ -566,6 +569,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       if (hasFailure) {
         latestScan = undefined;
         latestScanMode = undefined;
+        latestScanAccountName = undefined;
         resetTabAnalysisState(state);
         return { plan, results, scanInvalidated: true };
       }
@@ -574,6 +578,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       if (!verification.ok) {
         latestScan = undefined;
         latestScanMode = undefined;
+        latestScanAccountName = undefined;
         resetTabAnalysisState(state);
         return { plan, results, verification, scanInvalidated: true };
       }
@@ -624,6 +629,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
     latestScan = snapshot;
     latestScanMode = "mock";
+    latestScanAccountName = undefined;
     job.progress = progressFor(job.scanId, "completed", snapshot.vaults, snapshot.items, mockResult.items.length, snapshot.vaults.length, "扫描完成，等待手动分析。");
     emitScanEvent(job, {
       type: "completed",
@@ -655,6 +661,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       };
       latestScan = normalizedScan;
       latestScanMode = "live";
+      latestScanAccountName = config.serviceAccountToken ? undefined : accountName;
       if (!job.done) {
         job.progress = progressFor(
           job.scanId,

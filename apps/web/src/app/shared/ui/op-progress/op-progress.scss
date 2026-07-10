@@ -1,0 +1,17 @@
+:host {
+    display: block;
+
+    .op-progress {
+        height: 5px;
+        overflow: hidden;
+        border-radius: 3px;
+        background: #323232;
+    }
+    
+    .op-progress span {
+        display: block;
+        width: 0;
+        height: 100%;
+        transition: width 0.15s;
+    }
+}
