@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build-release:
     name: Build macOS DMG and release
-    runs-on: macos-15
+    runs-on: macos-26
 
     env:
       CI: "true"
