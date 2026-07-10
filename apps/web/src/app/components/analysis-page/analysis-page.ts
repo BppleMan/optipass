@@ -1,28 +1,29 @@
-import { Component, ElementRef, HostListener, OnInit, ViewChild } from '@angular/core';
+import { Component, ElementRef, OnInit, ViewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { OpButtonComponent } from '../op-button/op-button';
 import { OpProgressComponent } from '../op-progress/op-progress';
 import { OpTabsComponent } from '../op-tabs/op-tabs';
 import { PlanActionGroupComponent } from './plan-action-group/plan-action-group';
 import { VaultIconComponent } from '../vault-icon/vault-icon';
+import { VaultSelectComponent } from '../vault-select/vault-select';
 import { WorkflowService } from '../../workflow.service';
-import type { AnalysisDisplayMode, DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey, RemoveAction, TabView, VaultOptionView } from '../../models';
+import type { AnalysisDisplayMode, DetailCompareFieldKey, DetailCompareFieldView, DuplicateGroupView, DuplicateItemView, DuplicateKind, ItemDetailFieldKey, RemoveAction, TabView } from '../../models';
+
+type GroupRemovalMode = RemoveAction | 'manual';
 
 @Component({
   selector: 'op-analysis-page',
   standalone: true,
-  imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent, PlanActionGroupComponent, VaultIconComponent],
+  imports: [FormsModule, OpButtonComponent, OpProgressComponent, OpTabsComponent, PlanActionGroupComponent, VaultIconComponent, VaultSelectComponent],
   templateUrl: './analysis-page.html'
 })
 export class AnalysisPageComponent implements OnInit {
   readonly displayModeTabs: TabView[] = [
-    { kind: 'edit', label: '编辑', color: '#82aaff', bg: 'rgba(130, 170, 255, 0.16)' },
-    { kind: 'preview', label: '预览', color: '#82aaff', bg: 'rgba(130, 170, 255, 0.16)' }
+    { kind: 'edit', label: '编辑', color: '#c792ea', bg: 'rgba(199, 146, 234, 0.16)' },
+    { kind: 'preview', label: '预览', color: '#c792ea', bg: 'rgba(199, 146, 234, 0.16)' }
   ];
 
   activeDetailGroupId: string | undefined;
-  openActionMenuId: string | undefined;
-  actionMenuFrame = { top: 0, left: 0, width: 180 };
 
   @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
 
@@ -30,16 +31,6 @@ export class AnalysisPageComponent implements OnInit {
 
   ngOnInit(): void {
     void this.wf.restoreCachedState();
-  }
-
-  @HostListener('document:click')
-  closeActionMenu(): void {
-    this.openActionMenuId = undefined;
-  }
-
-  @HostListener('window:resize')
-  closeActionMenuOnResize(): void {
-    this.closeActionMenu();
   }
 
   setKind(kind: string): void {
@@ -64,47 +55,36 @@ export class AnalysisPageComponent implements OnInit {
     this.activeDetailGroupId = undefined;
   }
 
-  toggleActionMenu(menuId: string, event: MouseEvent): void {
-    event.stopPropagation();
-    if (this.openActionMenuId === menuId) {
-      this.openActionMenuId = undefined;
-      return;
+  setItemDecision(item: DuplicateItemView, mode: 'keep' | RemoveAction): void {
+    this.wf.updateKeep(item.id, mode === 'keep');
+    if (mode !== 'keep') {
+      this.wf.updateRemoveAction(item.id, mode);
     }
-    const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined;
-    const rect = trigger?.getBoundingClientRect();
-    const width = Math.max(180, rect?.width ?? 0);
-    this.actionMenuFrame = {
-      top: (rect?.bottom ?? 0) + 5,
-      left: Math.max(8, (rect?.right ?? width) - width),
-      width
-    };
-    this.openActionMenuId = menuId;
   }
 
-  selectTargetVault(item: DuplicateItemView, vaultId: string, event: MouseEvent): void {
-    event.stopPropagation();
-    this.wf.updateTargetVault(item.id, vaultId);
-    this.openActionMenuId = undefined;
+  itemDecisionIndex(item: DuplicateItemView): number {
+    if (item.keep) {
+      return 0;
+    }
+    return item.removeAction === 'archive' ? 1 : 2;
   }
 
-  selectRemoveAction(item: DuplicateItemView, action: RemoveAction, event: MouseEvent): void {
-    event.stopPropagation();
-    this.wf.updateRemoveAction(item.id, action);
-    this.openActionMenuId = undefined;
+  groupRemovalMode(group: DuplicateGroupView): GroupRemovalMode {
+    const removable = group.items.filter((item) => !item.keep);
+    if (removable.length === 0) {
+      return 'manual';
+    }
+    const first = removable[0].removeAction;
+    return removable.every((item) => item.removeAction === first) ? first : 'manual';
   }
 
-  selectedVaultOption(item: DuplicateItemView): VaultOptionView {
-    return item.vaultOptions.find((vault) => vault.id === item.targetVault)
-      ?? item.vaultOptions[0]
-      ?? { id: item.vaultId, label: item.vaultName, name: item.vaultName, current: true };
+  groupRemovalIndex(group: DuplicateGroupView): number {
+    const mode = this.groupRemovalMode(group);
+    return mode === 'archive' ? 0 : mode === 'delete' ? 1 : 2;
   }
 
-  removeActionLabel(action: RemoveAction): string {
-    return action === 'delete' ? '删除' : '归档（可恢复）';
-  }
-
-  removeActionIcon(action: RemoveAction): string {
-    return action === 'delete' ? '×' : '↧';
+  setGroupRemovalMode(group: DuplicateGroupView, mode: RemoveAction): void {
+    this.wf.updateGroupRemoveAction(group.id, mode);
   }
 
   switchDisplayMode(mode: string): void {
@@ -143,13 +123,9 @@ export class AnalysisPageComponent implements OnInit {
     return this.wf.planOperationCount() === 0 || this.wf.loading() || this.wf.applying();
   }
 
-  hasPasswordItems(group: { items: DuplicateItemView[] }): boolean {
-    return group.items.some((item) => item.credChips.some((chip) => chip.kind === 'password'));
-  }
-
   groupSecretsVisible(group: { items: DuplicateItemView[] }): boolean {
-    const passwordItems = group.items.filter((item) => item.credChips.some((chip) => chip.kind === 'password'));
-    return passwordItems.length > 0 && passwordItems.every((item) => item.secretVisible);
+    const credentialItems = group.items.filter((item) => item.credChips.some((chip) => chip.kind !== 'missing'));
+    return credentialItems.length > 0 && credentialItems.every((item) => item.secretVisible);
   }
 
   fieldDifferent(group: DuplicateGroupView, key: DetailCompareFieldKey): boolean {

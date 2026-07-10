@@ -47,7 +47,7 @@ export interface KindTabView extends TabView {
 }
 
 export interface CredentialChipView {
-  kind: 'password' | 'totp' | 'passkey' | 'missing';
+  kind: 'password' | 'secret' | 'totp' | 'passkey' | 'missing';
   label: string;
   bg: string;
   color: string;
@@ -62,7 +62,7 @@ export interface VaultOptionView {
   current: boolean;
 }
 
-export type ItemDetailFieldKey = 'username' | 'title' | 'url' | 'credentials' | 'strength' | 'vault' | 'category' | 'updated' | 'created' | 'tags';
+export type ItemDetailFieldKey = 'username' | 'title' | 'url' | 'credentials' | 'vault' | 'category' | 'updated' | 'created' | 'tags';
 
 export interface ItemDetailRowView {
   key: ItemDetailFieldKey;
@@ -108,20 +108,14 @@ export interface DuplicateItemView {
   url: string;
   categoryLabel: string;
   updated: string;
-  strength: string;
   vaultId: string;
   vaultName: string;
   keep: boolean;
   notKeep: boolean;
   targetVault: string;
   removeAction: RemoveAction;
-  removeBorder: string;
-  removeColor: string;
   rowBg: string;
-  strengthBg: string;
-  strengthColor: string;
   secretVisible: boolean;
-  secretLoading: boolean;
   credentialSignature: string;
   credChips: CredentialChipView[];
   detailRows: ItemDetailRowView[];
@@ -200,7 +194,6 @@ export interface PlanActionPreviewView {
   url: string;
   created: string;
   updated: string;
-  strength: string;
   vaultName: string;
   opLabel: string;
   targetLabel: string;

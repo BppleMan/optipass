@@ -5,6 +5,21 @@ import type { ExecuteResponse } from './api.service';
 import { WorkflowService } from './workflow.service';
 
 describe('WorkflowService analysis filters', () => {
+  it('keeps multiple credential metadata fields as separate detail entries', () => {
+    const service = createService();
+    const result = scanResult();
+    result.items[0].comparableFields = [
+      { label: '主密码', kind: 'secret' },
+      { label: '恢复密钥', kind: 'secret' }
+    ];
+    service.scanResult.set(result);
+
+    expect(service.visibleGroups()[0].items[0].credChips.map((chip) => ({ label: chip.label, kind: chip.kind }))).toEqual([
+      { label: '主密码', kind: 'password' },
+      { label: '恢复密钥', kind: 'secret' }
+    ]);
+  });
+
   it('uses OR within one filter section and AND across different sections', () => {
     const service = createService();
     service.scanResult.set(scanResult());

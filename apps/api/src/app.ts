@@ -1410,7 +1410,9 @@ function redactScanSnapshotForClient(scan: ScanSnapshot): ScanSnapshot {
     ...scan,
     items: scan.items.map((item) => ({
       ...item,
-      comparableFields: [],
+      comparableFields: item.comparableFields
+        .filter((field) => field.kind === "secret")
+        .map((field) => ({ label: field.label, kind: field.kind })),
       analysis: undefined
     }))
   };

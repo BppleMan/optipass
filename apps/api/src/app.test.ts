@@ -298,7 +298,8 @@ describe("api app", () => {
     const start = await startScan(app, { mode: "mock" });
     const body = await waitForScan(app, start.scanId);
 
-    expect(body.items.every((item: { comparableFields: unknown[] }) => item.comparableFields.length === 0)).toBe(true);
+    expect(body.items.flatMap((item: { comparableFields: Array<{ normalizedValue?: string; normalizedValueHash?: string }> }) => item.comparableFields)
+      .every((field: { normalizedValue?: string; normalizedValueHash?: string }) => field.normalizedValue === undefined && field.normalizedValueHash === undefined)).toBe(true);
     expect(body.items.every((item: { analysis?: unknown }) => item.analysis === undefined)).toBe(true);
     expect(JSON.stringify(body)).not.toContain("AKIA-MOCK-KEY");
     expect(JSON.stringify(body)).not.toContain("mock-aws-secret");

@@ -120,17 +120,18 @@
       <div class="scroll-list-panel">
         <div class="main-view-head">
           <op-tabs
+            ariaLabel="重复类型"
+            [tabs]="wf.kindTabs()"
+            [active]="wf.activeKind()"
+            (activeChange)="setKind($event)"
+          ></op-tabs>
+          <op-tabs
+            class="display-mode-tabs"
             ariaLabel="主视图模式"
             [tabs]="displayModeTabs"
             [active]="wf.analysisDisplayMode()"
             [showCount]="false"
             (activeChange)="switchDisplayMode($event)"
-          ></op-tabs>
-          <op-tabs
-            ariaLabel="重复类型"
-            [tabs]="wf.kindTabs()"
-            [active]="wf.activeKind()"
-            (activeChange)="setKind($event)"
           ></op-tabs>
         </div>
         <div #groupList class="group-list" [class.preview-mode]="wf.analysisDisplayMode() === 'preview'">
@@ -149,19 +150,51 @@
               <span class="muted">@</span>
               <span class="mono group-username">{{ group.username }}</span>
               <span class="head-spacer"></span>
+              <div
+                class="decision-segment group-removal-segment"
+                role="group"
+                aria-label="统一设置本组非保留项"
+                [style.--segment-index]="groupRemovalIndex(group)"
+                [style.--segment-count]="3"
+              >
+                <span class="decision-segment-indicator" aria-hidden="true"></span>
+                <button type="button" [class.active]="groupRemovalMode(group) === 'archive'" [disabled]="group.skipped" aria-label="本组统一归档" title="本组统一归档" (click)="setGroupRemovalMode(group, 'archive')">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM3 4h18v3H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                </button>
+                <button type="button" [class.active]="groupRemovalMode(group) === 'delete'" [disabled]="group.skipped" aria-label="本组统一删除" title="本组统一删除" (click)="setGroupRemovalMode(group, 'delete')">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14m-9 4v5m4-5v5M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                </button>
+                <button type="button" [class.active]="groupRemovalMode(group) === 'manual'" disabled aria-label="手动处理" title="手动处理">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h8M17 7h2M5 12h2M11 12h8M5 17h11M20 17h-1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path><circle cx="15" cy="7" r="2" fill="#242424" stroke="currentColor" stroke-width="1.7"></circle><circle cx="9" cy="12" r="2" fill="#242424" stroke="currentColor" stroke-width="1.7"></circle><circle cx="17" cy="17" r="2" fill="#242424" stroke="currentColor" stroke-width="1.7"></circle></svg>
+                </button>
+              </div>
               <button
                 type="button"
-                class="group-tool-button"
+                class="group-tool-button group-icon-button"
                 [class.active]="activeDetailGroupId === group.id"
+                aria-label="详情对比"
+                title="详情对比"
                 (click)="toggleGroupDetail(group.id)"
-              >详情对比</button>
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                  <rect x="13.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                  <path d="M6 9h2M6 12h2M16 9h2M16 12h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                </svg>
+              </button>
               <button
                 type="button"
-                class="group-tool-button"
+                class="group-tool-button group-icon-button"
                 [class.active]="groupSecretsVisible(group)"
-                [disabled]="!hasPasswordItems(group)"
+                aria-label="显示或隐藏本组密码"
+                title="显示或隐藏本组密码"
                 (click)="wf.toggleGroupReveal(group.id)"
-              >{{ groupSecretsVisible(group) ? '隐藏密码' : '显示密码' }}</button>
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
+                  <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                </svg>
+              </button>
               <button
                 type="button"
                 class="group-tool-button apply-group-button"
@@ -170,23 +203,45 @@
               >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
               <button
                 type="button"
-                class="skip-button"
+                class="skip-button group-icon-button"
                 [style.color]="group.skipColor"
                 [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                [attr.aria-label]="group.skipLabel"
+                [attr.title]="group.skipLabel"
                 (click)="wf.toggleGroupSkip(group.id); closeGroupDetail()"
-              >跳过此组</button>
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  @if (group.skipped) {
+                    <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                  } @else {
+                    <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                    <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                  }
+                </svg>
+              </button>
             </div>
 
             <div class="item-rows">
               @for (item of group.items; track item.id) {
                 <div class="decision-row" [style.background]="item.rowBg">
-                  <input
-                    type="checkbox"
-                    [ngModel]="item.keep"
-                    (ngModelChange)="wf.updateKeep(item.id, $event)"
-                    [disabled]="group.skipped"
-                    [attr.aria-label]="'保留 ' + item.title + ' ' + item.username"
+                  <div
+                    class="decision-segment row-decision-segment"
+                    role="group"
+                    [attr.aria-label]="'设置 ' + item.title + ' 的去留策略'"
+                    [style.--segment-index]="itemDecisionIndex(item)"
+                    [style.--segment-count]="3"
                   >
+                    <span class="decision-segment-indicator" aria-hidden="true"></span>
+                    <button type="button" [class.active]="item.keep" [disabled]="group.skipped" aria-label="保留" title="保留" (click)="setItemDecision(item, 'keep')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5c0 4.4-2.8 7.9-7 10-4.2-2.1-7-5.6-7-10V6l7-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="m8.5 12 2.2 2.2 4.8-4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                    <button type="button" [class.active]="!item.keep && item.removeAction === 'archive'" [disabled]="group.skipped" aria-label="归档（可恢复）" title="归档（可恢复）" (click)="setItemDecision(item, 'archive')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM3 4h18v3H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                    <button type="button" [class.active]="!item.keep && item.removeAction === 'delete'" [disabled]="group.skipped" aria-label="永久删除" title="永久删除" (click)="setItemDecision(item, 'delete')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14m-9 4v5m4-5v5M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                  </div>
                   <div class="identity-cell">
                     <strong class="identity-username">{{ item.username }}</strong>
                     <small class="identity-title">{{ item.title }}</small>
@@ -195,127 +250,22 @@
                     <span>{{ item.url }}</span>
                   </div>
                   <div class="credential-stack">
-                    @for (chip of item.credChips; track chip.label) {
+                    @for (chip of item.credChips; track $index) {
                       <div class="cred-line">
                         <span [style.background]="chip.bg" [style.color]="chip.color">{{ chip.label }}</span>
                         <em [style.color]="chip.textColor">{{ chip.text }}</em>
-                        @if (chip.kind === 'password') {
-                          <button
-                            type="button"
-                            class="reveal-button"
-                            [class.active]="item.secretVisible"
-                            [disabled]="item.secretLoading"
-                            [attr.aria-label]="item.secretVisible ? '隐藏密码' : '显示密码'"
-                            [attr.title]="item.secretVisible ? '隐藏密码' : '显示密码'"
-                            (click)="wf.toggleItemReveal(item.id)"
-                          >
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
-                              <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="2"></circle>
-                            </svg>
-                          </button>
-                        }
                       </div>
                     }
-                  </div>
-                  <div class="strength-cell">
-                    <span [style.background]="item.strengthBg" [style.color]="item.strengthColor">{{ item.strength }}</span>
                   </div>
                   <div class="updated-cell">{{ item.updated }}</div>
-                  <div class="vault-name">
-                    <op-vault-icon class="row-vault-icon" [name]="item.vaultName"></op-vault-icon>
-                    <span>{{ item.vaultName }}</span>
-                  </div>
-                  <div class="action-cell">
-                    @if (item.keep) {
-                      <div class="action-menu" [class.open]="openActionMenuId === item.id + ':vault'" (click)="$event.stopPropagation()">
-                        <button
-                          type="button"
-                          class="action-menu-trigger"
-                          [disabled]="group.skipped"
-                          [attr.aria-expanded]="openActionMenuId === item.id + ':vault'"
-                          (click)="toggleActionMenu(item.id + ':vault', $event)"
-                        >
-                          <op-vault-icon class="action-menu-icon" [name]="selectedVaultOption(item).name"></op-vault-icon>
-                          <span>{{ selectedVaultOption(item).label }}</span>
-                          <b aria-hidden="true">▾</b>
-                        </button>
-                        @if (openActionMenuId === item.id + ':vault') {
-                          <div
-                            class="action-menu-popover"
-                            role="listbox"
-                            [style.top.px]="actionMenuFrame.top"
-                            [style.left.px]="actionMenuFrame.left"
-                            [style.width.px]="actionMenuFrame.width"
-                          >
-                            @for (vault of item.vaultOptions; track vault.id) {
-                              <button
-                                type="button"
-                                class="action-menu-option"
-                                [class.selected]="vault.id === item.targetVault"
-                                role="option"
-                                [attr.aria-selected]="vault.id === item.targetVault"
-                                (click)="selectTargetVault(item, vault.id, $event)"
-                              >
-                                <op-vault-icon class="action-menu-icon" [name]="vault.name"></op-vault-icon>
-                                <span>{{ vault.label }}</span>
-                              </button>
-                            }
-                          </div>
-                        }
-                      </div>
-                    } @else {
-                      <div
-                        class="action-menu"
-                        [class.open]="openActionMenuId === item.id + ':remove'"
-                        [style.--action-color]="item.removeColor"
-                        (click)="$event.stopPropagation()"
-                      >
-                        <button
-                          type="button"
-                          class="action-menu-trigger remove-trigger"
-                          [disabled]="group.skipped"
-                          [attr.aria-expanded]="openActionMenuId === item.id + ':remove'"
-                          (click)="toggleActionMenu(item.id + ':remove', $event)"
-                        >
-                          <span class="action-kind-icon">{{ removeActionIcon(item.removeAction) }}</span>
-                          <span>{{ removeActionLabel(item.removeAction) }}</span>
-                          <b aria-hidden="true">▾</b>
-                        </button>
-                        @if (openActionMenuId === item.id + ':remove') {
-                          <div
-                            class="action-menu-popover"
-                            role="listbox"
-                            [style.top.px]="actionMenuFrame.top"
-                            [style.left.px]="actionMenuFrame.left"
-                            [style.width.px]="actionMenuFrame.width"
-                          >
-                            <button
-                              type="button"
-                              class="action-menu-option"
-                              [class.selected]="item.removeAction === 'archive'"
-                              role="option"
-                              [attr.aria-selected]="item.removeAction === 'archive'"
-                              (click)="selectRemoveAction(item, 'archive', $event)"
-                            >
-                              <span class="action-kind-icon archive">↧</span>
-                              <span>归档（可恢复）</span>
-                            </button>
-                            <button
-                              type="button"
-                              class="action-menu-option danger"
-                              [class.selected]="item.removeAction === 'delete'"
-                              role="option"
-                              [attr.aria-selected]="item.removeAction === 'delete'"
-                              (click)="selectRemoveAction(item, 'delete', $event)"
-                            >
-                              <span class="action-kind-icon delete">×</span>
-                              <span>删除</span>
-                            </button>
-                          </div>
-                        }
-                      </div>
-                    }
+                  <div class="vault-select">
+                    <op-vault-select
+                      [options]="item.vaultOptions"
+                      [value]="item.targetVault"
+                      [disabled]="group.skipped || !item.keep"
+                      [ariaLabel]="'选择 ' + item.title + ' 的保留保险库'"
+                      (valueChange)="wf.updateTargetVault(item.id, $event)"
+                    ></op-vault-select>
                   </div>
                 </div>
               }
@@ -339,17 +289,31 @@
                   <span class="head-spacer"></span>
                   <button
                     type="button"
-                    class="group-tool-button"
+                    class="group-tool-button group-icon-button"
                     [class.active]="activeDetailGroupId === group.id"
+                    aria-label="详情对比"
+                    title="详情对比"
                     (click)="toggleGroupDetail(group.id)"
-                  >详情对比</button>
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="3.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                      <rect x="13.5" y="5" width="7" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+                      <path d="M6 9h2M6 12h2M16 9h2M16 12h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+                    </svg>
+                  </button>
                   <button
                     type="button"
-                    class="group-tool-button"
+                    class="group-tool-button group-icon-button"
                     [class.active]="groupSecretsVisible(group)"
-                    [disabled]="!hasPasswordItems(group)"
+                    aria-label="显示或隐藏本组密码"
+                    title="显示或隐藏本组密码"
                     (click)="wf.toggleGroupReveal(group.id)"
-                  >{{ groupSecretsVisible(group) ? '隐藏密码' : '显示密码' }}</button>
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
+                      <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                    </svg>
+                  </button>
                   <button
                     type="button"
                     class="group-tool-button apply-group-button"
@@ -358,11 +322,22 @@
                   >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
                   <button
                     type="button"
-                    class="skip-button"
+                    class="skip-button group-icon-button"
                     [style.color]="group.skipColor"
                     [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                    [attr.aria-label]="group.skipped ? '恢复此组' : '跳过此组'"
+                    [attr.title]="group.skipped ? '恢复此组' : '跳过此组'"
                     (click)="wf.toggleGroupSkip(group.id); closeGroupDetail()"
-                  >跳过此组</button>
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      @if (group.skipped) {
+                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                      } @else {
+                        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                        <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                      }
+                    </svg>
+                  </button>
                 </div>
 
                 <div class="item-rows">
@@ -391,7 +366,63 @@
               <span class="mono muted">{{ detailGroup.site }}</span>
             </p>
           </div>
-          <span class="drawer-count">{{ detailGroup.count }} 个 item</span>
+          <div class="drawer-group-actions">
+            <div
+              class="decision-segment group-removal-segment"
+              role="group"
+              aria-label="统一设置本组非保留项"
+              [style.--segment-index]="groupRemovalIndex(detailGroup)"
+              [style.--segment-count]="3"
+            >
+              <span class="decision-segment-indicator" aria-hidden="true"></span>
+              <button type="button" [class.active]="groupRemovalMode(detailGroup) === 'archive'" [disabled]="detailGroup.skipped" aria-label="本组统一归档" title="本组统一归档" (click)="setGroupRemovalMode(detailGroup, 'archive')">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM3 4h18v3H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+              </button>
+              <button type="button" [class.active]="groupRemovalMode(detailGroup) === 'delete'" [disabled]="detailGroup.skipped" aria-label="本组统一删除" title="本组统一删除" (click)="setGroupRemovalMode(detailGroup, 'delete')">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14m-9 4v5m4-5v5M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+              </button>
+              <button type="button" [class.active]="groupRemovalMode(detailGroup) === 'manual'" disabled aria-label="手动处理" title="手动处理">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h8M17 7h2M5 12h2M11 12h8M5 17h11M20 17h-1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path><circle cx="15" cy="7" r="2" fill="#242424" stroke="currentColor" stroke-width="1.7"></circle><circle cx="9" cy="12" r="2" fill="#242424" stroke="currentColor" stroke-width="1.7"></circle><circle cx="17" cy="17" r="2" fill="#242424" stroke="currentColor" stroke-width="1.7"></circle></svg>
+              </button>
+            </div>
+            <button
+              type="button"
+              class="group-tool-button group-icon-button"
+              [class.active]="groupSecretsVisible(detailGroup)"
+              aria-label="显示或隐藏本组密码"
+              title="显示或隐藏本组密码"
+              (click)="wf.toggleGroupReveal(detailGroup.id)"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
+                <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="group-tool-button apply-group-button"
+              [disabled]="!wf.canApplyGroup(detailGroup.id)"
+              (click)="wf.openGroupPlanDialog(detailGroup.id)"
+            >{{ wf.groupPlanLoading()[detailGroup.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(detailGroup.id) + ')' }}</button>
+            <button
+              type="button"
+              class="skip-button group-icon-button"
+              [style.color]="detailGroup.skipColor"
+              [disabled]="wf.groupPlanLoading()[detailGroup.id] || wf.groupApplying()"
+              [attr.aria-label]="detailGroup.skipLabel"
+              [attr.title]="detailGroup.skipLabel"
+              (click)="wf.toggleGroupSkip(detailGroup.id); closeGroupDetail()"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                @if (detailGroup.skipped) {
+                  <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                } @else {
+                  <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
+                  <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                }
+              </svg>
+            </button>
+          </div>
           <button type="button" class="drawer-close" aria-label="关闭详情对比" (click)="closeGroupDetail()">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path>
@@ -404,12 +435,27 @@
               <article class="drawer-item-card" [class.keep]="item.keep">
                 <div class="drawer-item-head">
                   <div class="drawer-item-title">
-                    <strong [class.diff]="fieldDifferent(detailGroup, 'username')">{{ item.username }}</strong>
-                    <small [class.diff]="fieldDifferent(detailGroup, 'title')">{{ item.title }}</small>
+                    <strong [class.diff]="fieldDifferent(detailGroup, 'username')" [attr.title]="item.username">{{ item.username }}</strong>
+                    <small [class.diff]="fieldDifferent(detailGroup, 'title')" [attr.title]="item.title">{{ item.title }}</small>
                   </div>
-                  <span class="drawer-decision" [class.keep]="item.keep" [class.remove]="!item.keep">
-                    {{ item.keep ? '保留' : (item.removeAction === 'delete' ? '删除' : '归档') }}
-                  </span>
+                  <div
+                    class="decision-segment drawer-decision-segment"
+                    role="group"
+                    [attr.aria-label]="'设置 ' + item.title + ' 的处置方式'"
+                    [style.--segment-index]="itemDecisionIndex(item)"
+                    [style.--segment-count]="3"
+                  >
+                    <span class="decision-segment-indicator" aria-hidden="true"></span>
+                    <button type="button" [class.active]="item.keep" aria-label="保留" title="保留" (click)="setItemDecision(item, 'keep')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 19 6v5c0 4.4-2.8 7.9-7 10-4.2-2.1-7-5.6-7-10V6l7-3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="m8.5 12 2.2 2.2 4.8-4.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                    <button type="button" [class.active]="!item.keep && item.removeAction === 'archive'" aria-label="归档（可恢复）" title="归档（可恢复）" (click)="setItemDecision(item, 'archive')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM3 4h18v3H3zM9 11h6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                    <button type="button" [class.active]="!item.keep && item.removeAction === 'delete'" aria-label="永久删除" title="永久删除" (click)="setItemDecision(item, 'delete')">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14m-9 4v5m4-5v5M9 7l1-3h4l1 3m-8 0 1 13h8l1-13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                    </button>
+                  </div>
                 </div>
 
                 <div class="drawer-compare-table">
@@ -420,37 +466,37 @@
                       [class.url]="field.tone === 'url'"
                       [class.credential]="field.tone === 'credential'"
                       [class.warning]="field.tone === 'warning'"
+                      [class.vault]="field.key === 'vault'"
                     >
                       <span>{{ field.label }}</span>
                       @if (field.key === 'credentials') {
                         <div class="drawer-credential-line">
-                          @for (chip of item.credChips; track chip.kind + ':' + chip.label) {
+                          @for (chip of item.credChips; track $index) {
                             <div class="drawer-credential-entry">
-                              <span class="drawer-credential-kind" [class.password]="chip.kind === 'password'" [class.totp]="chip.kind === 'totp'" [class.passkey]="chip.kind === 'passkey'" [class.missing]="chip.kind === 'missing'">{{ chip.label }}</span>
+                              <span class="drawer-credential-kind" [class.password]="chip.kind === 'password'" [class.secret]="chip.kind === 'secret'" [class.totp]="chip.kind === 'totp'" [class.passkey]="chip.kind === 'passkey'" [class.missing]="chip.kind === 'missing'">{{ chip.label }}</span>
                               <em
                                 class="drawer-credential-value"
-                                [class.masked]="chip.kind === 'password' && !item.secretVisible"
-                                [class.revealed]="chip.kind === 'password' && item.secretVisible"
+                                [class.masked]="chip.kind !== 'passkey' && chip.kind !== 'missing' && !item.secretVisible"
+                                [class.revealed]="chip.kind !== 'passkey' && chip.kind !== 'missing' && item.secretVisible"
                               >{{ chip.text }}</em>
-                              @if (chip.kind === 'password') {
-                                <button
-                                  type="button"
-                                  class="drawer-reveal-button"
-                                  [class.active]="item.secretVisible"
-                                  [disabled]="item.secretLoading"
-                                  [attr.aria-label]="item.secretVisible ? '隐藏密码' : '显示密码'"
-                                  [attr.title]="item.secretVisible ? '隐藏密码' : '显示密码'"
-                                  (click)="wf.toggleItemReveal(item.id)"
-                                >
-                                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                                    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path>
-                                    <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="2"></circle>
-                                  </svg>
-                                </button>
-                              }
                             </div>
                           }
                         </div>
+                      } @else if (field.key === 'vault') {
+                        @if (item.keep) {
+                          <op-vault-select
+                            class="drawer-vault-picker"
+                            [options]="item.vaultOptions"
+                            [value]="item.targetVault"
+                            [ariaLabel]="'选择 ' + item.title + ' 的保留位置'"
+                            (valueChange)="wf.updateTargetVault(item.id, $event)"
+                          ></op-vault-select>
+                        } @else {
+                          <div class="drawer-vault-static">
+                            <op-vault-icon class="vault-picker-icon" [name]="item.vaultName"></op-vault-icon>
+                            <strong>{{ item.vaultName }}</strong>
+                          </div>
+                        }
                       } @else if (field.key === 'time') {
                         <div class="drawer-time-line">
                           @for (part of detailTimeParts(item); track $index) {
