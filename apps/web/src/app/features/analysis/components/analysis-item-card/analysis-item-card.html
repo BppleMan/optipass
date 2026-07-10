@@ -1,0 +1,110 @@
+@let currentItem = item();
+@let currentGroup = group();
+
+<section class="field-row title-row">
+    <span class="field-marker title-marker" aria-hidden="true">•</span>
+    <strong>{{ currentItem.title }}</strong>
+</section>
+
+<section class="field-row username-row">
+    <span class="field-marker username-marker" aria-hidden="true">@</span>
+    <strong>{{ currentItem.username }}</strong>
+</section>
+
+<section class="field-row url-row">
+    <span class="field-marker url-marker" aria-hidden="true">↗</span>
+    <strong>{{ currentItem.url || '—' }}</strong>
+</section>
+
+@for (credential of credentialSlots(); track credential.kind) {
+    <section
+        class="field-row credential-row"
+        [class.password-row]="credential.kind === 'password'"
+        [class.totp-row]="credential.kind === 'totp'"
+        [class.passkey-row]="credential.kind === 'passkey'"
+    >
+        <b
+            [class.password]="credential.kind === 'password'"
+            [class.totp]="credential.kind === 'totp'"
+            [class.passkey]="credential.kind === 'passkey'"
+        >{{ credential.label }}</b>
+        <em
+            [class.empty]="credential.empty"
+            [class.masked]="credential.kind !== 'passkey' && !credential.empty && !currentItem.secretVisible"
+            [class.revealed]="credential.kind !== 'passkey' && !credential.empty && currentItem.secretVisible"
+        >{{ credential.text }}</em>
+    </section>
+}
+
+<section class="field-row time-row">
+    <div class="time-values">
+        @for (part of detailTimeParts(); track $index) {
+            <strong>{{ part }}</strong>
+        }
+    </div>
+</section>
+
+<section class="action-row">
+    <op-segmented-control
+        [items]="decisionItems()"
+        [value]="decisionValue()"
+        [disabled]="currentGroup.skipped"
+        [ariaLabel]="'设置 ' + currentItem.title + ' 的处置方式'"
+        size="comfortable"
+        [fullWidth]="true"
+        (valueChange)="decisionChange.emit($event)"
+    ></op-segmented-control>
+</section>
+
+<section class="field-row vault-row">
+    <op-vault-select
+        [options]="currentItem.vaultOptions"
+        [value]="currentItem.keep ? currentItem.targetVault : currentItem.vaultId"
+        [disabled]="currentGroup.skipped || !currentItem.keep"
+        [ariaLabel]="(currentItem.keep ? '选择 ' : '当前 ') + currentItem.title + ' 的保险库'"
+        (valueChange)="vaultChange.emit($event)"
+    ></op-vault-select>
+</section>
+
+<section class="field-row tag-row" [class.inactive]="!currentItem.keep">
+    <div class="tag-field">
+        @if (currentItem.tags.length === 0) {
+            <span class="tag-empty">无标签</span>
+        } @else {
+            <div class="tag-list">
+                @for (tag of currentItem.tags; track tag) {
+                    <div class="tag-wrap">
+                        <button
+                            type="button"
+                            class="tag-chip"
+                            [class.removed]="currentItem.removedTags.includes(tag)"
+                            [class.shared]="tagSharedAcrossGroup(tag)"
+                            [disabled]="!currentItem.keep"
+                            [attr.aria-label]="(currentItem.removedTags.includes(tag) ? '撤销移除标签 ' : '移除标签 ') + tag"
+                            [attr.title]="tag"
+                            (click)="tagRemovalRequested.emit(tag)"
+                        >
+                            <span>{{ tag }}</span>
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                @if (currentItem.removedTags.includes(tag)) {
+                                    <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+                                } @else {
+                                    <path d="m7 7 10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+                                }
+                            </svg>
+                        </button>
+                        @if (tagPromptVisible(tag)) {
+                            <div class="tag-scope-prompt">
+                                <strong>移除“{{ tag }}”</strong>
+                                <div>
+                                    <button type="button" (click)="tagScopeApplied.emit('item')">仅此 item</button>
+                                    <button type="button" (click)="tagScopeApplied.emit('group')">本组 {{ tagPrompt()?.eligibleCount }} 项</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</section>

@@ -41,6 +41,9 @@
         z-index: 1;
         min-width: 0;
         height: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         padding: 0 8px;
         border: 0;
         background: transparent;
@@ -79,5 +82,17 @@
     &[data-size="regular"] .segment-item {
         width: 36px;
         padding: 0;
+    }
+
+    &[data-full-width="true"] {
+        width: 100%;
+    }
+
+    &[data-full-width="true"] .segmented-control {
+        width: 100%;
+    }
+
+    &[data-full-width="true"] .segment-item {
+        width: auto;
     }
 }

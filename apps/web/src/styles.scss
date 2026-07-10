@@ -109,8 +109,7 @@ select:disabled {
 /* Browser scrollbar paint crosses Angular host boundaries, so it is scoped globally to known scroll containers. */
 .vault-list,
 .group-list,
-.drawer-card-strip,
-.drawer-strip-clip,
+.matrix-viewport,
 .analysis-filter-sidebar,
 .filter-option-list {
     scrollbar-width: thin;
@@ -119,8 +118,7 @@ select:disabled {
 
 .vault-list::-webkit-scrollbar,
 .group-list::-webkit-scrollbar,
-.drawer-card-strip::-webkit-scrollbar,
-.drawer-strip-clip::-webkit-scrollbar,
+.matrix-viewport::-webkit-scrollbar,
 .analysis-filter-sidebar::-webkit-scrollbar,
 .filter-option-list::-webkit-scrollbar {
     width: 10px;
@@ -129,8 +127,7 @@ select:disabled {
 
 .vault-list::-webkit-scrollbar-track,
 .group-list::-webkit-scrollbar-track,
-.drawer-card-strip::-webkit-scrollbar-track,
-.drawer-strip-clip::-webkit-scrollbar-track,
+.matrix-viewport::-webkit-scrollbar-track,
 .analysis-filter-sidebar::-webkit-scrollbar-track,
 .filter-option-list::-webkit-scrollbar-track {
     background: #1F2A34;
@@ -139,8 +136,7 @@ select:disabled {
 
 .vault-list::-webkit-scrollbar-thumb,
 .group-list::-webkit-scrollbar-thumb,
-.drawer-card-strip::-webkit-scrollbar-thumb,
-.drawer-strip-clip::-webkit-scrollbar-thumb,
+.matrix-viewport::-webkit-scrollbar-thumb,
 .analysis-filter-sidebar::-webkit-scrollbar-thumb,
 .filter-option-list::-webkit-scrollbar-thumb {
     background: #3F5368;
@@ -150,7 +146,7 @@ select:disabled {
 
 .vault-list::-webkit-scrollbar-thumb:hover,
 .group-list::-webkit-scrollbar-thumb:hover,
-.drawer-card-strip::-webkit-scrollbar-thumb:hover,
+.matrix-viewport::-webkit-scrollbar-thumb:hover,
 .analysis-filter-sidebar::-webkit-scrollbar-thumb:hover,
 .filter-option-list::-webkit-scrollbar-thumb:hover {
     background: #5F7892;

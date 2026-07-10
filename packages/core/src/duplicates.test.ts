@@ -105,6 +105,7 @@ describe("findDuplicateGroups", () => {
     const differingItems = [
       { title: "GitHub Copy" },
       { analysis: analysis({ ...base.analysis, notesValueHash: "notes " }) },
+      { category: "secure-note" },
       { fieldCount: 3 },
       { analysis: analysis({ ...base.analysis, fieldSignatures: ["username:alice", "password:h2"] }) },
       { hasTotp: true },

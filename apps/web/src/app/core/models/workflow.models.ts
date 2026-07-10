@@ -106,6 +106,7 @@ export interface DuplicateItemView {
   title: string;
   username: string;
   url: string;
+  category: string;
   categoryLabel: string;
   updated: string;
   vaultId: string;
@@ -123,24 +124,6 @@ export interface DuplicateItemView {
   remainingTagCount: number;
   detailRows: ItemDetailRowView[];
   vaultOptions: VaultOptionView[];
-}
-
-export type DetailCompareFieldKey =
-  | 'title'
-  | 'username'
-  | 'url'
-  | 'credentials'
-  | 'vault'
-  | 'category'
-  | 'time'
-  | 'tags';
-
-export interface DetailCompareFieldView {
-  key: DetailCompareFieldKey;
-  label: string;
-  value: string;
-  tone: 'default' | 'url' | 'credential' | 'warning';
-  different: boolean;
 }
 
 export interface DuplicateGroupView {

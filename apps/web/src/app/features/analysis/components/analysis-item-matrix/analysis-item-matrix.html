@@ -1,0 +1,23 @@
+@let currentGroup = group();
+
+<div class="matrix-scroll">
+    <div class="matrix-viewport" tabindex="0" [attr.aria-label]="currentGroup.site + ' 组内凭据横向对比'">
+        <div class="matrix">
+            @for (item of currentGroup.items; track item.id) {
+                <op-analysis-item-card
+                    [class.keep]="item.keep"
+                    [style.grid-column]="$index + 1"
+                    [style.--item-card-background]="item.rowBg"
+                    [group]="currentGroup"
+                    [item]="item"
+                    [decisionItems]="decisionItems()"
+                    [tagPrompt]="tagPrompt()"
+                    (decisionChange)="decisionChange.emit({ item: item, value: $event })"
+                    (vaultChange)="vaultChange.emit({ itemId: item.id, value: $event })"
+                    (tagRemovalRequested)="tagRemovalRequested.emit({ item: item, tag: $event })"
+                    (tagScopeApplied)="tagScopeApplied.emit($event)"
+                ></op-analysis-item-card>
+            }
+        </div>
+    </div>
+</div>

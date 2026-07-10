@@ -19,6 +19,7 @@ export interface SegmentedControlItem {
     styleUrl: "./segmented-control.scss",
     host: {
         "[attr.data-size]": "size()",
+        "[attr.data-full-width]": "fullWidth()",
     },
 })
 export class SegmentedControlComponent {
@@ -27,6 +28,7 @@ export class SegmentedControlComponent {
     public readonly disabled = input(false);
     public readonly ariaLabel = input.required<string>();
     public readonly size = input<"compact" | "comfortable" | "regular">("compact");
+    public readonly fullWidth = input(false);
     public readonly valueChange = output<string>();
 
     @ViewChildren("segmentButton") private readonly buttons!: QueryList<ElementRef<HTMLButtonElement>>;

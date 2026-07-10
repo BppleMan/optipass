@@ -22,6 +22,14 @@ describe("SegmentedControlComponent", () => {
         expect(emit).toHaveBeenNthCalledWith(2, "archive");
     });
 
+    it("marks the host for equal-width layout when requested", () => {
+        const fixture = createComponent();
+        fixture.componentRef.setInput("fullWidth", true);
+        fixture.detectChanges();
+
+        expect(fixture.nativeElement.getAttribute("data-full-width")).toBe("true");
+    });
+
     function createComponent(): ComponentFixture<SegmentedControlComponent> {
         TestBed.configureTestingModule({ imports: [SegmentedControlComponent] });
         const fixture = TestBed.createComponent(SegmentedControlComponent);

@@ -1223,6 +1223,7 @@ export class WorkflowService {
       title: item.title,
       username,
       url,
+      category: item.category,
       categoryLabel: categoryDisplay[item.category]?.label ?? item.category,
       updated: itemUpdatedDate(item),
       vaultId: item.vaultId,
