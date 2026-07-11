@@ -319,6 +319,39 @@ describe("api app", () => {
     expect(JSON.stringify(body)).not.toContain("mock-analysis");
   });
 
+  it("searches category values and sensitive local fields without returning their values", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    await waitForScan(app, start.scanId);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/items/search",
+      headers: { "x-session-token": token },
+      payload: { keywords: ["2026", "Personal", "github.com", "recovery", "vpn@example.com", "13800000000", "一次性密码"] }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.itemIds).toEqual(expect.arrayContaining([
+      "vault-personal:github-1",
+      "vault-work:github-2",
+      "vault-work:note-1"
+    ]));
+    expect(body.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "year", label: "2026" }),
+      expect.objectContaining({ kind: "vault", label: "Personal" }),
+      expect.objectContaining({ kind: "credential", label: "一次性密码" }),
+      expect.objectContaining({ kind: "domain", label: "github.com" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "title" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "note" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "email" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "phone" })
+    ]));
+    expect(response.body).not.toContain("vpn recovery note");
+    expect(response.body).not.toContain("vpn@example.com");
+    expect(response.body).not.toContain("13800000000");
+  });
+
   it("streams scan progress events with a completed snapshot", async () => {
     const start = await startScan(app, { mode: "mock" });
     const response = await app.inject({

@@ -54,45 +54,153 @@
           <button type="button" class="filter-clear" (click)="wf.clearAnalysisFilters()">清空筛选</button>
         }
       </div>
+      <div class="global-search-shell" (focusout)="onGlobalSearchFocusOut($event)">
+        <input
+          type="search"
+          class="global-search"
+          role="combobox"
+          aria-label="全局搜索重复项"
+          aria-autocomplete="list"
+          aria-controls="global-search-suggestions"
+          [attr.aria-expanded]="wf.globalSearchAutocompleteOpen()"
+          [attr.aria-activedescendant]="wf.globalSearchAutocompleteOpen() ? wf.activeGlobalSearchSuggestionId() : null"
+          placeholder="搜索年份、保险库、凭据、Domain 或凭据字段"
+          [ngModel]="wf.globalSearchQuery()"
+          (focus)="wf.openGlobalSearchAutocomplete()"
+          (keydown)="onGlobalSearchKeydown($event)"
+          (ngModelChange)="wf.updateGlobalSearchQuery($event)"
+        >
+        @if (wf.globalSearchAutocompleteOpen()) {
+          <div
+            #globalSearchSuggestions
+            id="global-search-suggestions"
+            class="global-search-suggestions"
+            role="listbox"
+            aria-label="全局搜索补全项"
+            aria-multiselectable="true"
+          >
+            <div class="global-search-selection-toolbar">
+              <span>已选 {{ wf.selectedGlobalSearchSuggestionCount() }} / {{ wf.globalSearchSuggestions().length }}</span>
+              <button
+                type="button"
+                [attr.aria-pressed]="wf.allGlobalSearchSuggestionsSelected()"
+                (click)="wf.toggleAllGlobalSearchSuggestions()"
+              >
+                {{ wf.allGlobalSearchSuggestionsSelected() ? '取消全选' : '全选' }}
+              </button>
+            </div>
+            @for (group of wf.globalSearchSuggestionGroups(); track group.kind) {
+              <div class="global-search-suggestion-group" role="group" [attr.aria-label]="group.label">
+                <div class="global-search-suggestion-heading">
+                  <span>{{ group.label }}</span>
+                  <button
+                    type="button"
+                    [class.partial]="group.someSelected"
+                    [attr.aria-pressed]="group.allSelected"
+                    (click)="wf.toggleGlobalSearchSuggestionGroup(group)"
+                  >
+                    {{ group.allSelected ? '取消全选' : '全选本组' }}
+                  </button>
+                </div>
+                @for (suggestion of group.suggestions; track suggestion.id) {
+                  <button
+                    type="button"
+                    role="option"
+                    class="global-search-suggestion"
+                    [id]="'global-search-suggestion-' + suggestion.id"
+                    [class.active]="suggestion.index === wf.activeGlobalSearchSuggestionIndex()"
+                    [class.selected]="suggestion.selected"
+                    [attr.aria-selected]="suggestion.selected"
+                    (focus)="wf.activateGlobalSearchSuggestion(suggestion.index)"
+                    (mouseenter)="wf.activateGlobalSearchSuggestion(suggestion.index)"
+                    (click)="wf.selectGlobalSearchSuggestion(suggestion)"
+                  >
+                    <span class="global-search-suggestion-check" aria-hidden="true">{{ suggestion.selected ? '✓' : '' }}</span>
+                    <span class="global-search-suggestion-label">{{ suggestion.label }}</span>
+                    <em>{{ suggestion.detail }}</em>
+                  </button>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
     </div>
 
     <div class="analysis-content">
       <aside class="analysis-filter-sidebar" aria-label="筛选重复组">
+        <div class="filter-container filter-container-primary">
+          @for (section of wf.analysisFilterSections(); track section.id) {
+            @if (section.id !== 'domains') {
+              <div
+                class="filter-section"
+                [class.expanded]="section.expanded"
+                [class.collapsed]="!section.expanded"
+              >
+                <button
+                  type="button"
+                  class="filter-section-toggle"
+                  [attr.aria-expanded]="section.expanded"
+                  (click)="wf.toggleAnalysisFilterSection(section.id)"
+                >
+                  <span>{{ section.label }}</span>
+                  <em>{{ section.countLabel }}</em>
+                  <b aria-hidden="true">▾</b>
+                </button>
+                <div
+                  class="filter-section-body"
+                  [class.expanded]="section.expanded"
+                  [attr.aria-hidden]="!section.expanded"
+                  [attr.inert]="section.expanded ? null : ''"
+                >
+                  <div class="filter-section-body-inner">
+                    <div class="filter-option-list">
+                      @for (option of section.options; track option.id) {
+                        <label class="filter-option">
+                          <input
+                            type="checkbox"
+                            [ngModel]="option.selected"
+                            (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
+                          >
+                          @if (section.id === 'vaults') {
+                            <op-vault-icon class="filter-vault-icon" [name]="option.label"></op-vault-icon>
+                          }
+                          <span>{{ option.label }}</span>
+                          <em>{{ option.count }}</em>
+                        </label>
+                      }
+                      @if (section.options.length === 0) {
+                        <div class="filter-option-empty">{{ section.emptyText }}</div>
+                      }
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          }
+        </div>
+        <div class="filter-container filter-container-domains">
         @for (section of wf.analysisFilterSections(); track section.id) {
-          <div
-            class="filter-section"
-            [class.domain-section]="section.id === 'domains'"
-            [class.expanded]="section.expanded"
-            [class.collapsed]="!section.expanded"
-          >
-            <button
-              type="button"
-              class="filter-section-toggle"
-              [attr.aria-expanded]="section.expanded"
-              (click)="wf.toggleAnalysisFilterSection(section.id)"
-            >
-              <span>{{ section.label }}</span>
-              <em>{{ section.countLabel }}</em>
-              <b aria-hidden="true">▾</b>
-            </button>
-            <div
-              class="filter-section-body"
-              [class.expanded]="section.expanded"
-              [attr.aria-hidden]="!section.expanded"
-              [attr.inert]="section.expanded ? null : ''"
-            >
-              <div class="filter-section-body-inner">
-                @if (section.searchable) {
-                  <input
-                    type="search"
-                    class="filter-search"
-                    placeholder="搜索 domain"
-                    [ngModel]="section.query"
-                    (ngModelChange)="wf.updateDomainFilterQuery($event)"
-                  >
-                }
-                <div class="filter-option-clip">
-                  <div class="filter-option-list" [class.scrollable]="section.id === 'domains'">
+          @if (section.id === 'domains') {
+            <div class="filter-section" [class.expanded]="section.expanded" [class.collapsed]="!section.expanded">
+              <button
+                type="button"
+                class="filter-section-toggle"
+                [attr.aria-expanded]="section.expanded"
+                (click)="wf.toggleAnalysisFilterSection(section.id)"
+              >
+                <span>{{ section.label }}</span>
+                <em>{{ section.countLabel }}</em>
+                <b aria-hidden="true">▾</b>
+              </button>
+              <div
+                class="filter-section-body"
+                [class.expanded]="section.expanded"
+                [attr.aria-hidden]="!section.expanded"
+                [attr.inert]="section.expanded ? null : ''"
+              >
+                <div class="filter-section-body-inner">
+                  <div class="filter-option-list">
                     @for (option of section.options; track option.id) {
                       <label class="filter-option">
                         <input
@@ -100,9 +208,6 @@
                           [ngModel]="option.selected"
                           (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
                         >
-                        @if (section.id === 'vaults') {
-                          <op-vault-icon class="filter-vault-icon" [name]="option.label"></op-vault-icon>
-                        }
                         <span>{{ option.label }}</span>
                         <em>{{ option.count }}</em>
                       </label>
@@ -114,8 +219,9 @@
                 </div>
               </div>
             </div>
-          </div>
+          }
         }
+        </div>
       </aside>
 
       <div class="scroll-list-panel">

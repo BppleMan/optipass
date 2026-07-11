@@ -502,6 +502,7 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     hasNotes: notes.trim().length > 0,
     comparableFields,
     analysis: {
+      notesText: notes,
       notesValueHash: hashRawValue(notes),
       exactUrlKeys: uniqueSorted(urls.map((url) => normalizeDuplicateFullUrl(url)).filter((url): url is string => Boolean(url))),
       similarUrlKeys: uniqueSorted(urls.map((url) => normalizeSimilarUrl(url)).filter((url): url is string => Boolean(url))),

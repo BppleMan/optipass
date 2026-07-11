@@ -115,6 +115,23 @@ export interface AnalysisResultResponse extends ScanResult {
   skippedGroupIds: string[];
 }
 
+export interface ItemSearchResponse {
+  itemIds: string[];
+  suggestions: ItemSearchSuggestion[];
+}
+
+export type ItemSearchSuggestionKind = "year" | "vault" | "credential" | "domain" | "field";
+export type ItemSearchField = "title" | "username" | "url" | "phone" | "email" | "note";
+
+export interface ItemSearchSuggestion {
+  id: string;
+  kind: ItemSearchSuggestionKind;
+  label: string;
+  field?: ItemSearchField;
+  itemIds: string[];
+  count: number;
+}
+
 export interface SkipGroupResponse {
   skippedGroupId: string;
   restorableSkippedGroupCount: number;
@@ -175,6 +192,12 @@ export class ApiService {
   async analyze(scanId: string): Promise<AnalysisResultResponse> {
     return this.request(firstValueFrom(
       this.http.post<AnalysisResultResponse>(this.apiUrl('/api/analyze'), { scanId }, { headers: this.headers() })
+    ));
+  }
+
+  async searchItems(keywords: string[]): Promise<ItemSearchResponse> {
+    return this.request(firstValueFrom(
+      this.http.post<ItemSearchResponse>(this.apiUrl("/api/items/search"), { keywords }, { headers: this.headers() })
     ));
   }
 

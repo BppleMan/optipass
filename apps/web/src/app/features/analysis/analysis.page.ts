@@ -47,6 +47,7 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
 
   @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
   @ViewChild('applyOperationList') private readonly applyOperationList?: ElementRef<HTMLElement>;
+  @ViewChild("globalSearchSuggestions") private readonly globalSearchSuggestions?: ElementRef<HTMLElement>;
   private completedOperationCount = 0;
   private followApplyProgress = true;
 
@@ -81,6 +82,47 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
 
   setKind(kind: string): void {
     this.wf.setActiveKind(kind as DuplicateKind);
+  }
+
+  public onGlobalSearchKeydown(event: KeyboardEvent): void {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (this.wf.globalSearchAutocompleteOpen()) {
+        this.wf.moveGlobalSearchSuggestion(1);
+      } else {
+        this.wf.activateGlobalSearchSuggestion(0);
+        this.wf.openGlobalSearchAutocomplete();
+      }
+      queueMicrotask(() => this.scrollActiveGlobalSearchSuggestionIntoView());
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      this.wf.moveGlobalSearchSuggestion(-1);
+      queueMicrotask(() => this.scrollActiveGlobalSearchSuggestionIntoView());
+      return;
+    }
+    if (event.key === "Enter" && this.wf.globalSearchAutocompleteOpen()) {
+      event.preventDefault();
+      this.wf.selectActiveGlobalSearchSuggestion();
+      return;
+    }
+    if (event.key === "Escape") {
+      this.wf.closeGlobalSearchAutocomplete();
+    }
+  }
+
+  public onGlobalSearchFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget;
+    if (!(next instanceof Node) || !(event.currentTarget as HTMLElement).contains(next)) {
+      this.wf.closeGlobalSearchAutocomplete();
+    }
+  }
+
+  private scrollActiveGlobalSearchSuggestionIntoView(): void {
+    this.globalSearchSuggestions?.nativeElement
+      .querySelector<HTMLElement>(".global-search-suggestion.active")
+      ?.scrollIntoView({ block: "nearest" });
   }
 
   requestTagRemoval(group: DuplicateGroupView, item: DuplicateItemView, tag: string): void {

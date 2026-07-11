@@ -26,7 +26,10 @@ import {
   type ActiveScanResponse,
   type AnalysisResultResponse,
   type ExecuteProgressEvent,
-  type ExecuteResponse
+  type ExecuteResponse,
+  type ItemSearchField,
+  type ItemSearchSuggestion,
+  type ItemSearchSuggestionKind
 } from '../../../core/services/api.service';
 import {
   type AnalysisFilterChipView,
@@ -112,30 +115,39 @@ interface AnalysisFilterOptionData {
   count: number;
 }
 
+interface GlobalSearchSuggestionView extends ItemSearchSuggestion {
+  detail: string;
+  index: number;
+  selected: boolean;
+}
+
+interface GlobalSearchSuggestionGroupView {
+  kind: ItemSearchSuggestionKind;
+  label: string;
+  allSelected: boolean;
+  someSelected: boolean;
+  suggestions: GlobalSearchSuggestionView[];
+}
+
 const filterSectionMeta: Record<AnalysisFilterSectionId, {
   label: string;
-  searchable: boolean;
   emptyText: string;
 }> = {
   years: {
     label: '年份',
-    searchable: false,
     emptyText: '没有可筛选年份'
   },
   vaults: {
     label: '保险库',
-    searchable: false,
     emptyText: '没有可筛选保险库'
   },
   credentials: {
     label: '凭据类型',
-    searchable: false,
     emptyText: '没有可筛选凭据类型'
   },
   domains: {
     label: 'Domain',
-    searchable: true,
-    emptyText: '没有匹配的 domain'
+    emptyText: '没有可筛选 domain'
   }
 };
 
@@ -143,6 +155,23 @@ const credentialKindMeta: Record<FilterCredentialKind, { label: string; order: n
   password: { label: '密码', order: 1 },
   totp: { label: '一次性密码', order: 2 },
   passkey: { label: 'Passkey', order: 3 }
+};
+
+const globalSearchSuggestionKindLabels: Record<ItemSearchSuggestionKind, string> = {
+  year: "年份匹配项",
+  vault: "保险库匹配项",
+  credential: "凭据匹配项",
+  domain: "Domain 匹配项",
+  field: "字段匹配项",
+};
+
+const globalSearchFieldLabels: Record<ItemSearchField, string> = {
+  title: "标题",
+  username: "用户名",
+  url: "URL",
+  phone: "电话",
+  email: "邮箱",
+  note: "备注",
 };
 
 const defaultFilterSectionsOpen: Record<AnalysisFilterSectionId, boolean> = {
@@ -174,7 +203,13 @@ export class WorkflowService {
   readonly activeKind = signal<DuplicateKind>('similar');
   readonly analysisFilters = signal<AnalysisFilterState>(emptyAnalysisFilters());
   readonly filterSectionsOpen = signal<Record<AnalysisFilterSectionId, boolean>>(defaultFilterSectionsOpen);
-  readonly domainFilterQuery = signal('');
+  readonly globalSearchQuery = signal('');
+  readonly globalSearchItemIds = signal<string[] | undefined>(undefined);
+  readonly globalSearchMatchedItemIds = signal<string[]>([]);
+  readonly globalSearchSuggestions = signal<ItemSearchSuggestion[]>([]);
+  readonly globalSearchAutocompleteOpen = signal(false);
+  readonly activeGlobalSearchSuggestionIndex = signal(0);
+  readonly selectedGlobalSearchSuggestionIds = signal<string[]>([]);
   readonly analysisDisplayMode = signal<AnalysisDisplayMode>('edit');
   readonly phase = signal<'applying' | 'summary'>('summary');
   readonly operations = signal<ApplyOperationView[]>([]);
@@ -187,6 +222,7 @@ export class WorkflowService {
   readonly groupApplyError = signal<string | undefined>(undefined);
   readonly mutationToggleBusy = signal(false);
   private scanAbortController: AbortController | undefined;
+  private globalSearchRequestId = 0;
 
   readonly session = computed(() => this.api.session());
   readonly mutationsEnabled = computed(() => Boolean(this.session()?.enableMutations));
@@ -230,6 +266,16 @@ export class WorkflowService {
   readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.filterGroups(this.activeKindGroups()));
   readonly analysisFilterSections = computed<AnalysisFilterSectionView[]>(() => this.buildAnalysisFilterSections());
   readonly analysisFilterSummary = computed<AnalysisFilterSummaryView>(() => this.buildAnalysisFilterSummary());
+  readonly globalSearchSuggestionGroups = computed<GlobalSearchSuggestionGroupView[]>(() => this.buildGlobalSearchSuggestionGroups());
+  readonly selectedGlobalSearchSuggestionCount = computed(() => this.selectedGlobalSearchSuggestionIds().length);
+  readonly allGlobalSearchSuggestionsSelected = computed(() => {
+    const suggestions = this.globalSearchSuggestions();
+    return suggestions.length > 0 && this.selectedGlobalSearchSuggestionIds().length === suggestions.length;
+  });
+  readonly activeGlobalSearchSuggestionId = computed(() => {
+    const id = this.globalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()]?.id;
+    return id ? `global-search-suggestion-${id}` : undefined;
+  });
   readonly decisionStats = computed<DecisionStatsView>(() => this.buildDecisionStats());
   readonly allPreviewGroups = computed<PreviewGroupView[]>(() => this.buildPreviewGroups());
   readonly visiblePreviewGroups = computed(() => {
@@ -558,13 +604,17 @@ export class WorkflowService {
   }
 
   removeAnalysisFilter(key: AnalysisFilterKey, optionId: string): void {
+    if (key === 'search') {
+      this.clearGlobalSearch();
+      return;
+    }
     const section = sectionIdForFilterKey(key);
     this.toggleAnalysisFilter(section, optionId, false);
   }
 
   clearAnalysisFilters(): void {
     this.analysisFilters.set(emptyAnalysisFilters());
-    this.domainFilterQuery.set('');
+    this.clearGlobalSearch();
   }
 
   toggleAnalysisFilterSection(sectionId: AnalysisFilterSectionId): void {
@@ -572,8 +622,101 @@ export class WorkflowService {
     this.filterSectionsOpen.set({ ...open, [sectionId]: !open[sectionId] });
   }
 
-  updateDomainFilterQuery(value: string): void {
-    this.domainFilterQuery.set(value);
+  async updateGlobalSearchQuery(value: string): Promise<void> {
+    this.globalSearchQuery.set(value);
+    this.selectedGlobalSearchSuggestionIds.set([]);
+    const keywords = searchKeywords(value);
+    const requestId = ++this.globalSearchRequestId;
+    if (keywords.length === 0) {
+      this.globalSearchItemIds.set(undefined);
+      this.globalSearchMatchedItemIds.set([]);
+      this.globalSearchSuggestions.set([]);
+      this.globalSearchAutocompleteOpen.set(false);
+      return;
+    }
+
+    this.globalSearchItemIds.set([]);
+    this.globalSearchMatchedItemIds.set([]);
+    this.globalSearchSuggestions.set([]);
+    this.globalSearchAutocompleteOpen.set(true);
+    try {
+      const response = await this.api.searchItems(keywords);
+      if (requestId === this.globalSearchRequestId) {
+        this.globalSearchMatchedItemIds.set(response.itemIds);
+        this.globalSearchItemIds.set(response.itemIds);
+        this.globalSearchSuggestions.set(response.suggestions);
+        this.activeGlobalSearchSuggestionIndex.set(0);
+        this.globalSearchAutocompleteOpen.set(response.suggestions.length > 0);
+      }
+    } catch (error) {
+      if (requestId === this.globalSearchRequestId) {
+        this.globalSearchItemIds.set([]);
+        this.globalSearchMatchedItemIds.set([]);
+        this.globalSearchSuggestions.set([]);
+        this.globalSearchAutocompleteOpen.set(false);
+        this.error.set(messageFor(error));
+      }
+    }
+  }
+
+  openGlobalSearchAutocomplete(): void {
+    if (this.globalSearchQuery().trim() && this.globalSearchSuggestions().length > 0) {
+      this.globalSearchAutocompleteOpen.set(true);
+    }
+  }
+
+  closeGlobalSearchAutocomplete(): void {
+    this.globalSearchAutocompleteOpen.set(false);
+  }
+
+  moveGlobalSearchSuggestion(direction: 1 | -1): void {
+    const suggestions = this.globalSearchSuggestions();
+    if (suggestions.length === 0) {
+      return;
+    }
+    const next = (this.activeGlobalSearchSuggestionIndex() + direction + suggestions.length) % suggestions.length;
+    this.activeGlobalSearchSuggestionIndex.set(next);
+    this.globalSearchAutocompleteOpen.set(true);
+  }
+
+  activateGlobalSearchSuggestion(index: number): void {
+    this.activeGlobalSearchSuggestionIndex.set(index);
+  }
+
+  selectActiveGlobalSearchSuggestion(): void {
+    const suggestion = this.globalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()];
+    if (suggestion) {
+      this.selectGlobalSearchSuggestion(suggestion);
+    }
+  }
+
+  selectGlobalSearchSuggestion(suggestion: ItemSearchSuggestion): void {
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    if (selectedIds.has(suggestion.id)) {
+      selectedIds.delete(suggestion.id);
+    } else {
+      selectedIds.add(suggestion.id);
+    }
+    this.applyGlobalSearchSuggestionSelection([...selectedIds]);
+  }
+
+  toggleGlobalSearchSuggestionGroup(group: GlobalSearchSuggestionGroupView): void {
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    for (const suggestion of group.suggestions) {
+      if (group.allSelected) {
+        selectedIds.delete(suggestion.id);
+      } else {
+        selectedIds.add(suggestion.id);
+      }
+    }
+    this.applyGlobalSearchSuggestionSelection([...selectedIds]);
+  }
+
+  toggleAllGlobalSearchSuggestions(): void {
+    const selectedIds = this.allGlobalSearchSuggestionsSelected()
+      ? []
+      : this.globalSearchSuggestions().map((suggestion) => suggestion.id);
+    this.applyGlobalSearchSuggestionSelection(selectedIds);
   }
 
   async toggleGroupSkip(groupId: string): Promise<void> {
@@ -999,6 +1142,17 @@ export class WorkflowService {
     };
   }
 
+  private clearGlobalSearch(): void {
+    this.globalSearchRequestId += 1;
+    this.globalSearchQuery.set('');
+    this.globalSearchItemIds.set(undefined);
+    this.globalSearchMatchedItemIds.set([]);
+    this.globalSearchSuggestions.set([]);
+    this.globalSearchAutocompleteOpen.set(false);
+    this.activeGlobalSearchSuggestionIndex.set(0);
+    this.selectedGlobalSearchSuggestionIds.set([]);
+  }
+
   private resetForScan(): void {
     this.authState.set('idle');
     this.scanProgress.set(undefined);
@@ -1018,7 +1172,7 @@ export class WorkflowService {
     this.activeKind.set('similar');
     this.analysisFilters.set(emptyAnalysisFilters());
     this.filterSectionsOpen.set({ ...defaultFilterSectionsOpen });
-    this.domainFilterQuery.set('');
+    this.clearGlobalSearch();
     this.analysisDisplayMode.set('edit');
     this.phase.set('summary');
     this.operations.set([]);
@@ -1120,11 +1274,14 @@ export class WorkflowService {
 
   private filterGroups(groups: DuplicateGroupView[]): DuplicateGroupView[] {
     const filters = this.analysisFilters();
+    const searchItemIds = this.globalSearchItemIds();
+    const searchItemIdSet = searchItemIds ? new Set(searchItemIds) : undefined;
     return groups.filter((group) =>
       matchesSelected(filters.years, group.filterYears) &&
       matchesSelected(filters.vaultIds, group.filterVaultIds) &&
       matchesSelected(filters.domains, group.filterDomains) &&
-      matchesSelected(filters.credentialKinds, group.filterCredentialKinds)
+      matchesSelected(filters.credentialKinds, group.filterCredentialKinds) &&
+      (!searchItemIdSet || group.items.some((item) => searchItemIdSet.has(item.id)))
     );
   }
 
@@ -1142,20 +1299,14 @@ export class WorkflowService {
     return (Object.keys(filterSectionMeta) as AnalysisFilterSectionId[]).map((id) => {
       const meta = filterSectionMeta[id];
       const selected = selectedFilterValues(filters, id);
-      const query = id === 'domains' ? this.domainFilterQuery().trim().toLowerCase() : '';
       const rawOptions = optionData[id];
-      const options = id === 'domains' && query
-        ? rawOptions.filter((option) => option.label.toLowerCase().includes(query))
-        : rawOptions;
       return {
         id,
         label: meta.label,
         countLabel: selected.length ? `${selected.length} / ${rawOptions.length}` : `${rawOptions.length}`,
         expanded: open[id],
-        searchable: meta.searchable,
-        query: id === 'domains' ? this.domainFilterQuery() : '',
         emptyText: meta.emptyText,
-        options: options.map((option) => ({
+        options: rawOptions.map((option) => ({
           ...option,
           selected: selected.includes(option.id)
         }))
@@ -1172,7 +1323,15 @@ export class WorkflowService {
       domains: optionLabelMap(domainOptions(groups)),
       credentialKinds: optionLabelMap(credentialOptions(groups))
     };
+    const search = this.globalSearchQuery().trim();
+    const selectedSuggestions = this.selectedGlobalSearchSuggestions();
+    const searchLabel = selectedSuggestions.length === 1
+      ? `${globalSearchSuggestionKindLabels[selectedSuggestions[0].kind]}：${selectedSuggestions[0].label}`
+      : selectedSuggestions.length > 1
+        ? `已选 ${selectedSuggestions.length} 个补全项`
+        : `搜索：${search}`;
     const chips: AnalysisFilterChipView[] = [
+      ...(search ? [{ key: 'search' as const, id: search, label: searchLabel }] : []),
       ...filters.years.map((id) => ({ key: 'year' as const, id, label: labels.years.get(id) ?? id })),
       ...filters.vaultIds.map((id) => ({ key: 'vault' as const, id, label: labels.vaultIds.get(id) ?? id })),
       ...filters.domains.map((id) => ({ key: 'domain' as const, id, label: labels.domains.get(id) ?? id })),
@@ -1185,6 +1344,54 @@ export class WorkflowService {
       activeCount: chips.length,
       chips
     };
+  }
+
+  private buildGlobalSearchSuggestionGroups(): GlobalSearchSuggestionGroupView[] {
+    const suggestions = this.globalSearchSuggestions();
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    return (Object.keys(globalSearchSuggestionKindLabels) as ItemSearchSuggestionKind[])
+      .map((kind) => {
+        const groupSuggestions = suggestions
+          .filter((suggestion) => suggestion.kind === kind)
+          .map((suggestion) => ({
+            ...suggestion,
+            index: suggestions.findIndex((candidate) => candidate.id === suggestion.id),
+            selected: selectedIds.has(suggestion.id),
+            detail: suggestion.kind === "field" && suggestion.field
+              ? `${globalSearchFieldLabels[suggestion.field]}匹配`
+              : `${suggestion.count} 个 item`,
+          }));
+        const selectedCount = groupSuggestions.filter((suggestion) => suggestion.selected).length;
+        return {
+          kind,
+          label: globalSearchSuggestionKindLabels[kind],
+          allSelected: groupSuggestions.length > 0 && selectedCount === groupSuggestions.length,
+          someSelected: selectedCount > 0 && selectedCount < groupSuggestions.length,
+          suggestions: groupSuggestions,
+        };
+      })
+      .filter((group) => group.suggestions.length > 0);
+  }
+
+  private selectedGlobalSearchSuggestions(): ItemSearchSuggestion[] {
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    return this.globalSearchSuggestions().filter((suggestion) => selectedIds.has(suggestion.id));
+  }
+
+  private applyGlobalSearchSuggestionSelection(selectedIds: string[]): void {
+    const availableIds = new Set(this.globalSearchSuggestions().map((suggestion) => suggestion.id));
+    const normalizedIds = selectedIds.filter((id) => availableIds.has(id));
+    this.selectedGlobalSearchSuggestionIds.set(normalizedIds);
+    if (normalizedIds.length === 0) {
+      this.globalSearchItemIds.set(this.globalSearchMatchedItemIds());
+      return;
+    }
+    const itemIds = new Set(
+      this.globalSearchSuggestions()
+        .filter((suggestion) => normalizedIds.includes(suggestion.id))
+        .flatMap((suggestion) => suggestion.itemIds),
+    );
+    this.globalSearchItemIds.set([...itemIds]);
   }
 
   private toGroupView(group: DuplicateGroup, itemById: Map<string, ItemSummary>, vaults: VaultSummary[]): DuplicateGroupView {
@@ -1543,6 +1750,8 @@ function sectionIdForFilterKey(key: AnalysisFilterKey): AnalysisFilterSectionId 
       return 'domains';
     case 'credential':
       return 'credentials';
+    case 'search':
+      throw new Error('全局搜索不属于分类筛选。');
   }
 }
 
@@ -2013,6 +2222,16 @@ function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
     border: operation.status === 'failed' ? 'rgba(255,83,112,0.4)' : '#3a3a3a',
     opacity: operation.status === 'pending' || operation.status === 'skipped' ? 0.5 : 1
   };
+}
+
+function searchKeywords(value: string): string[] {
+  return Array.from(new Set(
+    value
+      .normalize('NFKC')
+      .split(/\s+/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean)
+  ));
 }
 
 function messageFor(error: unknown): string {

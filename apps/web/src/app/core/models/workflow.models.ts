@@ -5,7 +5,7 @@ export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
 export type DuplicateKind = 'similar' | 'identical' | 'incomplete';
 export type AnalysisDisplayMode = 'edit' | 'preview';
 export type AnalysisFilterSectionId = 'years' | 'vaults' | 'domains' | 'credentials';
-export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential';
+export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential' | 'search';
 export type FilterCredentialKind = 'password' | 'totp' | 'passkey';
 export type RemoveAction = 'archive' | 'delete';
 export type ApplyStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
@@ -82,8 +82,6 @@ export interface AnalysisFilterSectionView {
   label: string;
   countLabel: string;
   expanded: boolean;
-  searchable: boolean;
-  query: string;
   emptyText: string;
   options: AnalysisFilterOptionView[];
 }

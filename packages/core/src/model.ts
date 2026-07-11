@@ -53,6 +53,8 @@ export interface ComparableField {
 }
 
 export interface ItemAnalysisMaterial {
+  /** Internal-only raw note text for local search. API responses must strip this material. */
+  notesText?: string;
   notesValueHash: string;
   exactUrlKeys: string[];
   similarUrlKeys: string[];
