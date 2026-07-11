@@ -21,7 +21,13 @@ import {
   type VaultScanSummary,
   type VaultSummary
 } from '@optimize-password/core';
-import { ApiService, type ActiveScanResponse, type ExecuteResponse } from '../../../core/services/api.service';
+import {
+  ApiService,
+  type ActiveScanResponse,
+  type AnalysisResultResponse,
+  type ExecuteProgressEvent,
+  type ExecuteResponse
+} from '../../../core/services/api.service';
 import {
   type AnalysisFilterChipView,
   type AnalysisFilterKey,
@@ -576,15 +582,17 @@ export class WorkflowService {
       return;
     }
 
+    const skippedGroups = this.skippedGroups();
     this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: true });
     this.error.set(undefined);
     try {
-      const response = await this.api.skipGroup(result.scanId, groupId);
+      const response = skippedGroups[groupId]
+        ? await this.api.restoreSkippedGroup(result.scanId, groupId)
+        : await this.api.skipGroup(result.scanId, groupId);
       this.replaceAnalysisResult(response.scan);
-      this.status.set('已跳过该组，本轮分析不再显示。');
-      if (this.groupPlanDialog()?.groupId === groupId) {
-        this.closeGroupPlanDialog();
-      }
+      this.status.set(skippedGroups[groupId]
+        ? "已取消跳过标记，该组重新纳入执行计划。"
+        : "已标记跳过；该组不会执行，且会在预览中保留记录。");
     } catch (error) {
       this.error.set(messageFor(error));
     } finally {
@@ -932,7 +940,7 @@ export class WorkflowService {
     this.status.set('已恢复本地扫描缓存。');
   }
 
-  private restoreAnalysisResult(result: ScanResult): void {
+  private restoreAnalysisResult(result: AnalysisResultResponse): void {
     this.scanResult.set(result);
     this.restoreScanSnapshot({
       scanId: result.scanId,
@@ -941,7 +949,7 @@ export class WorkflowService {
       items: result.items
     });
     this.decisions.set(this.defaultDecisions(result));
-    this.skippedGroups.set({});
+    this.skippedGroups.set(skippedGroupMap(result.skippedGroupIds));
     this.visibleSecretItems.set({});
     this.revealingItems.set({});
     this.revealedCredentials.set({});
@@ -952,7 +960,7 @@ export class WorkflowService {
     this.status.set(result.groups.length ? `已恢复本 tab 的分析缓存，剩余 ${result.groups.length} 组疑似重复。` : '已恢复本 tab 的分析缓存，没有剩余疑似重复。');
   }
 
-  private replaceAnalysisResult(result: ScanResult): void {
+  private replaceAnalysisResult(result: AnalysisResultResponse): void {
     this.scanResult.set(result);
     this.scanSnapshot.set({
       scanId: result.scanId,
@@ -963,7 +971,7 @@ export class WorkflowService {
     if (!result.groups.some((group) => kindFromCandidateClass(group.candidateClass) === this.activeKind())) {
       this.activeKind.set(firstAvailableKind(result.groups));
     }
-    this.skippedGroups.set({});
+    this.skippedGroups.set(skippedGroupMap(result.skippedGroupIds));
   }
 
   private localPlanForGroup(groupId: string): ExecutionPlan | undefined {
@@ -1252,12 +1260,13 @@ export class WorkflowService {
   private buildDecisionStats(): DecisionStatsView {
     const result = this.scanResult();
     if (!result) {
-      return { groups: 0, keep: 0, archive: 0, delete: 0, move: 0 };
+      return { groups: 0, keep: 0, archive: 0, delete: 0, move: 0, skipped: 0 };
     }
     const itemById = new Map(result.items.map((item) => [item.id, item]));
-    const stats = { groups: 0, keep: 0, archive: 0, delete: 0, move: 0 };
+    const stats = { groups: 0, keep: 0, archive: 0, delete: 0, move: 0, skipped: 0 };
     for (const group of this.groups()) {
       if (this.skippedGroups()[group.id]) {
+        stats.skipped += 1;
         continue;
       }
       stats.groups += 1;
@@ -1288,10 +1297,20 @@ export class WorkflowService {
       return [];
     }
     const itemById = new Map(result.items.map((item) => [item.id, item]));
-    return this.groups()
-      .filter((group) => !this.skippedGroups()[group.id])
+    const previewGroups: PreviewGroupView[] = this.groups()
       .map((group) => {
         const groupView = this.toGroupView(group, itemById, result.vaults);
+        if (groupView.skipped) {
+          return {
+            ...groupView,
+            id: group.id,
+            plan: undefined,
+            actions: [this.skippedGroupPreviewRow(
+              group,
+              group.itemIds.map((itemId) => itemById.get(itemId)).filter((item): item is ItemSummary => Boolean(item))
+            )]
+          };
+        }
         const plan = this.createLocalPlan(group, result.items);
         return {
           ...groupView,
@@ -1300,7 +1319,30 @@ export class WorkflowService {
           actions: this.planActionPreviewRows(plan)
         };
       })
-      .filter((group) => group.actions.length > 0 && group.plan && group.plan.actions.some((action) => action.type !== 'keep'));
+      .filter((group) => group.skipped || (group.actions.length > 0 && group.plan && group.plan.actions.some((action) => action.type !== 'keep')));
+    return previewGroups;
+  }
+
+  private skippedGroupPreviewRow(group: DuplicateGroup, items: ItemSummary[]): PlanActionPreviewView {
+    return {
+      id: `skip:${group.id}`,
+      itemId: group.id,
+      title: `本组 ${items.length} 个项目`,
+      username: "",
+      url: "",
+      created: "",
+      updated: "",
+      vaultName: "",
+      opLabel: "跳过",
+      targetLabel: "",
+      detail: "",
+      tone: "skip",
+      removedTags: [],
+      retainedTags: [],
+      color: "#78909C",
+      bg: "rgba(120, 144, 156, 0.1)",
+      border: "rgba(120, 144, 156, 0.32)"
+    };
   }
 
   private countPlanOperations(groups: PreviewGroupView[]): number {
@@ -1401,26 +1443,43 @@ export class WorkflowService {
 
   private async executeGroupDecision(decision: GroupDecision): Promise<ExecuteResponse> {
     const hasDelete = decision.items.some((item) => !item.keep && item.deleteMode === 'delete');
-    if (this.activeScanMode() === 'live') {
-      const dryRun = await this.api.execute({ ...decision, dryRun: true });
-      if (dryRun.blocked || !dryRun.dryRunKey) {
-        return dryRun;
-      }
-      if (!this.mutationsEnabled()) {
-        return dryRun;
-      }
-      return this.api.execute({
-        ...decision,
-        confirmedDryRunKey: dryRun.dryRunKey,
-        confirmPermanentDelete: hasDelete || undefined,
-        permanentDeleteConfirmationPhrase: hasDelete ? deleteConfirmationPhrase : undefined
-      });
-    }
-    return this.api.execute({
+    const execution = await this.api.startExecution({
       ...decision,
       confirmPermanentDelete: hasDelete || undefined,
       permanentDeleteConfirmationPhrase: hasDelete ? deleteConfirmationPhrase : undefined
     });
+    let response: ExecuteResponse | undefined;
+    await this.api.streamExecutionEvents(execution.executionId, execution.eventsToken, (event) => {
+      this.applyExecutionEvent(decision.groupId, event);
+      if (event.type === 'completed') {
+        response = event.response;
+      }
+    });
+    if (!response) {
+      throw new Error('执行进度流未返回最终结果。');
+    }
+    return response;
+  }
+
+  private applyExecutionEvent(groupId: string, event: ExecuteProgressEvent): void {
+    if (event.type !== 'action' || !event.result) {
+      return;
+    }
+    const result = event.result;
+    this.operations.set(this.operations().map((operation) => {
+      if (operation.groupId !== groupId || operation.itemId !== result.itemId) {
+        return operation;
+      }
+      if (result.skipped) {
+        return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
+      }
+      return {
+        ...operation,
+        status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus),
+        dryRun: event.dryRun,
+        error: result.error
+      };
+    }));
   }
 
   private applyGroupResult(groupId: string, response: ExecuteResponse): void {
@@ -1928,6 +1987,10 @@ function itemDetailRows(item: ItemSummary): Array<{ key: 'updated' | 'created' |
 
 function vaultName(vaults: VaultSummary[], vaultId: string): string {
   return vaults.find((vault) => vault.id === vaultId)?.name ?? vaultId;
+}
+
+function skippedGroupMap(groupIds: string[]): Record<string, boolean> {
+  return Object.fromEntries(groupIds.map((groupId) => [groupId, true]));
 }
 
 function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {

@@ -153,6 +153,7 @@ export interface DecisionStatsView {
   archive: number;
   delete: number;
   move: number;
+  skipped: number;
 }
 
 export interface PreviewGroupView {
@@ -184,7 +185,7 @@ export interface PlanActionPreviewView {
   opLabel: string;
   targetLabel: string;
   detail: string;
-  tone: 'keep' | 'archive' | 'delete' | 'move' | 'tags';
+  tone: "keep" | "archive" | "delete" | "move" | "tags" | "skip";
   removedTags: string[];
   retainedTags: string[];
   color: string;

@@ -74,7 +74,7 @@ export interface ExecutionVerification {
 
 export interface ExecuteResponse {
   plan?: ExecutionPlan;
-  scan?: ScanResult;
+  scan?: AnalysisResultResponse;
   results?: ExecuteActionResult[];
   verification?: ExecutionVerification;
   blocked?: boolean;
@@ -86,10 +86,39 @@ export interface ExecuteResponse {
   mutated?: boolean;
 }
 
+export interface ExecuteStartResponse {
+  executionId: string;
+  eventsToken: string;
+  dryRun: boolean;
+  totalOperations: number;
+}
+
+export interface ExecuteProgressEvent {
+  type: 'started' | 'action' | 'completed' | 'failed';
+  executionId: string;
+  dryRun: boolean;
+  totalOperations: number;
+  completedOperations: number;
+  result?: ExecuteActionResult;
+  response?: ExecuteResponse;
+  error?: string;
+}
+
+export type ExecuteRequest = GroupDecision & {
+  confirmPermanentDelete?: boolean;
+  permanentDeleteConfirmationPhrase?: string;
+  confirmedDryRunKey?: string;
+  dryRun?: boolean;
+};
+
+export interface AnalysisResultResponse extends ScanResult {
+  skippedGroupIds: string[];
+}
+
 export interface SkipGroupResponse {
   skippedGroupId: string;
   restorableSkippedGroupCount: number;
-  scan: ScanResult;
+  scan: AnalysisResultResponse;
 }
 
 const tabIdStorageKey = 'optipass.tabId';
@@ -139,13 +168,13 @@ export class ApiService {
     return this.request(firstValueFrom(this.http.get<ActiveScanResponse>(this.apiUrl('/api/scan/active'), { headers: this.headers() })));
   }
 
-  async loadAnalysis(): Promise<ScanResult> {
-    return this.request(firstValueFrom(this.http.get<ScanResult>(this.apiUrl('/api/analysis'), { headers: this.headers() })));
+  async loadAnalysis(): Promise<AnalysisResultResponse> {
+    return this.request(firstValueFrom(this.http.get<AnalysisResultResponse>(this.apiUrl('/api/analysis'), { headers: this.headers() })));
   }
 
-  async analyze(scanId: string): Promise<ScanResult> {
+  async analyze(scanId: string): Promise<AnalysisResultResponse> {
     return this.request(firstValueFrom(
-      this.http.post<ScanResult>(this.apiUrl('/api/analyze'), { scanId }, { headers: this.headers() })
+      this.http.post<AnalysisResultResponse>(this.apiUrl('/api/analyze'), { scanId }, { headers: this.headers() })
     ));
   }
 
@@ -283,6 +312,16 @@ export class ApiService {
     ));
   }
 
+  async restoreSkippedGroup(scanId: string, groupId: string): Promise<SkipGroupResponse> {
+    return this.request(firstValueFrom(
+      this.http.post<SkipGroupResponse>(
+        this.apiUrl(`/api/groups/${encodeURIComponent(groupId)}/restore`),
+        { scanId },
+        { headers: this.headers() }
+      )
+    ));
+  }
+
   async execute(decision: GroupDecision & {
     confirmPermanentDelete?: boolean;
     permanentDeleteConfirmationPhrase?: string;
@@ -290,6 +329,26 @@ export class ApiService {
     dryRun?: boolean;
   }): Promise<ExecuteResponse> {
     return this.request(firstValueFrom(this.http.post<ExecuteResponse>(this.apiUrl('/api/execute'), decision, { headers: this.headers() })));
+  }
+
+  async startExecution(decision: ExecuteRequest): Promise<ExecuteStartResponse> {
+    return this.request(firstValueFrom(
+      this.http.post<ExecuteStartResponse>(this.apiUrl('/api/execute/start'), decision, { headers: this.headers() })
+    ));
+  }
+
+  async streamExecutionEvents(
+    executionId: string,
+    eventsToken: string,
+    onEvent: (event: ExecuteProgressEvent) => void,
+    options: { signal?: AbortSignal; after?: number } = {}
+  ): Promise<void> {
+    if (typeof EventSource !== 'undefined') {
+      await this.streamExecutionEventsWithEventSource(executionId, eventsToken, onEvent, options);
+      return;
+    }
+
+    await this.streamExecutionEventsWithFetch(executionId, eventsToken, onEvent, options);
   }
 
   async setMutationsEnabled(enableMutations: boolean): Promise<SessionResponse> {
@@ -345,6 +404,114 @@ export class ApiService {
       query.set('after', String(after));
     }
     return this.apiUrl(`/api/scan/events?${query.toString()}`);
+  }
+
+  private executionEventsUrl(executionId: string, eventsToken: string, after = 0): string {
+    const query = new URLSearchParams({
+      executionId,
+      eventsToken
+    });
+    if (after > 0) {
+      query.set('after', String(after));
+    }
+    return this.apiUrl(`/api/execute/events?${query.toString()}`);
+  }
+
+  private streamExecutionEventsWithEventSource(
+    executionId: string,
+    eventsToken: string,
+    onEvent: (event: ExecuteProgressEvent) => void,
+    options: { signal?: AbortSignal; after?: number } = {}
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (options.signal?.aborted) {
+        resolve();
+        return;
+      }
+
+      const source = new EventSource(this.executionEventsUrl(executionId, eventsToken, options.after));
+      let settled = false;
+      const settle = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        options.signal?.removeEventListener('abort', abort);
+        source.close();
+        callback();
+      };
+      const abort = (): void => settle(resolve);
+      const handleEvent = (message: Event): void => {
+        const event = JSON.parse((message as MessageEvent<string>).data) as ExecuteProgressEvent;
+        onEvent(event);
+        if (event.type === 'completed') {
+          settle(resolve);
+        } else if (event.type === 'failed') {
+          settle(() => reject(new Error(event.error || '执行进度流异常结束。')));
+        }
+      };
+
+      source.addEventListener('started', handleEvent);
+      source.addEventListener('action', handleEvent);
+      source.addEventListener('completed', handleEvent);
+      source.addEventListener('failed', handleEvent);
+      source.onerror = () => {
+        if (source.readyState === EventSource.CLOSED) {
+          settle(() => reject(new Error('执行进度流已关闭。')));
+        }
+      };
+      options.signal?.addEventListener('abort', abort, { once: true });
+    });
+  }
+
+  private async streamExecutionEventsWithFetch(
+    executionId: string,
+    eventsToken: string,
+    onEvent: (event: ExecuteProgressEvent) => void,
+    options: { signal?: AbortSignal; after?: number } = {}
+  ): Promise<void> {
+    const response = await fetch(this.executionEventsUrl(executionId, eventsToken, options.after), {
+      headers: this.fetchHeaders(),
+      cache: 'no-store',
+      signal: options.signal
+    });
+    if (!response.ok) {
+      throw new Error(await this.fetchErrorMessage(response));
+    }
+    if (!response.body) {
+      throw new Error('当前浏览器不支持执行进度流。');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (!options.signal?.aborted) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split('\n\n');
+      buffer = chunks.pop() ?? '';
+      for (const chunk of chunks) {
+        const data = chunk
+          .split('\n')
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trimStart())
+          .join('\n');
+        if (!data) {
+          continue;
+        }
+        const event = JSON.parse(data) as ExecuteProgressEvent;
+        onEvent(event);
+        if (event.type === 'completed') {
+          return;
+        }
+        if (event.type === 'failed') {
+          throw new Error(event.error || '执行进度流异常结束。');
+        }
+      }
+    }
   }
 
   private async loadTauriBackendSession(): Promise<TauriBackendSession | undefined> {

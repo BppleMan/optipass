@@ -22,6 +22,7 @@
           <span>归档 <em class="warn-text">{{ wf.decisionStats().archive }}</em></span>
           <span>删除 <em class="danger-text">{{ wf.decisionStats().delete }}</em></span>
           <span>迁移 <em class="info-text">{{ wf.decisionStats().move }}</em></span>
+          <span>跳过 <em class="muted-text">{{ wf.decisionStats().skipped }}</em></span>
         </div>
       </div>
       <div class="action-right">
@@ -239,19 +240,6 @@
                   <span class="head-spacer"></span>
                   <button
                     type="button"
-                    class="group-tool-button group-icon-button"
-                    [class.active]="groupSecretsVisible(group)"
-                    aria-label="显示或隐藏本组密码"
-                    title="显示或隐藏本组密码"
-                    (click)="wf.toggleGroupReveal(group.id)"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M2.8 12s3.4-5.5 9.2-5.5 9.2 5.5 9.2 5.5-3.4 5.5-9.2 5.5S2.8 12 2.8 12Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"></path>
-                      <circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
                     class="group-tool-button apply-group-button"
                     [disabled]="!wf.canApplyGroup(group.id)"
                     (click)="wf.openGroupPlanDialog(group.id)"
@@ -277,7 +265,7 @@
                 </div>
 
                 <div class="item-rows">
-                  <op-plan-action-group [group]="group"></op-plan-action-group>
+                  <op-plan-action-group [actions]="group.actions" [plan]="group.plan"></op-plan-action-group>
                 </div>
               </div>
             }
@@ -305,42 +293,7 @@
             <button type="button" class="modal-close" aria-label="关闭" [disabled]="wf.groupApplying()" (click)="wf.closeGroupPlanDialog()">X</button>
           </div>
 
-          @if (dialog.plan.blockers.length) {
-            <div class="blocker-list">
-              @for (blocker of dialog.plan.blockers; track blocker) {
-                <p>{{ blocker }}</p>
-              }
-            </div>
-          }
-
-          @if (dialog.plan.warnings.length) {
-            <div class="warning-list">
-              @for (warning of dialog.plan.warnings; track warning) {
-                <p>{{ warning }}</p>
-              }
-            </div>
-          }
-
-          <div class="plan-action-list">
-            @for (action of dialog.actions; track action.id) {
-              <div class="plan-action-row" [class.has-tag-changes]="action.removedTags.length > 0" [style.background]="action.bg" [style.border-color]="action.border">
-                <span class="plan-op" [style.color]="action.color">{{ action.opLabel }}</span>
-                <strong>{{ action.title }}</strong>
-                <em>{{ action.vaultName }}</em>
-                <b [style.color]="action.color">{{ action.targetLabel }}</b>
-                <small>{{ action.detail }}</small>
-                @if (action.removedTags.length > 0) {
-                  <div class="plan-tag-diff">
-                    <span>移除</span>
-                    @for (tag of action.removedTags; track tag) {
-                      <em [attr.title]="tag">{{ tag }}</em>
-                    }
-                    <b>保留 {{ action.retainedTags.length }} 个</b>
-                  </div>
-                }
-              </div>
-            }
-          </div>
+          <op-plan-action-group class="modal-plan-preview" [actions]="dialog.actions" [plan]="dialog.plan"></op-plan-action-group>
 
           @if (wf.groupApplyError()) {
             <div class="page-notice danger-text">{{ wf.groupApplyError() }}</div>
@@ -370,7 +323,7 @@
             <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="wf.applying()" (click)="wf.closeApplyDialog()">X</button>
           </div>
           <op-progress [value]="wf.applyPct()" color="#f07178"></op-progress>
-          <div class="op-list">
+          <div #applyOperationList class="op-list" (scroll)="onApplyOperationListScroll()">
             @for (operation of wf.operationRows(); track operation.id) {
               <div class="op-row" [style.border-color]="operation.border" [style.opacity]="operation.opacity">
                 <span [style.color]="operation.iconColor" [style.animation]="operation.anim">{{ operation.icon }}</span>

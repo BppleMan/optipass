@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 import { vi } from 'vitest';
 import { createExecutionPlan, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
-import type { ExecuteResponse } from '../../../core/services/api.service';
+import type { ExecuteResponse, SkipGroupResponse } from '../../../core/services/api.service';
 import { WorkflowService } from './workflow.service';
 
 describe('WorkflowService analysis filters', () => {
@@ -120,6 +120,31 @@ describe('WorkflowService analysis filters', () => {
     expect(service.visiblePreviewGroups().map((group) => group.id)).toEqual(['github-group']);
     expect(service.planOperationCount()).toBe(1);
     expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
+  });
+
+  it('keeps skipped groups as reversible no-op preview entries', async () => {
+    const service = createService();
+    service.scanResult.set(scanResult());
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
+    });
+
+    await service.toggleGroupSkip('github-group');
+
+    const skippedGroup = service.visiblePreviewGroups().find((group) => group.id === 'github-group');
+    expect(service.visibleGroups().find((group) => group.id === 'github-group')?.skipped).toBe(true);
+    expect(skippedGroup?.plan).toBeUndefined();
+    expect(skippedGroup?.actions.map((action) => action.tone)).toEqual(['skip']);
+    expect(service.decisionStats().groups).toBe(1);
+    expect(service.decisionStats().skipped).toBe(1);
+
+    await service.toggleGroupSkip('github-group');
+
+    expect(service.visibleGroups().find((group) => group.id === 'github-group')?.skipped).toBe(false);
+    expect(service.visiblePreviewGroups().find((group) => group.id === 'github-group')?.actions.some((action) => action.tone === 'skip')).toBe(false);
   });
 
   it('clears backend scan state before returning to the scan page', async () => {
@@ -342,9 +367,8 @@ describe('WorkflowService analysis filters', () => {
     service.prepareBatchPreview();
     await service.applyPlan();
 
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ groupId: 'github-group', dryRun: true }));
-    expect(execute).toHaveBeenNthCalledWith(2, expect.objectContaining({ groupId: 'github-group', confirmedDryRunKey: 'dry-github-group' }));
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'github-group' }));
     expect(service.operations().filter((operation) => operation.groupId === 'github-group').map((operation) => operation.status)).toEqual(['failed']);
     expect(service.operations().filter((operation) => operation.groupId === 'apple-group').map((operation) => operation.status)).toEqual(['skipped']);
   });
@@ -369,9 +393,7 @@ describe('WorkflowService analysis filters', () => {
 
     await service.applyPlan();
 
-    expect(execute.mock.calls.length).toBeGreaterThan(0);
-    expect(execute.mock.calls.every(([decision]) => decision.dryRun === true)).toBe(true);
-    expect(execute.mock.calls.every(([decision]) => !('confirmedDryRunKey' in decision))).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(2);
     expect(service.operations().every((operation) => operation.status === 'done' && operation.dryRun)).toBe(true);
     expect(service.applyDialogOpen()).toBe(true);
     expect(service.status()).toContain('试写完成');
@@ -386,15 +408,62 @@ function createService(overrides: {
   clearScan?: () => Promise<{ ok: boolean }>;
   navigateByUrl?: (url: string) => Promise<boolean>;
   createPlan?: (decision: GroupDecision) => Promise<ReturnType<typeof createExecutionPlan>>;
-  execute?: (decision: GroupDecision & Record<string, unknown>) => Promise<ExecuteResponse>;
+  execute?: (decision: GroupDecision) => Promise<ExecuteResponse>;
+  skipGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
+  restoreSkippedGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
   enableMutations?: boolean;
 } = {}): WorkflowService {
+  const execute = overrides.execute ?? vi.fn(async (): Promise<ExecuteResponse> => ({
+    dryRun: true,
+    results: []
+  }));
+  let pendingDecision: GroupDecision | undefined;
   return new WorkflowService(
     {
       session: signal({ token: 'test-session', enableMutations: overrides.enableMutations ?? true }),
       clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true })),
       createPlan: overrides.createPlan ?? vi.fn(async (decision: GroupDecision) => createExecutionPlan(decision.groupId, decision, scanResult().items)),
-      execute: overrides.execute ?? vi.fn()
+      execute,
+      startExecution: vi.fn(async (decision: GroupDecision) => {
+        pendingDecision = decision;
+        return {
+          executionId: 'execution-test',
+          eventsToken: 'events-token',
+          dryRun: !Boolean(overrides.enableMutations ?? true),
+          totalOperations: decision.items.filter((item) => !item.keep).length
+        };
+      }),
+      streamExecutionEvents: vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+        const response = await execute(pendingDecision!);
+        for (const result of response.results ?? []) {
+          onEvent({
+            type: 'action',
+            executionId: 'execution-test',
+            dryRun: Boolean(response.dryRun),
+            totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
+            completedOperations: 1,
+            result
+          } as never);
+        }
+        onEvent({
+          type: 'completed',
+          executionId: 'execution-test',
+          dryRun: Boolean(response.dryRun),
+          totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
+          completedOperations: pendingDecision!.items.filter((item) => !item.keep).length,
+          response
+        } as never);
+      }),
+      skipGroup: overrides.skipGroup ?? vi.fn(async (_scanId: string, groupId: string) => ({
+        skippedGroupId: groupId,
+        restorableSkippedGroupCount: 1,
+        scan: { ...scanResult(), skippedGroupIds: [groupId] }
+      })),
+      restoreSkippedGroup: overrides.restoreSkippedGroup ?? vi.fn(async (scanId: string, groupId: string) => ({
+        skippedGroupId: groupId,
+        restorableSkippedGroupCount: 0,
+        scan: { ...scanResult(), scanId, skippedGroupIds: [] }
+      }))
     } as never,
     { navigateByUrl: overrides.navigateByUrl ?? vi.fn() } as never
   );

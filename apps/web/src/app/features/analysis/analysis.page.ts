@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, ElementRef, OnInit, ViewChild } from "@angular/core";
+import { afterNextRender, AfterViewChecked, ChangeDetectionStrategy, Component, ElementRef, Injector, OnInit, ViewChild } from "@angular/core";
 import { FormsModule } from "@angular/forms";
 import type { AnalysisDisplayMode, DuplicateGroupView, DuplicateItemView, DuplicateKind, RemoveAction, TabView } from "../../core/models/workflow.models";
 import { ItemTypeIconComponent } from "../../shared/ui/item-type-icon/item-type-icon";
@@ -27,7 +27,7 @@ type GroupRemovalMode = RemoveAction | 'manual';
     "./analysis-dialogs.scss",
   ],
 })
-export class AnalysisPageComponent implements OnInit {
+export class AnalysisPageComponent implements AfterViewChecked, OnInit {
   readonly itemDecisionItems: SegmentedControlItem[] = [
     { value: 'keep', label: '保留', icon: 'keep', activeColor: '#C3E88D', activeBackground: 'rgba(195, 232, 141, 0.16)' },
     { value: 'archive', label: '归档（可恢复）', icon: 'archive', activeColor: '#FFCB6B', activeBackground: 'rgba(255, 203, 107, 0.16)' },
@@ -46,11 +46,37 @@ export class AnalysisPageComponent implements OnInit {
   tagScopePrompt: { groupId: string; itemId: string; tag: string; eligibleCount: number } | undefined;
 
   @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
+  @ViewChild('applyOperationList') private readonly applyOperationList?: ElementRef<HTMLElement>;
+  private completedOperationCount = 0;
+  private followApplyProgress = true;
 
-  constructor(readonly wf: WorkflowService) {}
+  constructor(
+    readonly wf: WorkflowService,
+    private readonly injector?: Injector,
+  ) {}
 
   ngOnInit(): void {
     void this.wf.restoreCachedState();
+  }
+
+  ngAfterViewChecked(): void {
+    const completed = this.wf.operations().filter((operation) =>
+      operation.status === "done" || operation.status === "failed" || operation.status === "skipped"
+    ).length;
+    if (completed === 0) {
+      this.completedOperationCount = 0;
+      this.followApplyProgress = true;
+      return;
+    }
+    if (completed <= this.completedOperationCount) {
+      return;
+    }
+    this.completedOperationCount = completed;
+    if (this.injector) {
+      afterNextRender(() => this.scrollApplyProgressToLatest(), { injector: this.injector });
+      return;
+    }
+    queueMicrotask(() => this.scrollApplyProgressToLatest());
   }
 
   setKind(kind: string): void {
@@ -150,6 +176,14 @@ export class AnalysisPageComponent implements OnInit {
     return this.wf.planOperationCount() === 0 || this.wf.loading() || this.wf.applying();
   }
 
+  onApplyOperationListScroll(): void {
+    const list = this.applyOperationList?.nativeElement;
+    if (!list) {
+      return;
+    }
+    this.followApplyProgress = list.scrollHeight - list.clientHeight - list.scrollTop <= 12;
+  }
+
   groupSecretsVisible(group: { items: DuplicateItemView[] }): boolean {
     const credentialItems = group.items.filter((item) => item.credChips.some((chip) => chip.kind !== 'missing'));
     return credentialItems.length > 0 && credentialItems.every((item) => item.secretVisible);
@@ -193,6 +227,14 @@ export class AnalysisPageComponent implements OnInit {
         container.scrollTop += target.getBoundingClientRect().top - container.getBoundingClientRect().top;
       }
     }, 0);
+  }
+
+  private scrollApplyProgressToLatest(): void {
+    const list = this.applyOperationList?.nativeElement;
+    if (!list || !this.followApplyProgress) {
+      return;
+    }
+    list.scrollTop = list.scrollHeight - list.clientHeight;
   }
 }
 

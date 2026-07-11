@@ -117,10 +117,40 @@ interface ScanJob {
   cancelled: boolean;
 }
 
+interface ExecutionStartResponse {
+  executionId: string;
+  eventsToken: string;
+  dryRun: boolean;
+  totalOperations: number;
+}
+
+interface ExecutionProgressEvent {
+  type: "started" | "action" | "completed" | "failed";
+  executionId: string;
+  dryRun: boolean;
+  totalOperations: number;
+  completedOperations: number;
+  result?: ExecuteActionResult;
+  response?: Record<string, unknown>;
+  error?: string;
+}
+
+interface ExecutionJob {
+  executionId: string;
+  eventsToken: string;
+  events: ExecutionProgressEvent[];
+  subscribers: Set<(event: ExecutionProgressEvent) => void>;
+  done: boolean;
+}
+
 interface TabAnalysisState {
   analysis?: ScanResult;
   dryRunKey?: string;
-  skippedGroups: ScanResult["groups"];
+  skippedGroups: string[];
+}
+
+interface AnalysisResultResponse extends ScanResult {
+  skippedGroupIds: string[];
 }
 
 export async function createApiServer(options: CreateApiServerOptions): Promise<FastifyInstance> {
@@ -134,6 +164,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   let activeMutationScanId: string | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
   const scanJobs = new Map<string, ScanJob>();
+  const executionJobs = new Map<string, ExecutionJob>();
   const tabStates = new Map<string, TabAnalysisState>();
 
   function tabStateFor(request: FastifyRequest): TabAnalysisState {
@@ -200,7 +231,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const token = request.headers["x-session-token"];
-    if (token === config.sessionToken || isAuthorizedScanEventStream(request.url, scanJobs)) {
+    if (token === config.sessionToken || isAuthorizedEventStream(request.url, scanJobs, executionJobs)) {
       return;
     }
 
@@ -264,7 +295,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (!state?.analysis) {
       throw new ClientInputError("还没有分析结果，请先完成扫描并手动运行分析。");
     }
-    return redactScanResultForClient(currentAnalysisForGlobalScan(state.analysis, latestScan));
+    return analysisResultResponse(state, currentAnalysisForGlobalScan(state.analysis, latestScan));
   });
 
   server.post("/api/scan/clear", async (request, reply) => {
@@ -398,7 +429,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     state.analysis = analyzeScan(scan);
     state.dryRunKey = undefined;
     state.skippedGroups = [];
-    return redactScanResultForClient(state.analysis);
+    return analysisResultResponse(state, state.analysis);
   });
 
   server.post("/api/items/:itemId/reveal", async (request): Promise<RevealCredentialsResponse> => {
@@ -425,6 +456,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
     const state = tabStateFor(request);
     currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
+    assertGroupIsNotSkipped(state, decision.groupId);
     const plan = createPlanFromLatestScan(decision, state.analysis);
     return plan;
   });
@@ -446,14 +478,40 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       throw new ClientInputError(`找不到重复组：${params.groupId}`);
     }
 
-    state.skippedGroups.push(skippedGroup);
-    state.analysis = removeCompletedGroup(scan, params.groupId);
+    if (!state.skippedGroups.includes(params.groupId)) {
+      state.skippedGroups.push(params.groupId);
+    }
     state.dryRunKey = undefined;
 
     return {
       skippedGroupId: params.groupId,
       restorableSkippedGroupCount: state.skippedGroups.length,
-      scan: redactScanResultForClient(state.analysis)
+      scan: analysisResultResponse(state, scan)
+    };
+  });
+
+  server.post("/api/groups/:groupId/restore", async (request, reply) => {
+    if (activeMutationScanId) {
+      return reply.code(409).send({
+        error: "冲突",
+        message: "当前已有执行任务正在运行，请等待完成后再取消跳过标记。"
+      });
+    }
+
+    const params = groupParamsSchema.parse(request.params);
+    const body = skipGroupBodySchema.parse(request.body ?? {});
+    const state = tabStateFor(request);
+    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
+    if (!state.skippedGroups.includes(params.groupId)) {
+      throw new ClientInputError(`该重复组未被标记跳过：${params.groupId}`);
+    }
+
+    state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== params.groupId);
+    state.dryRunKey = undefined;
+    return {
+      skippedGroupId: params.groupId,
+      restorableSkippedGroupCount: state.skippedGroups.length,
+      scan: analysisResultResponse(state, scan)
     };
   });
 
@@ -468,28 +526,115 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     const body = restoreSkippedBodySchema.parse(request.body ?? {});
     const state = tabStateFor(request);
     const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
-    const restoredGroup = state.skippedGroups.pop();
-    if (!restoredGroup) {
+    const restoredGroupId = state.skippedGroups.pop();
+    if (!restoredGroupId) {
       throw new ClientInputError("没有可恢复的已跳过重复组。");
     }
-
-    state.analysis = {
-      ...scan,
-      groups: [restoredGroup, ...scan.groups]
-    };
     state.dryRunKey = undefined;
 
     return {
-      restoredGroupId: restoredGroup.id,
+      restoredGroupId,
       restorableSkippedGroupCount: state.skippedGroups.length,
-      scan: redactScanResultForClient(state.analysis)
+      scan: analysisResultResponse(state, scan)
     };
+  });
+
+  server.post("/api/execute/start", async (request, reply): Promise<ExecutionStartResponse | unknown> => {
+    const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
+    const state = tabStateFor(request);
+    currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
+    assertGroupIsNotSkipped(state, decision.groupId);
+    const plan = createPlanFromLatestScan(decision, state.analysis);
+
+    if (activeMutationScanId) {
+      return reply.code(409).send({
+        error: "冲突",
+        message: "当前已有执行任务正在运行，请等待完成后再继续。"
+      });
+    }
+    if (hasActiveScanJob()) {
+      return reply.code(409).send({
+        error: "冲突",
+        message: "当前仍有扫描任务运行中，请等待扫描完成并重新分析后再执行。"
+      });
+    }
+
+    const executionId = randomUUID();
+    const dryRun = latestScanMode === "mock" || !enableMutations;
+    const job = createExecutionJob(executionId);
+    executionJobs.set(executionId, job);
+    activeMutationScanId = decision.scanId;
+    void runExecutionJob(job, state, decision, plan, dryRun);
+
+    return {
+      executionId,
+      eventsToken: job.eventsToken,
+      dryRun,
+      totalOperations: plan.actions.filter((action) => action.type !== "keep").length
+    };
+  });
+
+  server.get("/api/execute/events", async (request, reply) => {
+    const query = executionEventsQuerySchema.parse(request.query ?? {});
+    const job = executionJobs.get(query.executionId);
+    if (!job || job.eventsToken !== query.eventsToken) {
+      throw new ClientInputError("执行事件令牌无效，请重新开始应用计划。");
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      "connection": "keep-alive",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": securityPolicy(),
+      ...corsHeadersFor(request.headers.origin, config.webOrigins)
+    });
+
+    for (const event of job.events.slice(query.after)) {
+      reply.raw.write(toSseMessage(event));
+    }
+
+    if (job.done) {
+      reply.raw.end();
+      return;
+    }
+
+    const keepAlive = setInterval(() => {
+      if (!reply.raw.destroyed) {
+        reply.raw.write(": keep-alive\n\n");
+      }
+    }, 15_000);
+    keepAlive.unref();
+
+    const cleanup = (): void => {
+      clearInterval(keepAlive);
+      job.subscribers.delete(subscriber);
+    };
+    const subscriber = (event: ExecutionProgressEvent): void => {
+      if (reply.raw.destroyed) {
+        cleanup();
+        return;
+      }
+      reply.raw.write(toSseMessage(event));
+      if (event.type === "completed" || event.type === "failed") {
+        reply.raw.end();
+        cleanup();
+      }
+    };
+
+    job.subscribers.add(subscriber);
+    request.raw.on("close", cleanup);
+    reply.raw.on("close", cleanup);
   });
 
   server.post("/api/execute", async (request) => {
     const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
     const state = tabStateFor(request);
     currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
+    assertGroupIsNotSkipped(state, decision.groupId);
     const plan = createPlanFromLatestScan(decision, state.analysis);
 
     if (plan.blockers.length > 0) {
@@ -500,7 +645,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       if (shouldAdvanceMockScan) {
         state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
         state.dryRunKey = undefined;
-        state.skippedGroups = [];
+        state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== decision.groupId);
       } else if (decision.dryRun || latestScanMode === "live") {
         state.dryRunKey = dryRunKeyFor(decision, plan.actions);
       }
@@ -516,7 +661,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         dryRun: true,
         dryRunKey: decision.dryRun || (!enableMutations && latestScanMode === "live") ? state.dryRunKey : undefined,
         completedGroupId: shouldAdvanceMockScan ? decision.groupId : undefined,
-        scan: shouldAdvanceMockScan && state.analysis ? redactScanResultForClient(state.analysis) : undefined
+        scan: shouldAdvanceMockScan && state.analysis ? analysisResultResponse(state, state.analysis) : undefined
       };
     }
 
@@ -585,13 +730,13 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
       state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
       state.dryRunKey = undefined;
-      state.skippedGroups = [];
+      state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== decision.groupId);
       return {
         plan,
         results,
         verification,
         completedGroupId: decision.groupId,
-        scan: redactScanResultForClient(state.analysis),
+        scan: analysisResultResponse(state, state.analysis),
         scanInvalidated: false,
         mutated: hasMutation
       };
@@ -599,6 +744,163 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       activeMutationScanId = undefined;
     }
   });
+
+  async function runExecutionJob(
+    job: ExecutionJob,
+    state: TabAnalysisState,
+    decision: DecisionBody,
+    plan: ReturnType<typeof createPlanFromLatestScan>,
+    dryRun: boolean
+  ): Promise<void> {
+    const totalOperations = plan.actions.filter((action) => action.type !== "keep").length;
+    let completedOperations = 0;
+    const emitAction = (result: ExecuteActionResult): void => {
+      if (result.action === "keep") {
+        return;
+      }
+      completedOperations += 1;
+      emitExecutionEvent(job, {
+        type: "action",
+        executionId: job.executionId,
+        dryRun,
+        totalOperations,
+        completedOperations,
+        result
+      });
+    };
+
+    emitExecutionEvent(job, {
+      type: "started",
+      executionId: job.executionId,
+      dryRun,
+      totalOperations,
+      completedOperations
+    });
+
+    try {
+      if (plan.blockers.length > 0) {
+        emitExecutionEvent(job, {
+          type: "completed",
+          executionId: job.executionId,
+          dryRun,
+          totalOperations,
+          completedOperations,
+          response: { plan, results: [], blocked: true }
+        });
+        return;
+      }
+
+      if (dryRun) {
+        const results = plan.actions.map((action) => ({
+          itemId: action.itemId,
+          action: action.type,
+          ok: true,
+          dryRun: true
+        }));
+        for (const result of results) {
+          emitAction(result);
+        }
+        emitExecutionEvent(job, {
+          type: "completed",
+          executionId: job.executionId,
+          dryRun,
+          totalOperations,
+          completedOperations,
+          response: { plan, results, dryRun: true }
+        });
+        return;
+      }
+
+      if (
+        plan.requiresExplicitDeleteConfirmation &&
+        decision.permanentDeleteConfirmationPhrase !== permanentDeleteConfirmationPhrase
+      ) {
+        emitExecutionEvent(job, {
+          type: "completed",
+          executionId: job.executionId,
+          dryRun,
+          totalOperations,
+          completedOperations,
+          response: {
+            plan,
+            results: [],
+            blocked: true,
+            error: `永久删除需要输入“${permanentDeleteConfirmationPhrase}”确认。`
+          }
+        });
+        return;
+      }
+
+      const involvedVaultIds = planAffectedVaultIds(plan.actions);
+      const beforeStates = await snapshotVaultStates(involvedVaultIds, onePassword);
+      const results = await executePlanActions(plan.actions, state.analysis!, onePassword, emitAction);
+      const hasFailure = results.some((result) => !result.ok);
+      const hasMutation = results.some((result) => result.ok && result.action !== "keep");
+      if (hasFailure) {
+        latestScan = undefined;
+        latestScanMode = undefined;
+        latestScanAccountName = undefined;
+        resetTabAnalysisState(state);
+        emitExecutionEvent(job, {
+          type: "completed",
+          executionId: job.executionId,
+          dryRun,
+          totalOperations,
+          completedOperations,
+          response: { plan, results, scanInvalidated: true }
+        });
+        return;
+      }
+
+      const verification = await verifyExecutedPlan(plan.actions, state.analysis!, results, beforeStates, involvedVaultIds, onePassword);
+      if (!verification.ok) {
+        latestScan = undefined;
+        latestScanMode = undefined;
+        latestScanAccountName = undefined;
+        resetTabAnalysisState(state);
+        emitExecutionEvent(job, {
+          type: "completed",
+          executionId: job.executionId,
+          dryRun,
+          totalOperations,
+          completedOperations,
+          response: { plan, results, verification, scanInvalidated: true }
+        });
+        return;
+      }
+
+      state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
+      state.dryRunKey = undefined;
+      state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== decision.groupId);
+      emitExecutionEvent(job, {
+        type: "completed",
+        executionId: job.executionId,
+        dryRun,
+        totalOperations,
+        completedOperations,
+        response: {
+          plan,
+          results,
+          verification,
+          completedGroupId: decision.groupId,
+          scan: analysisResultResponse(state, state.analysis),
+          scanInvalidated: false,
+          mutated: hasMutation
+        }
+      });
+    } catch (error) {
+      emitExecutionEvent(job, {
+        type: "failed",
+        executionId: job.executionId,
+        dryRun,
+        totalOperations,
+        completedOperations,
+        error: errorMessage(error)
+      });
+    } finally {
+      activeMutationScanId = undefined;
+    }
+  }
 
   function runMockScanJob(job: ScanJob): void {
     const mockResult = createMockScanResult();
@@ -785,6 +1087,12 @@ const scanEventsQuerySchema = z.object({
   after: z.coerce.number().int().min(0).default(0)
 });
 
+const executionEventsQuerySchema = z.object({
+  executionId: z.string().min(1),
+  eventsToken: z.string().min(1),
+  after: z.coerce.number().int().min(0).default(0)
+});
+
 const analyzeBodySchema = z.object({
   scanId: z.string().min(1)
 });
@@ -869,6 +1177,16 @@ function createScanJob(scanId: string, mode: ScanMode): ScanJob {
   return job;
 }
 
+function createExecutionJob(executionId: string): ExecutionJob {
+  return {
+    executionId,
+    eventsToken: randomUUID(),
+    events: [],
+    subscribers: new Set(),
+    done: false
+  };
+}
+
 function cancelScanJobs(scanJobs: Map<string, ScanJob>): void {
   for (const job of scanJobs.values()) {
     if (job.done || job.cancelled) {
@@ -900,19 +1218,36 @@ function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
   }
 }
 
-function isAuthorizedScanEventStream(url: string, scanJobs: Map<string, ScanJob>): boolean {
+function emitExecutionEvent(job: ExecutionJob, event: ExecutionProgressEvent): void {
+  job.events.push(event);
+  for (const subscriber of job.subscribers) {
+    subscriber(event);
+  }
+  if (event.type === "completed" || event.type === "failed") {
+    job.done = true;
+  }
+}
+
+function isAuthorizedEventStream(
+  url: string,
+  scanJobs: Map<string, ScanJob>,
+  executionJobs: Map<string, ExecutionJob>
+): boolean {
   const parsed = new URL(url, "http://127.0.0.1");
-  if (parsed.pathname !== "/api/scan/events") {
-    return false;
-  }
-
-  const scanId = parsed.searchParams.get("scanId");
   const eventsToken = parsed.searchParams.get("eventsToken");
-  if (!scanId || !eventsToken) {
+  if (!eventsToken) {
     return false;
   }
 
-  return scanJobs.get(scanId)?.eventsToken === eventsToken;
+  if (parsed.pathname === "/api/scan/events") {
+    const scanId = parsed.searchParams.get("scanId");
+    return scanId !== null && scanJobs.get(scanId)?.eventsToken === eventsToken;
+  }
+  if (parsed.pathname === "/api/execute/events") {
+    const executionId = parsed.searchParams.get("executionId");
+    return executionId !== null && executionJobs.get(executionId)?.eventsToken === eventsToken;
+  }
+  return false;
 }
 
 function corsHeadersFor(origin: string | undefined, allowedOrigins: string[]): Record<string, string> {
@@ -983,7 +1318,7 @@ function redactScanProgressEvent(event: ScanProgressEvent): ScanProgressEvent {
   };
 }
 
-function toSseMessage(event: ScanProgressEvent): string {
+function toSseMessage(event: { type: string }): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
@@ -1083,21 +1418,32 @@ function validateTargetVaults(decision: GroupDecision, scan: ScanResult): string
 class ClientInputError extends Error {
 }
 
-async function executePlanActions(actions: PlanAction[], latestScan: ScanResult, onePassword: PasswordService): Promise<ExecuteActionResult[]> {
+async function executePlanActions(
+  actions: PlanAction[],
+  latestScan: ScanResult,
+  onePassword: PasswordService,
+  onResult?: (result: ExecuteActionResult) => void
+): Promise<ExecuteActionResult[]> {
   const itemById = new Map(latestScan.items.map((item) => [item.id, item]));
   const results: ExecuteActionResult[] = [];
+  const append = (result: ExecuteActionResult): void => {
+    results.push(result);
+    onResult?.(result);
+  };
 
   for (let index = 0; index < actions.length; index += 1) {
     const action = actions[index];
     if (action.type === "keep") {
-      results.push({ itemId: action.itemId, action: action.type, ok: true });
+      append({ itemId: action.itemId, action: action.type, ok: true });
       continue;
     }
 
     const item = itemById.get(action.itemId);
     if (!item) {
-      results.push({ itemId: action.itemId, action: action.type, ok: false, error: "找不到要处理的项目。" });
-      results.push(...skippedResults(actions.slice(index + 1)));
+      append({ itemId: action.itemId, action: action.type, ok: false, error: "找不到要处理的项目。" });
+      for (const result of skippedResults(actions.slice(index + 1))) {
+        append(result);
+      }
       break;
     }
 
@@ -1110,7 +1456,7 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
         await onePassword.delete(item.vaultId, item.onePasswordItemId);
       } else if (action.type === "copy-to-vault-and-archive-source") {
         const copyResult = await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId, action.removeTags);
-        results.push({
+        append({
           itemId: action.itemId,
           action: action.type,
           ok: true,
@@ -1119,15 +1465,17 @@ async function executePlanActions(actions: PlanAction[], latestScan: ScanResult,
         });
         continue;
       }
-      results.push({ itemId: action.itemId, action: action.type, ok: true });
+      append({ itemId: action.itemId, action: action.type, ok: true });
     } catch (error) {
-      results.push({
+      append({
         itemId: action.itemId,
         action: action.type,
         ok: false,
         error: mutationActionError(action, error)
       });
-      results.push(...skippedResults(actions.slice(index + 1)));
+      for (const result of skippedResults(actions.slice(index + 1))) {
+        append(result);
+      }
       break;
     }
   }
@@ -1459,6 +1807,19 @@ function redactScanResultForClient(scan: ScanResult): ScanResult {
       }))
     }))
   };
+}
+
+function analysisResultResponse(state: TabAnalysisState, scan: ScanResult): AnalysisResultResponse {
+  return {
+    ...redactScanResultForClient(scan),
+    skippedGroupIds: state.skippedGroups
+  };
+}
+
+function assertGroupIsNotSkipped(state: TabAnalysisState, groupId: string): void {
+  if (state.skippedGroups.includes(groupId)) {
+    throw new ClientInputError("该重复组已标记跳过，请先取消跳过标记。");
+  }
 }
 
 function removeCompletedGroup(scan: ScanResult, groupId: string): ScanResult {

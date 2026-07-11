@@ -1,0 +1,16 @@
+:host {
+    box-sizing: border-box;
+    display: block;
+    flex: 0 0 auto;
+    background: rgba(176, 190, 197, 0.12);
+
+    &[aria-orientation="horizontal"] {
+        width: 100%;
+        height: 1px;
+    }
+
+    &[aria-orientation="vertical"] {
+        width: 1px;
+        align-self: stretch;
+    }
+}

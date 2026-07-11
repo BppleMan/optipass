@@ -5,7 +5,7 @@ import { hexToRgb, resolveVaultIcon } from '../../library/icon-library';
   selector: 'op-vault-icon',
   standalone: true,
   template: `
-    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
+    <svg [attr.width]="glyphSize()" [attr.height]="glyphSize()" viewBox="0 0 24 24" aria-hidden="true">
       @for (shape of definition().shapes; track $index) {
         @switch (shape.kind) {
           @case ('circle') {
@@ -69,11 +69,13 @@ import { hexToRgb, resolveVaultIcon } from '../../library/icon-library';
 export class VaultIconComponent {
   readonly name = input('');
   readonly index = input(0);
+  readonly size = input(20);
   readonly strokeWidth = input(2);
 
   private readonly resolved = computed(() => resolveVaultIcon(this.name(), this.index()));
   readonly color = computed(() => this.resolved().color);
   readonly definition = computed(() => this.resolved().definition);
+  readonly glyphSize = computed(() => this.definition().name === 'archive' ? Math.min(this.size(), 10) : this.size());
 
   @HostBinding('style.background')
   get tileBackground(): string {

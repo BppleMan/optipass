@@ -209,6 +209,94 @@ describe("findDuplicateGroups", () => {
     });
   });
 
+  it("attaches a credential-bearing login without identity to one established similar group by matching title", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:gitkraken-account",
+        title: "account.gitkraken.com (user@example.com)",
+        urls: ["https://account.gitkraken.com/"],
+        usernames: ["user@example.com"],
+        hasPassword: true,
+        analysis: analysis({
+          similarUrlKeys: ["https://account.gitkraken.com/"],
+          identityValues: ["user@example.com"]
+        })
+      }),
+      item({
+        id: "vault-b:gitkraken-login",
+        title: "GitKraken",
+        urls: ["https://account.gitkraken.com"],
+        usernames: ["user@example.com"],
+        hasPassword: true,
+        analysis: analysis({
+          similarUrlKeys: ["https://account.gitkraken.com/"],
+          identityValues: ["user@example.com"]
+        })
+      }),
+      item({
+        id: "vault-c:gitkraken-passkey",
+        title: "GitKraken",
+        urls: ["https://gitkraken.dev/login/oauth?code=one-time-code"],
+        usernames: [],
+        hasPasskey: true,
+        analysis: analysis({
+          similarUrlKeys: ["https://gitkraken.dev/login/oauth"],
+          identityValues: []
+        })
+      })
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      candidateClass: "similar-login",
+      confidence: "medium",
+      itemIds: expect.arrayContaining([
+        "vault-a:gitkraken-account",
+        "vault-b:gitkraken-login",
+        "vault-c:gitkraken-passkey"
+      ])
+    });
+    expect(groups[0].reasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        rule: "title",
+        itemIds: expect.arrayContaining(["vault-b:gitkraken-login", "vault-c:gitkraken-passkey"])
+      })
+    ]));
+  });
+
+  it("does not attach an identityless login when the same weak evidence matches multiple account groups", () => {
+    const groups = findDuplicateGroups([
+      ...["alice", "bob"].flatMap((identity) => ["a", "b"].map((suffix) => item({
+        id: `vault-${suffix}:${identity}`,
+        title: "GitKraken",
+        urls: ["https://account.gitkraken.com/"],
+        usernames: [identity],
+        hasPassword: true,
+        analysis: analysis({
+          similarUrlKeys: ["https://account.gitkraken.com/"],
+          identityValues: [identity],
+          fieldSignatures: [`username:${identity}`, `password:${suffix}`]
+        })
+      }))),
+      item({
+        id: "vault-c:unknown-account",
+        title: "GitKraken",
+        urls: ["https://account.gitkraken.com/"],
+        usernames: [],
+        hasPasskey: true,
+        analysis: analysis({
+          similarUrlKeys: ["https://account.gitkraken.com/"],
+          identityValues: []
+        })
+      })
+    ]);
+
+    const similarGroups = groups.filter((group) => group.candidateClass === "similar-login");
+    expect(similarGroups).toHaveLength(2);
+    expect(similarGroups.every((group) => group.itemIds.length === 2)).toBe(true);
+    expect(groups.flatMap((group) => group.itemIds)).not.toContain("vault-c:unknown-account");
+  });
+
   it("does not group similar login items by same domain when paths differ", () => {
     const groups = findDuplicateGroups([
       item({
@@ -328,6 +416,56 @@ describe("findDuplicateGroups", () => {
     expect(groups.flatMap((group) => group.reasons.map((reason) => reason.rule))).toEqual(
       expect.arrayContaining(["missing-account-identity", "missing-credential-material"])
     );
+  });
+
+  it("keeps identityless logins with a title, normalized URL and TOTP or Passkey out of delete suggestions", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:totp-only",
+        title: "TOTP protected login",
+        urls: ["https://totp.example.com/login"],
+        hasTotp: true
+      }),
+      item({
+        id: "vault-a:passkey-only",
+        title: "Passkey protected login",
+        urls: ["passkey.example.com/login"],
+        hasPasskey: true
+      })
+    ]);
+
+    expect(groups).toHaveLength(0);
+  });
+
+  it("still suggests identityless logins with only a password or without a title or normalized URL", () => {
+    const groups = findDuplicateGroups([
+      item({
+        id: "vault-a:password-only",
+        title: "Password only",
+        urls: ["https://password.example.com/login"],
+        hasPassword: true
+      }),
+      item({
+        id: "vault-a:missing-title",
+        title: "   ",
+        urls: ["https://totp.example.com/login"],
+        hasTotp: true
+      }),
+      item({
+        id: "vault-a:missing-url",
+        title: "Passkey without URL",
+        urls: ["   "],
+        hasPasskey: true
+      })
+    ]);
+
+    expect(groups).toHaveLength(3);
+    expect(groups.every((group) => group.candidateClass === "delete-suggestion")).toBe(true);
+    expect(groups.map((group) => group.itemIds[0])).toEqual(expect.arrayContaining([
+      "vault-a:password-only",
+      "vault-a:missing-title",
+      "vault-a:missing-url"
+    ]));
   });
 
   it("does not create groups from password reuse, secret hashes, or title matches alone", () => {
