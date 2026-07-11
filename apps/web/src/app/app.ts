@@ -1,19 +1,20 @@
-import { Component, OnInit } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
-import { NgxSonnerToaster } from 'ngx-sonner';
-import { OpHeaderComponent } from './components/op-header/op-header';
-import { WorkflowService } from './workflow.service';
+import { ChangeDetectionStrategy, Component, OnInit } from "@angular/core";
+import { RouterOutlet } from "@angular/router";
+import { NgxSonnerToaster } from "ngx-sonner";
+import { OpHeaderComponent } from "./shared/ui/op-header/op-header";
+import { WorkflowService } from "./features/analysis/state/workflow.service";
 
 @Component({
-  selector: 'app-root',
+  selector: "app-root",
+  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [RouterOutlet, NgxSonnerToaster, OpHeaderComponent],
-  templateUrl: './app.html',
-  styleUrl: './app.scss'
+  templateUrl: "./app.html",
+  styleUrl: "./app.scss",
 })
 export class App implements OnInit {
-  constructor(readonly wf: WorkflowService) {}
+  public constructor(public readonly wf: WorkflowService) {}
 
-  ngOnInit(): void {
+  public ngOnInit(): void {
     void this.wf.loadSession();
   }
 }

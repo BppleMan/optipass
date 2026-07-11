@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optipass Release CI/CD"
+  short_description: "Prepare and publish Optipass macOS releases"
+  default_prompt: "Use $release-cicd to prepare or publish an Optipass macOS release."

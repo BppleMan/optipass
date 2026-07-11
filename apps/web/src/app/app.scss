@@ -1,0 +1,43 @@
+:host {
+    display: block;
+    height: 100%;
+
+    .op-shell {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: var(--op-color-canvas);
+        color: var(--op-color-text);
+    }
+
+    .op-main {
+        width: 100%;
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        overflow: hidden;
+        padding: 20px;
+    }
+
+    op-scan-page,
+    op-analysis-page {
+        width: 100%;
+        min-height: 0;
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    .op-main:has(op-analysis-page) {
+        align-items: stretch;
+        padding: 16px 18px;
+
+        op-analysis-page {
+            justify-content: stretch;
+        }
+    }
+}

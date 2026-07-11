@@ -82,6 +82,34 @@ describe("OnePasswordService", () => {
     });
   });
 
+  it("removes requested tags from the latest item before updating", async () => {
+    const latest = {
+      ...loginItem("item-1"),
+      vaultId: "vault-1",
+      tags: ["CSV Import", "work"]
+    };
+    const get = vi.fn().mockResolvedValue(latest);
+    const put = vi.fn(async (item: typeof latest) => item);
+    sdkMock.createClient.mockResolvedValue({
+      vaults: {
+        list: vi.fn(() => [{ id: "vault-1", title: "Personal" }])
+      },
+      items: {
+        list: vi.fn(() => [{ id: "item-1" }]),
+        getAll: vi.fn(async () => ({ individualResponses: [{ content: latest }] })),
+        get,
+        put
+      }
+    });
+
+    const service = new OnePasswordService();
+    await service.scan({ serviceAccountToken: "ops-test" });
+    await service.removeTags("vault-1:item-1", ["CSV Import"]);
+
+    expect(get).toHaveBeenCalledWith("vault-1", "item-1");
+    expect(put).toHaveBeenCalledWith(expect.objectContaining({ tags: ["work"] }));
+  });
+
   it("reads full items in SDK-sized batches", async () => {
     const itemIds = Array.from({ length: 121 }, (_, index) => `item-${index}`);
     const getAll = vi.fn(async (_vaultId: string, batch: string[]) => ({

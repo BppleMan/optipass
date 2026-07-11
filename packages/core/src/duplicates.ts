@@ -9,6 +9,7 @@ import {
 import {
   normalizeDuplicateFullUrl,
   normalizeSimilarUrl,
+  normalizeTitle,
   stableGroupId
 } from "./normalize.js";
 
@@ -34,11 +35,13 @@ export function findDuplicateGroups(items: ItemSummary[], options: DuplicateOpti
   const exactGroups = buildExactDuplicateGroups(items);
   markUsed(usedItemIds, exactGroups);
 
-  const similarGroups = selectExclusiveGroups(
-    buildSimilarLoginGroups(items.filter((item) => item.category === "login" && !usedItemIds.has(item.id))),
+  const similarLoginItems = items.filter((item) => item.category === "login" && !usedItemIds.has(item.id));
+  const strongSimilarGroups = selectExclusiveGroups(
+    buildSimilarLoginGroups(similarLoginItems),
     new Set(),
     items
   );
+  const similarGroups = attachIdentitylessItemsToUniqueSimilarGroup(strongSimilarGroups, similarLoginItems);
   markUsed(usedItemIds, similarGroups);
 
   const deleteSuggestionGroups = buildDeleteSuggestionGroups(
@@ -153,6 +156,91 @@ function buildSimilarLoginGroups(items: ItemSummary[]): DuplicateDraft[] {
   return Array.from(byItemSet.values());
 }
 
+function attachIdentitylessItemsToUniqueSimilarGroup(
+  strongGroups: DuplicateDraft[],
+  items: ItemSummary[]
+): DuplicateDraft[] {
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const strongGroupItemIds = strongGroups.map((group) => group.itemIds.slice());
+  const groupedItemIds = new Set(strongGroupItemIds.flat());
+  const groups = strongGroups.map((group) => ({
+    ...group,
+    itemIds: group.itemIds.slice(),
+    reasons: group.reasons.slice()
+  }));
+
+  const candidates = items
+    .filter((item) =>
+      !groupedItemIds.has(item.id) &&
+      !hasAccountIdentity(item) &&
+      hasCredentialMaterial(item)
+    )
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const item of candidates) {
+    const matches = strongGroupItemIds
+      .map((itemIds, groupIndex) => ({
+        groupIndex,
+        reasons: weakSimilarGroupReasons(item, itemIds, itemById)
+      }))
+      .filter((match) => match.reasons.length > 0);
+
+    if (matches.length !== 1) {
+      continue;
+    }
+
+    const match = matches[0];
+    const group = groups[match.groupIndex];
+    group.itemIds = uniqueSorted([...group.itemIds, item.id]);
+    group.reasons.push(...match.reasons);
+    group.confidence = "medium";
+    groupedItemIds.add(item.id);
+  }
+
+  return groups;
+}
+
+function weakSimilarGroupReasons(
+  candidate: ItemSummary,
+  strongGroupItemIds: string[],
+  itemById: Map<string, ItemSummary>
+): DuplicateReason[] {
+  const strongItems = strongGroupItemIds
+    .map((itemId) => itemById.get(itemId))
+    .filter((item): item is ItemSummary => Boolean(item));
+  const reasons: DuplicateReason[] = [];
+  const title = normalizeTitle(candidate.title);
+
+  if (title.length >= 3) {
+    const matchingTitleItemIds = strongItems
+      .filter((item) => normalizeTitle(item.title) === title)
+      .map((item) => item.id);
+    if (matchingTitleItemIds.length > 0) {
+      reasons.push({
+        rule: "title",
+        key: `similar-login-title:${title}`,
+        label: `缺少账号身份，但标题与组内登录项相同：${candidate.title}`,
+        itemIds: uniqueSorted([candidate.id, ...matchingTitleItemIds])
+      });
+    }
+  }
+
+  const candidateUrls = new Set(similarUrls(candidate));
+  const matchingUrlItemIds = strongItems
+    .filter((item) => similarUrls(item).some((url) => candidateUrls.has(url)))
+    .map((item) => item.id);
+  if (matchingUrlItemIds.length > 0) {
+    reasons.push({
+      rule: "url",
+      key: `similar-login-url:${Array.from(candidateUrls).sort().join("\u0000")}`,
+      label: "缺少账号身份，但 URL 与组内登录项相同",
+      itemIds: uniqueSorted([candidate.id, ...matchingUrlItemIds])
+    });
+  }
+
+  return reasons;
+}
+
 function buildDeleteSuggestionGroups(items: ItemSummary[]): DuplicateDraft[] {
   return items.map((item) => {
     const reasons: DuplicateReason[] = [];
@@ -245,11 +333,19 @@ function exactItemReason(itemIds: string[]): DuplicateReason {
 }
 
 function isDeleteSuggestionItem(item: ItemSummary): boolean {
-  return item.category === "login" && (!hasAccountIdentity(item) || !hasCredentialMaterial(item));
+  return item.category === "login" &&
+    !hasProtectedSecondFactorLogin(item) &&
+    (!hasAccountIdentity(item) || !hasCredentialMaterial(item));
 }
 
 function hasAccountIdentity(item: ItemSummary): boolean {
   return accountIdentities(item).length > 0;
+}
+
+function hasProtectedSecondFactorLogin(item: ItemSummary): boolean {
+  return item.title.trim().length > 0 &&
+    similarUrlsFromRaw(item.urls).length > 0 &&
+    (item.hasTotp || item.hasPasskey);
 }
 
 function hasCredentialMaterial(item: ItemSummary): boolean {

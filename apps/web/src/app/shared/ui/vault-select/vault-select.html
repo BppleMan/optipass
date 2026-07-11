@@ -1,0 +1,57 @@
+<div class="vault-picker" [class.open]="open" (click)="$event.stopPropagation()">
+  <button
+    #trigger
+    type="button"
+    class="vault-picker-trigger"
+    [disabled]="disabled()"
+    [attr.aria-label]="ariaLabel()"
+    [attr.aria-expanded]="open"
+    aria-haspopup="listbox"
+    (click)="toggle($event)"
+  >
+    @if (selectedOption(); as selected) {
+      <op-vault-icon class="vault-picker-icon" [name]="selected.name"></op-vault-icon>
+      <span>{{ selected.name }}</span>
+      @if (selected.current) {
+        <em>原</em>
+      }
+    }
+    <svg class="vault-picker-chevron" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="m4 6 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>
+  </button>
+
+  @if (open) {
+    <button type="button" class="vault-picker-backdrop" aria-label="关闭保险库选择器" (click)="close($event)"></button>
+    <div
+      class="vault-picker-menu"
+      role="listbox"
+      [attr.aria-label]="ariaLabel()"
+      [style.top.px]="menuFrame.top"
+      [style.left.px]="menuFrame.left"
+      [style.width.px]="menuFrame.width"
+    >
+      @for (option of options(); track option.id) {
+        <button
+          type="button"
+          class="vault-picker-option"
+          [class.selected]="option.id === value()"
+          role="option"
+          [attr.aria-selected]="option.id === value()"
+          (click)="choose(option, $event)"
+        >
+          <op-vault-icon class="vault-picker-icon" [name]="option.name"></op-vault-icon>
+          <span>{{ option.name }}</span>
+          @if (option.current) {
+            <em>原 vault</em>
+          }
+          @if (option.id === value()) {
+            <svg class="vault-picker-check" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="m3 8.5 3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+            </svg>
+          }
+        </button>
+      }
+    </div>
+  }
+</div>

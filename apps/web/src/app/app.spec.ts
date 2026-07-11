@@ -3,8 +3,8 @@ import { signal } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { vi } from 'vitest';
 import { App } from './app';
-import { routes } from './app.routes';
-import { WorkflowService } from './workflow.service';
+import { routes } from './routes/app.routes';
+import { WorkflowService } from './features/analysis/state/workflow.service';
 
 describe('App', () => {
   const workflow = {

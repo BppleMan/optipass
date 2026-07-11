@@ -1,0 +1,40 @@
+:host {
+    min-width: 0;
+    display: block;
+
+    .matrix-scroll {
+        min-width: 0;
+        padding: 8px;
+        overflow: hidden;
+    }
+
+    .matrix-viewport {
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        outline: none;
+        overscroll-behavior-x: contain;
+        scrollbar-gutter: stable;
+    }
+
+    .matrix-viewport:focus-visible {
+        box-shadow: inset 0 0 0 2px rgba(130, 170, 255, 0.56);
+    }
+
+    .matrix {
+        width: max-content;
+        min-width: 100%;
+        display: grid;
+        grid-auto-columns: 220px;
+        grid-template-rows: repeat(10, auto);
+        align-items: stretch;
+        gap: 0 10px;
+    }
+
+    @media (max-width: 720px) {
+        .matrix {
+            grid-auto-columns: 220px;
+            gap: 0 8px;
+        }
+    }
+}

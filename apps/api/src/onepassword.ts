@@ -179,16 +179,36 @@ export class OnePasswordService {
     await client.items.delete(vaultId, onePasswordItemId);
   }
 
-  async copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string): Promise<CopyToVaultResult> {
+  async removeTags(appItemId: string, removeTags: string[]): Promise<void> {
+    const client = await this.requireClient();
+    const cached = this.rawItems.get(appItemId);
+    if (!cached) {
+      throw new Error(`无法更新 ${appItemId}：扫描缓存中没有完整项目数据。`);
+    }
+
+    const latest = await client.items.get(cached.vaultId, cached.onePasswordItemId);
+    const removeSet = new Set(removeTags);
+    const currentTags = readArray<string>(latest, "tags").map(String);
+    const nextTags = currentTags.filter((tag) => !removeSet.has(tag));
+    if (nextTags.length === currentTags.length) {
+      return;
+    }
+
+    const updated = await client.items.put({ ...latest, tags: nextTags });
+    this.rawItems.set(appItemId, { ...cached, item: updated });
+  }
+
+  async copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string, removeTags: string[] = []): Promise<CopyToVaultResult> {
     const client = await this.requireClient();
     const cached = this.rawItems.get(appItemId);
     if (!cached) {
       throw new Error(`无法迁移 ${appItemId}：扫描缓存中没有完整项目数据。`);
     }
 
-    const source = cached.item;
     const rawItemId = cached.onePasswordItemId;
     const sourceVaultId = cached.vaultId;
+    const source = await client.items.get(sourceVaultId, rawItemId);
+    const removeTagSet = new Set(removeTags);
     const sourceFiles = readArray<ItemFile>(source, "files");
     const sourceDocument = readAny(source, "document") as FileAttributes | undefined;
     const files = await Promise.all(
@@ -218,7 +238,7 @@ export class OnePasswordService {
       fields: readArray<ItemField>(source, "fields"),
       sections: readArray<ItemSection>(source, "sections"),
       notes: String(readAny(source, "notes") ?? ""),
-      tags: readArray<string>(source, "tags").map(String),
+      tags: readArray<string>(source, "tags").map(String).filter((tag) => !removeTagSet.has(tag)),
       websites: readArray<Website>(source, "websites"),
       files,
       document

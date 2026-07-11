@@ -198,6 +198,13 @@ Forbidden as standalone anchors:
 - same username without same site,
 - same domain, even when username matches, without same normalized full URL.
 
+An established similar-login group may absorb one or more incomplete login items that have credential material but no account identity when:
+
+- the incomplete item has the same normalized URL or normalized title as a strong member of the group; and
+- that weak evidence matches exactly one established account group.
+
+This is an enrichment rule, not a standalone grouping anchor. If the incomplete item could belong to multiple account groups, it remains outside those groups for manual review. Weakly attached members lower the group confidence to medium.
+
 Classification:
 
 - If every item in the group also has the same credential fingerprint, classify it as an exact duplicate group.
@@ -281,6 +288,8 @@ Important interpretation:
 - Missing one-time password alone does not imply delete.
 - Missing "sign in with" alone does not imply delete.
 - Only when password, one-time password, and sign-in-with are all missing does the item lack login credential material.
+- A login with a non-blank title, at least one normalizable URL, and either a one-time password or Passkey is protected from delete suggestions even when its account identity is missing.
+- This protection does not create a duplicate group. Exact and similar grouping still run first, and password-only items do not receive this protection.
 
 Phone:
 

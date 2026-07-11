@@ -15,6 +15,7 @@ function createService(): PasswordService {
     revealCredentials: vi.fn(),
     archive: vi.fn(),
     delete: vi.fn(),
+    removeTags: vi.fn(),
     copyToVaultAndArchiveSource: vi.fn(),
     listItemStates: vi.fn(),
     clearCache: vi.fn()
@@ -111,6 +112,18 @@ async function scanAndAnalyze(app: ApiServer, payload: Record<string, unknown>):
 
   expect(response.statusCode).toBe(200);
   return response.json();
+}
+
+function decisionForGroup(scan: ScanResult, group: ScanResult["groups"][number]): Record<string, unknown> {
+  return {
+    scanId: scan.scanId,
+    groupId: group.id,
+    items: group.itemIds.map((itemId, index) => ({
+      itemId,
+      keep: index === 0,
+      deleteMode: "archive"
+    }))
+  };
 }
 
 function mockArchiveGroupVerification(service: PasswordService, scan: ScanResult, group: ScanResult["groups"][number]): void {
@@ -298,7 +311,8 @@ describe("api app", () => {
     const start = await startScan(app, { mode: "mock" });
     const body = await waitForScan(app, start.scanId);
 
-    expect(body.items.every((item: { comparableFields: unknown[] }) => item.comparableFields.length === 0)).toBe(true);
+    expect(body.items.flatMap((item: { comparableFields: Array<{ normalizedValue?: string; normalizedValueHash?: string }> }) => item.comparableFields)
+      .every((field: { normalizedValue?: string; normalizedValueHash?: string }) => field.normalizedValue === undefined && field.normalizedValueHash === undefined)).toBe(true);
     expect(body.items.every((item: { analysis?: unknown }) => item.analysis === undefined)).toBe(true);
     expect(JSON.stringify(body)).not.toContain("AKIA-MOCK-KEY");
     expect(JSON.stringify(body)).not.toContain("mock-aws-secret");
@@ -389,6 +403,31 @@ describe("api app", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("streams backend-selected dry-run execution events without calling 1Password mutations", async () => {
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
+    const group = scan.groups[0];
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/execute/start",
+      headers: { "x-session-token": token },
+      payload: decisionForGroup(scan, group)
+    });
+
+    expect(start.statusCode).toBe(200);
+    expect(start.json().dryRun).toBe(true);
+    const stream = await app.inject({
+      method: "GET",
+      url: `/api/execute/events?executionId=${start.json().executionId}&eventsToken=${start.json().eventsToken}`
+    });
+
+    expect(stream.statusCode).toBe(200);
+    expect(stream.body).toContain("event: started");
+    expect(stream.body).toContain("event: action");
+    expect(stream.body).toContain("event: completed");
+    expect(vi.mocked(service.archive)).not.toHaveBeenCalled();
+    expect(vi.mocked(service.delete)).not.toHaveBeenCalled();
+  });
+
   it("clears the current scan and local item cache without calling 1Password mutations", async () => {
     const scanResponse = await startScan(app, { mode: "mock" });
     await waitForScan(app, scanResponse.scanId);
@@ -426,6 +465,26 @@ describe("api app", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().message).toContain("Desktop App 授权需要账户名或 account_uuid");
+  });
+
+  it("exposes the completed Desktop Auth account for scan-cache recovery", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+
+    const start = await startScan(app, { mode: "live", accountName: "example-account" });
+    await waitForScan(app, start.scanId);
+
+    const resumedSession = await app.inject({ method: "GET", url: "/api/session" });
+    expect(resumedSession.statusCode).toBe(200);
+    expect(resumedSession.json()).toMatchObject({ resumeAccountName: "example-account" });
+
+    await app.inject({
+      method: "POST",
+      url: "/api/scan/clear",
+      headers: { "x-session-token": token }
+    });
+
+    const clearedSession = await app.inject({ method: "GET", url: "/api/session" });
+    expect(clearedSession.json()).not.toHaveProperty("resumeAccountName");
   });
 
   it("rejects a new scan while another scan is still running", async () => {
@@ -726,7 +785,7 @@ describe("api app", () => {
     expect(service.delete).not.toHaveBeenCalled();
   });
 
-  it("skips a duplicate group from the current scan without calling 1Password", async () => {
+  it("marks a duplicate group as skipped without removing it from the current scan", async () => {
     const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
@@ -740,8 +799,31 @@ describe("api app", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().skippedGroupId).toBe(group.id);
     expect(response.json().restorableSkippedGroupCount).toBe(1);
-    expect(response.json().scan.groups).toHaveLength(scan.groups.length - 1);
-    expect(response.json().scan.groups.some((candidate: { id: string }) => candidate.id === group.id)).toBe(false);
+    expect(response.json().scan.groups).toHaveLength(scan.groups.length);
+    expect(response.json().scan.skippedGroupIds).toEqual([group.id]);
+
+    const planResponse = await app.inject({
+      method: "POST",
+      url: "/api/plan",
+      headers: { "x-session-token": token },
+      payload: {
+        scanId: scan.scanId,
+        groupId: group.id,
+        items: group.itemIds.map((itemId: string, index: number) => ({ itemId, keep: index === 0 }))
+      }
+    });
+
+    expect(planResponse.statusCode).toBe(400);
+    expect(planResponse.json().message).toContain("已标记跳过");
+
+    const cachedAnalysis = await app.inject({
+      method: "GET",
+      url: "/api/analysis",
+      headers: { "x-session-token": token }
+    });
+
+    expect(cachedAnalysis.statusCode).toBe(200);
+    expect(cachedAnalysis.json().skippedGroupIds).toEqual([group.id]);
     expect(service.scan).not.toHaveBeenCalled();
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
@@ -796,13 +878,15 @@ describe("api app", () => {
     expect(analysisTabBBeforeAnalyze.json().message).toContain("还没有分析结果");
     expect(analyzeTabB.statusCode).toBe(200);
     expect(skipTabA.statusCode).toBe(200);
-    expect(skipTabA.json().scan.groups).toHaveLength(analyzeTabA.json().groups.length - 1);
+    expect(skipTabA.json().scan.groups).toHaveLength(analyzeTabA.json().groups.length);
+    expect(skipTabA.json().scan.skippedGroupIds).toEqual([group.id]);
     expect(analysisTabBAfterSkip.statusCode).toBe(200);
     expect(analysisTabBAfterSkip.json().groups).toHaveLength(analyzeTabB.json().groups.length);
     expect(analysisTabBAfterSkip.json().groups[0].id).toBe(group.id);
+    expect(analysisTabBAfterSkip.json().skippedGroupIds).toEqual([]);
   });
 
-  it("restores the most recently skipped duplicate group without calling 1Password", async () => {
+  it("restores a specific skipped duplicate group without calling 1Password", async () => {
     const scan = await scanAndAnalyze(app, { mode: "mock" });
     const group = scan.groups[0];
 
@@ -814,16 +898,16 @@ describe("api app", () => {
     });
     const restoreResponse = await app.inject({
       method: "POST",
-      url: "/api/groups/restore-skipped",
+      url: `/api/groups/${group.id}/restore`,
       headers: { "x-session-token": token },
       payload: { scanId: scan.scanId }
     });
 
     expect(restoreResponse.statusCode).toBe(200);
-    expect(restoreResponse.json().restoredGroupId).toBe(group.id);
+    expect(restoreResponse.json().skippedGroupId).toBe(group.id);
     expect(restoreResponse.json().restorableSkippedGroupCount).toBe(0);
     expect(restoreResponse.json().scan.groups).toHaveLength(scan.groups.length);
-    expect(restoreResponse.json().scan.groups[0].id).toBe(group.id);
+    expect(restoreResponse.json().scan.skippedGroupIds).toEqual([]);
     expect(service.scan).not.toHaveBeenCalled();
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
@@ -847,7 +931,7 @@ describe("api app", () => {
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
   });
 
-  it("clears skipped-group restore state after completing a mock group", async () => {
+  it("keeps skipped-group state after completing a different mock group", async () => {
     const scan = await scanAndAnalyze(app, { mode: "mock" });
     const skippedGroup = scan.groups[0];
     const skipResponse = await app.inject({
@@ -857,7 +941,7 @@ describe("api app", () => {
       payload: { scanId: scan.scanId }
     });
     const currentScan = skipResponse.json().scan;
-    const group = currentScan.groups[0];
+    const group = currentScan.groups.find((candidate: { id: string }) => candidate.id !== skippedGroup.id);
 
     const executeResponse = await app.inject({
       method: "POST",
@@ -874,7 +958,7 @@ describe("api app", () => {
     });
     const restoreResponse = await app.inject({
       method: "POST",
-      url: "/api/groups/restore-skipped",
+      url: `/api/groups/${skippedGroup.id}/restore`,
       headers: { "x-session-token": token },
       payload: { scanId: currentScan.scanId }
     });
@@ -882,8 +966,8 @@ describe("api app", () => {
     expect(skipResponse.statusCode).toBe(200);
     expect(executeResponse.statusCode).toBe(200);
     expect(executeResponse.json().completedGroupId).toBe(group.id);
-    expect(restoreResponse.statusCode).toBe(400);
-    expect(restoreResponse.json().message).toContain("没有可恢复");
+    expect(restoreResponse.statusCode).toBe(200);
+    expect(restoreResponse.json().skippedGroupId).toBe(skippedGroup.id);
     expect(service.scan).not.toHaveBeenCalled();
     expect(service.archive).not.toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
@@ -1271,7 +1355,7 @@ describe("api app", () => {
     expect(nextGroupPlanResponse.statusCode).toBe(200);
   });
 
-  it("clears skipped-group restore state after completing a live group", async () => {
+  it("keeps skipped-group state after completing a different live group", async () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
     vi.mocked(service.archive).mockResolvedValue(undefined);
 
@@ -1284,7 +1368,7 @@ describe("api app", () => {
       payload: { scanId: scan.scanId }
     });
     const currentScan = skipResponse.json().scan;
-    const group = currentScan.groups[0];
+    const group = currentScan.groups.find((candidate: { id: string }) => candidate.id !== skippedGroup.id);
     const payload = {
       scanId: currentScan.scanId,
       groupId: group.id,
@@ -1304,7 +1388,7 @@ describe("api app", () => {
     });
     const restoreResponse = await app.inject({
       method: "POST",
-      url: "/api/groups/restore-skipped",
+      url: `/api/groups/${skippedGroup.id}/restore`,
       headers: { "x-session-token": token },
       payload: { scanId: currentScan.scanId }
     });
@@ -1313,8 +1397,8 @@ describe("api app", () => {
     expect(executeResponse.statusCode).toBe(200);
     expect(executeResponse.json().scanInvalidated).toBe(false);
     expect(executeResponse.json().completedGroupId).toBe(group.id);
-    expect(restoreResponse.statusCode).toBe(400);
-    expect(restoreResponse.json().message).toContain("没有可恢复");
+    expect(restoreResponse.statusCode).toBe(200);
+    expect(restoreResponse.json().skippedGroupId).toBe(skippedGroup.id);
     expect(service.archive).toHaveBeenCalled();
     expect(service.delete).not.toHaveBeenCalled();
     expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();

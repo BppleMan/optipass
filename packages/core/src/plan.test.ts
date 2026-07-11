@@ -135,8 +135,48 @@ describe("createExecutionPlan", () => {
       move: 1,
       archive: 1,
       delete: 1,
+      tagUpdate: 0,
+      removedTagCount: 0,
       affectedVaultIds: ["vault-a", "vault-b"]
     });
+  });
+
+  it("plans tag removal as an update for kept items", () => {
+    const plan = createExecutionPlan(
+      "group-1",
+      {
+        scanId: "scan-1",
+        groupId: "group-1",
+        items: [{ itemId: "vault-a:1", keep: true, removeTags: ["imported", "missing"] }]
+      },
+      [item({ id: "vault-a:1", title: "A", tags: ["imported", "work"] })]
+    );
+
+    expect(plan.actions[0]).toEqual({
+      type: "update-tags",
+      itemId: "vault-a:1",
+      vaultId: "vault-a",
+      removeTags: ["imported"]
+    });
+    expect(plan.summary).toMatchObject({ tagUpdate: 1, removedTagCount: 1 });
+  });
+
+  it("folds tag removal into cross-vault migration", () => {
+    const plan = createExecutionPlan(
+      "group-1",
+      {
+        scanId: "scan-1",
+        groupId: "group-1",
+        items: [{ itemId: "vault-a:1", keep: true, targetVaultId: "vault-b", removeTags: ["imported"] }]
+      },
+      [item({ id: "vault-a:1", title: "A", vaultId: "vault-a", tags: ["imported", "work"] })]
+    );
+
+    expect(plan.actions[0]).toMatchObject({
+      type: "copy-to-vault-and-archive-source",
+      removeTags: ["imported"]
+    });
+    expect(plan.summary).toMatchObject({ move: 1, tagUpdate: 1, removedTagCount: 1 });
   });
 
   it("validates that decisions cover exactly one duplicate group", () => {
