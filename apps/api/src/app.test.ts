@@ -194,6 +194,115 @@ describe("api app", () => {
     expect(response.statusCode).toBe(401);
   });
 
+  it("executes a batch ActionDraft in dry-run mode and refreshes the unchanged draft", async () => {
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
+    const groups = scan.groups.slice(0, 2);
+    const draft = {
+      scanId: scan.scanId,
+      groups: groups.map((group) => decisionForGroup(scan, group))
+    };
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft }
+    });
+
+    expect(start.statusCode).toBe(200);
+    expect(start.json()).toMatchObject({ writeEnabled: false, totalGroups: 2, status: "running" });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
+    });
+    expect(events.statusCode).toBe(200);
+    expect(events.body).toContain("event: action-started");
+    expect(events.body).toContain("event: refreshed");
+    expect(events.body).toContain("event: completed");
+    const snapshot = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}`,
+      headers: { "x-session-token": token }
+    });
+    expect(snapshot.json()).toMatchObject({ status: "completed", writeEnabled: false });
+    expect(snapshot.json().draft.groups.map((group: { items: Array<Record<string, unknown>> }) => group.items.map((item) => ({
+      itemId: item.itemId,
+      keep: item.keep,
+      deleteMode: item.deleteMode
+    })))).toEqual(draft.groups.map((group) => group.items));
+  });
+
+  it("pauses after the running action, resumes the same execution, and can stop it", async () => {
+    await app.close();
+    const liveScan = createMockScanResult();
+    let releaseArchive!: () => void;
+    const archiveGate = new Promise<void>((resolve) => {
+      releaseArchive = resolve;
+    });
+    vi.mocked(service.scan).mockResolvedValue(liveScan);
+    vi.mocked(service.archive).mockImplementationOnce(async () => archiveGate);
+    vi.mocked(service.listItemStates).mockResolvedValue({
+      activeIds: liveScan.items.map((item) => item.onePasswordItemId),
+      archivedIds: []
+    });
+    app = await createApiServer({
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        webOrigins: ["http://127.0.0.1:4200"],
+        enableMutations: true,
+        sessionToken: token,
+        accountName: "test-account"
+      },
+      onePassword: service,
+      logger: false
+    });
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
+    const group = scan.groups[0];
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
+    });
+    const executionId = start.json().executionId;
+    await vi.waitFor(() => expect(service.archive).toHaveBeenCalledTimes(1));
+    const pause = await app.inject({
+      method: "POST",
+      url: `/api/action-executions/${executionId}/pause`,
+      headers: { "x-session-token": token }
+    });
+    expect(pause.json().status).toBe("pause-requested");
+    releaseArchive();
+    await vi.waitFor(async () => {
+      const snapshot = await app.inject({
+        method: "GET",
+        url: `/api/action-executions/${executionId}`,
+        headers: { "x-session-token": token }
+      });
+      expect(snapshot.json().status).toBe("paused");
+    });
+    const resume = await app.inject({
+      method: "POST",
+      url: `/api/action-executions/${executionId}/resume`,
+      headers: { "x-session-token": token }
+    });
+    expect(resume.statusCode).toBe(200);
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/action-executions/${executionId}/stop`,
+      headers: { "x-session-token": token }
+    });
+    expect(["stop-requested", "refreshing-after-stop", "stopped"]).toContain(stop.json().status);
+    await vi.waitFor(async () => {
+      const snapshot = await app.inject({
+        method: "GET",
+        url: `/api/action-executions/${executionId}`,
+        headers: { "x-session-token": token }
+      });
+      expect(snapshot.json().status).toBe("stopped");
+    });
+  });
+
   it("limits browser CORS access to configured local web origins", async () => {
     const allowed = await app.inject({
       method: "GET",
@@ -455,8 +564,18 @@ describe("api app", () => {
 
     expect(stream.statusCode).toBe(200);
     expect(stream.body).toContain("event: started");
+    expect(stream.body).toContain("event: action-started");
     expect(stream.body).toContain("event: action");
     expect(stream.body).toContain("event: completed");
+    expect(stream.body).toContain("id: 1");
+    expect(stream.body.indexOf("event: action-started")).toBeLessThan(stream.body.indexOf("event: action\n"));
+    const resumedStream = await app.inject({
+      method: "GET",
+      url: `/api/execute/events?executionId=${start.json().executionId}&eventsToken=${start.json().eventsToken}`,
+      headers: { "last-event-id": "1" }
+    });
+    expect(resumedStream.body).not.toContain("event: started\n");
+    expect(resumedStream.body).toContain("event: action-started");
     expect(vi.mocked(service.archive)).not.toHaveBeenCalled();
     expect(vi.mocked(service.delete)).not.toHaveBeenCalled();
   });

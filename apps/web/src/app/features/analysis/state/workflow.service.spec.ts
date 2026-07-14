@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
 import { vi } from 'vitest';
-import { createExecutionPlan, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
+import { createExecutionPlan, type ActionDraft, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
 import type { ExecuteResponse, SkipGroupResponse } from '../../../core/services/api.service';
 import { WorkflowService } from './workflow.service';
 
@@ -194,7 +194,7 @@ describe('WorkflowService analysis filters', () => {
     expect(service.analysisFilterSummary().chips).toEqual([]);
   });
 
-  it('limits batch preview and apply operations to currently filtered groups', () => {
+  it('limits batch apply operations to currently filtered groups', async () => {
     const service = createService();
     service.scanResult.set(scanResult());
     service.decisions.set({
@@ -207,11 +207,18 @@ describe('WorkflowService analysis filters', () => {
     expect(service.planOperationCount()).toBe(2);
 
     service.toggleAnalysisFilter('vaults', 'icloud', true);
-    service.prepareBatchPreview();
+    await service.applyPlan();
 
     expect(service.visiblePreviewGroups().map((group) => group.id)).toEqual(['github-group']);
     expect(service.planOperationCount()).toBe(1);
     expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
+    expect(service.operationGroups()).toHaveLength(1);
+    expect(service.operationGroups()[0]).toMatchObject({
+      id: 'github-group',
+      total: 1,
+      completed: 1,
+      status: 'done'
+    });
   });
 
   it('keeps skipped groups as reversible no-op preview entries', async () => {
@@ -425,6 +432,67 @@ describe('WorkflowService analysis filters', () => {
     expect(service.groupPlanDialog()).toBeDefined();
   });
 
+  it('updates the current action and grouped progress from SSE events', async () => {
+    let service!: WorkflowService;
+    const result = { itemId: 'private:github-old', action: 'archive', ok: true, dryRun: true };
+    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+      onEvent({
+        type: 'action-started',
+        sequence: 1,
+        executionId: 'action-execution-test',
+        status: 'running',
+        writeEnabled: false,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 0,
+        groupId: 'github-group',
+        action: { itemId: result.itemId, type: result.action }
+      } as never);
+      expect(service.operations().map((operation) => operation.status)).toEqual(['running']);
+      expect(service.operationGroups()[0]).toMatchObject({ status: 'running', completed: 0, total: 1 });
+
+      onEvent({
+        type: 'action-completed',
+        sequence: 2,
+        executionId: 'action-execution-test',
+        status: 'running',
+        writeEnabled: false,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1,
+        groupId: 'github-group',
+        result
+      } as never);
+      expect(service.operations().map((operation) => operation.status)).toEqual(['done']);
+
+      onEvent({
+        type: 'completed',
+        sequence: 3,
+        executionId: 'action-execution-test',
+        status: 'completed',
+        writeEnabled: false,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1,
+      } as never);
+    });
+    service = createService({ streamActionExecutionEvents, enableMutations: false });
+    service.scanResult.set(scanResult());
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
+    });
+    service.toggleAnalysisFilter('vaults', 'icloud', true);
+
+    await service.applyPlan();
+
+    expect(streamActionExecutionEvents).toHaveBeenCalledTimes(1);
+    expect(service.applyDialogOpen()).toBe(true);
+    expect(service.operationGroups()[0].operations[0].label).toContain('归档「GitHub old」');
+  });
+
   it('stops batch apply and skips pending groups after verification failure', async () => {
     const result = scanResult();
     const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => {
@@ -456,12 +524,12 @@ describe('WorkflowService analysis filters', () => {
       'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
     });
 
-    service.prepareBatchPreview();
     await service.applyPlan();
 
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'github-group' }));
-    expect(service.operations().filter((operation) => operation.groupId === 'github-group').map((operation) => operation.status)).toEqual(['failed']);
+    expect(service.operations().filter((operation) => operation.groupId === 'github-group').map((operation) => operation.status)).toEqual(['done']);
+    expect(service.operationGroups().find((group) => group.id === 'github-group')).toMatchObject({ status: 'failed', statusText: '校验失败' });
     expect(service.operations().filter((operation) => operation.groupId === 'apple-group').map((operation) => operation.status)).toEqual(['skipped']);
   });
 
@@ -470,7 +538,12 @@ describe('WorkflowService analysis filters', () => {
     const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => ({
       dryRun: true,
       dryRunKey: `dry-${decision.groupId}`,
-      results: [{ itemId: decision.items[1].itemId, action: 'archive', ok: true, dryRun: true }]
+      results: decision.items.filter((item) => !item.keep).map((item) => ({
+        itemId: item.itemId,
+        action: item.deleteMode === 'delete' ? 'delete' : 'archive',
+        ok: true,
+        dryRun: true,
+      })),
     }));
     const service = createService({ execute, enableMutations: false });
     service.scanResult.set(result);
@@ -479,7 +552,6 @@ describe('WorkflowService analysis filters', () => {
       'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
     });
 
-    service.prepareBatchPreview();
     expect(service.canApply()).toBe(true);
     expect(service.applyDialogOpen()).toBe(false);
 
@@ -511,6 +583,16 @@ function createService(overrides: {
     itemIds: string[];
     count: number;
   }> }>;
+  streamActionExecutionEvents?: (
+    executionId: string,
+    eventsToken: string,
+    onEvent: (event: never) => void
+  ) => Promise<void>;
+  streamExecutionEvents?: (
+    executionId: string,
+    eventsToken: string,
+    onEvent: (event: never) => void
+  ) => Promise<void>;
   enableMutations?: boolean;
 } = {}): WorkflowService {
   const execute = overrides.execute ?? vi.fn(async (): Promise<ExecuteResponse> => ({
@@ -518,6 +600,7 @@ function createService(overrides: {
     results: []
   }));
   let pendingDecision: GroupDecision | undefined;
+  let pendingDraft: ActionDraft | undefined;
   return new WorkflowService(
     {
       session: signal({ token: 'test-session', enableMutations: overrides.enableMutations ?? true }),
@@ -533,11 +616,107 @@ function createService(overrides: {
           totalOperations: decision.items.filter((item) => !item.keep).length
         };
       }),
-      streamExecutionEvents: vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+      startActionExecution: vi.fn(async (draft: ActionDraft) => {
+        pendingDraft = draft;
+        return {
+          executionId: 'action-execution-test',
+          eventsToken: 'action-events-token',
+          status: 'running',
+          writeEnabled: Boolean(overrides.enableMutations ?? true),
+          totalGroups: draft.groups.length,
+          totalOperations: draft.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
+          completedOperations: 0,
+          cancelledOperations: 0,
+          plan: {} as never,
+          draft,
+        };
+      }),
+      pauseActionExecution: vi.fn(),
+      resumeActionExecution: vi.fn(),
+      stopActionExecution: vi.fn(),
+      streamActionExecutionEvents: overrides.streamActionExecutionEvents ?? vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+        let sequence = 0;
+        let completedOperations = 0;
+        for (const decision of pendingDraft!.groups) {
+          const legacyDecision = { ...decision, scanId: pendingDraft!.scanId };
+          const response = await execute(legacyDecision);
+          const responseResults = response.results?.length
+            ? response.results
+            : legacyDecision.items.filter((item) => !item.keep).map((item) => ({
+                itemId: item.itemId,
+                action: item.deleteMode === 'delete' ? 'delete' : 'archive',
+                ok: true,
+                dryRun: !Boolean(overrides.enableMutations ?? true),
+              }));
+          for (const result of responseResults) {
+            onEvent({
+              type: 'action-started',
+              sequence: ++sequence,
+              executionId: 'action-execution-test',
+              status: 'running',
+              writeEnabled: Boolean(overrides.enableMutations ?? true),
+              totalGroups: pendingDraft!.groups.length,
+              totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
+              completedOperations,
+              groupId: legacyDecision.groupId,
+              action: { itemId: result.itemId, type: result.action },
+            } as never);
+            completedOperations += 1;
+            onEvent({
+              type: result.ok ? 'action-completed' : 'action-failed',
+              sequence: ++sequence,
+              executionId: 'action-execution-test',
+              status: 'running',
+              writeEnabled: Boolean(overrides.enableMutations ?? true),
+              totalGroups: pendingDraft!.groups.length,
+              totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
+              completedOperations,
+              groupId: legacyDecision.groupId,
+              result,
+            } as never);
+          }
+          if (response.scanInvalidated) {
+            onEvent({
+              type: 'failed',
+              sequence: ++sequence,
+              executionId: 'action-execution-test',
+              status: 'failed',
+              writeEnabled: Boolean(overrides.enableMutations ?? true),
+              totalGroups: pendingDraft!.groups.length,
+              totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
+              completedOperations,
+              groupId: legacyDecision.groupId,
+              error: response.verification?.results.find((result) => !result.ok)?.message ?? '执行失败。',
+            } as never);
+            break;
+          }
+        }
+        onEvent({
+          type: 'completed',
+          sequence: ++sequence,
+          executionId: 'action-execution-test',
+          status: 'completed',
+          writeEnabled: Boolean(overrides.enableMutations ?? true),
+          totalGroups: pendingDraft!.groups.length,
+          totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
+          completedOperations,
+        } as never);
+      }),
+      streamExecutionEvents: overrides.streamExecutionEvents ?? vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
         const response = await execute(pendingDecision!);
         for (const result of response.results ?? []) {
           onEvent({
+            type: 'action-started',
+            sequence: 1,
+            executionId: 'execution-test',
+            dryRun: Boolean(response.dryRun),
+            totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
+            completedOperations: 0,
+            action: { itemId: result.itemId, type: result.action }
+          } as never);
+          onEvent({
             type: 'action',
+            sequence: 2,
             executionId: 'execution-test',
             dryRun: Boolean(response.dryRun),
             totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
@@ -547,6 +726,7 @@ function createService(overrides: {
         }
         onEvent({
           type: 'completed',
+          sequence: 3,
           executionId: 'execution-test',
           dryRun: Boolean(response.dryRun),
           totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,

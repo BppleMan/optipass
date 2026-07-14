@@ -1,9 +1,8 @@
-import type { DuplicateCandidateClass, ExecutionPlan, ItemDecision, ItemSummary } from '@optimize-password/core';
+import type { ActionDraftItem, ActionPlanGroup, DuplicateCandidateClass, ItemSummary } from '@optimize-password/core';
 
 export type AppStep = 'scan' | 'analysis' | 'applying' | 'summary';
 export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
 export type DuplicateKind = 'similar' | 'identical' | 'incomplete';
-export type AnalysisDisplayMode = 'edit' | 'preview';
 export type AnalysisFilterSectionId = 'years' | 'vaults' | 'domains' | 'credentials';
 export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential' | 'search';
 export type FilterCredentialKind = 'password' | 'totp' | 'passkey';
@@ -167,7 +166,7 @@ export interface PreviewGroupView {
   cardBorder: string;
   skipColor: string;
   items: DuplicateItemView[];
-  plan?: ExecutionPlan;
+  plan?: ActionPlanGroup;
   actions: PlanActionPreviewView[];
 }
 
@@ -195,7 +194,7 @@ export interface GroupPlanDialogView {
   groupId: string;
   title: string;
   subtitle: string;
-  plan: ExecutionPlan;
+  plan: ActionPlanGroup;
   actions: PlanActionPreviewView[];
   operationCount: number;
 }
@@ -203,8 +202,10 @@ export interface GroupPlanDialogView {
 export interface ApplyOperationView {
   id: string;
   groupId: string;
+  groupLabel: string;
   itemId: string;
   type: 'archive' | 'delete' | 'move' | 'tags';
+  sourceAction: 'archive' | 'delete' | 'copy-to-vault-and-archive-source' | 'update-tags';
   label: string;
   status: ApplyStatus;
   dryRun?: boolean;
@@ -221,10 +222,16 @@ export interface ApplyOperationRowView extends ApplyOperationView {
   opacity: number;
 }
 
-export interface SummaryCardView {
+export interface ApplyOperationGroupView {
+  id: string;
   label: string;
-  value: number;
-  color: string;
+  status: ApplyStatus;
+  statusText: string;
+  statusColor: string;
+  completed: number;
+  total: number;
+  error?: string;
+  operations: ApplyOperationRowView[];
 }
 
 export function kindFromCandidateClass(candidateClass: DuplicateCandidateClass): DuplicateKind {
@@ -240,7 +247,7 @@ export function kindFromCandidateClass(candidateClass: DuplicateCandidateClass):
   }
 }
 
-export function removeActionFromDecision(decision: ItemDecision): RemoveAction {
+export function removeActionFromDecision(decision: ActionDraftItem): RemoveAction {
   return decision.deleteMode === 'delete' ? 'delete' : 'archive';
 }
 

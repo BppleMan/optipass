@@ -236,7 +236,7 @@ export function summarizeVaults(vaults: VaultSummary[], items: ItemSummary[]): V
   return Array.from(summaries.values());
 }
 
-export interface ItemDecision {
+export interface ActionDraftItem {
   itemId: string;
   keep: boolean;
   targetVaultId?: string;
@@ -244,10 +244,22 @@ export interface ItemDecision {
   removeTags?: string[];
 }
 
-export interface GroupDecision {
-  scanId: string;
+export interface ActionDraftGroup {
   groupId: string;
-  items: ItemDecision[];
+  items: ActionDraftItem[];
+}
+
+export interface ActionDraft {
+  scanId: string;
+  groups: ActionDraftGroup[];
+}
+
+/** @deprecated Use ActionDraftItem. */
+export type ItemDecision = ActionDraftItem;
+
+/** @deprecated Legacy single-group request. New batch execution uses ActionDraft. */
+export interface GroupDecision extends ActionDraftGroup {
+  scanId: string;
 }
 
 export type PlanAction =
@@ -276,17 +288,29 @@ export type PlanAction =
       removeTags: string[];
     };
 
-export interface ExecutionPlan {
+export interface ActionPlanGroup {
   createdAt: string;
   groupId: string;
   actions: PlanAction[];
-  summary: ExecutionPlanSummary;
+  summary: ActionPlanSummary;
   warnings: string[];
   blockers: string[];
   requiresExplicitDeleteConfirmation: boolean;
 }
 
-export interface ExecutionPlanSummary {
+export interface ActionPlan {
+  planId: string;
+  sourceScanId: string;
+  createdAt: string;
+  writeEnabled: boolean;
+  groups: ActionPlanGroup[];
+  summary: ActionPlanSummary;
+  warnings: string[];
+  blockers: string[];
+  requiresExplicitDeleteConfirmation: boolean;
+}
+
+export interface ActionPlanSummary {
   keep: number;
   archive: number;
   delete: number;
@@ -295,3 +319,9 @@ export interface ExecutionPlanSummary {
   removedTagCount: number;
   affectedVaultIds: string[];
 }
+
+/** @deprecated Use ActionPlanGroup. */
+export type ExecutionPlan = ActionPlanGroup;
+
+/** @deprecated Use ActionPlanSummary. */
+export type ExecutionPlanSummary = ActionPlanSummary;

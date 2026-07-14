@@ -1,16 +1,17 @@
 import { computed, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import {
-  createExecutionPlan,
+  createActionPlanGroup,
   dashboardCategoryDefinitions,
   normalizeLooseText,
   normalizeUrlHost,
   summarizeVaults,
   type DashboardCategory,
+  type ActionDraft,
   type DuplicateGroup,
-  type ExecutionPlan,
+  type ActionDraftItem,
+  type ActionPlanGroup,
   type GroupDecision,
-  type ItemDecision,
   type ItemSummary,
   type PlanAction,
   type RevealedCredentialField,
@@ -25,6 +26,8 @@ import {
   ApiService,
   type ActiveScanResponse,
   type AnalysisResultResponse,
+  type ActionExecutionEvent,
+  type ActionExecutionStatus,
   type ExecuteProgressEvent,
   type ExecuteResponse,
   type ItemSearchField,
@@ -37,7 +40,7 @@ import {
   type AnalysisFilterSectionId,
   type AnalysisFilterSectionView,
   type AnalysisFilterSummaryView,
-  type AnalysisDisplayMode,
+  type ApplyOperationGroupView,
   type ApplyOperationRowView,
   type ApplyOperationView,
   type ApplyStatus,
@@ -53,7 +56,6 @@ import {
   type PreviewGroupView,
   type RemoveAction,
   type ScanVaultRow,
-  type SummaryCardView,
   itemUpdatedDate,
   kindFromCandidateClass,
   removeActionFromDecision
@@ -194,7 +196,7 @@ export class WorkflowService {
   readonly analysisPct = signal(0);
   readonly error = signal<string | undefined>(undefined);
   readonly status = signal<string | undefined>(undefined);
-  readonly decisions = signal<Record<string, ItemDecision>>({});
+  readonly decisions = signal<Record<string, ActionDraftItem>>({});
   readonly skippedGroups = signal<Record<string, boolean>>({});
   readonly reveal = signal(false);
   readonly visibleSecretItems = signal<Record<string, boolean>>({});
@@ -210,12 +212,14 @@ export class WorkflowService {
   readonly globalSearchAutocompleteOpen = signal(false);
   readonly activeGlobalSearchSuggestionIndex = signal(0);
   readonly selectedGlobalSearchSuggestionIds = signal<string[]>([]);
-  readonly analysisDisplayMode = signal<AnalysisDisplayMode>('edit');
-  readonly phase = signal<'applying' | 'summary'>('summary');
   readonly operations = signal<ApplyOperationView[]>([]);
+  readonly operationGroupErrors = signal<Record<string, string>>({});
   readonly applying = signal(false);
   readonly applyDialogOpen = signal(false);
-  readonly applyMessage = signal<string | undefined>(undefined);
+  readonly actionExecutionId = signal<string | undefined>(undefined);
+  readonly actionExecutionStatus = signal<ActionExecutionStatus | undefined>(undefined);
+  readonly actionExecutionWriteEnabled = signal(false);
+  readonly actionExecutionRefreshProgress = signal<ScanProgress | undefined>(undefined);
   readonly groupPlanDialog = signal<GroupPlanDialogView | undefined>(undefined);
   readonly groupPlanLoading = signal<Record<string, boolean>>({});
   readonly groupApplying = signal(false);
@@ -283,13 +287,13 @@ export class WorkflowService {
     return this.allPreviewGroups().filter((group) => visibleIds.has(group.id));
   });
   readonly planOperationCount = computed(() => this.countPlanOperations(this.visiblePreviewGroups()));
-  readonly previewEmpty = computed(() => this.visiblePreviewGroups().length === 0);
   readonly canApply = computed(() =>
     this.planOperationCount() > 0 &&
     !this.loading() &&
     !this.applying()
   );
   readonly operationRows = computed<ApplyOperationRowView[]>(() => this.operations().map((operation) => toOperationRow(operation)));
+  readonly operationGroups = computed<ApplyOperationGroupView[]>(() => buildOperationGroups(this.operationRows(), this.operationGroupErrors()));
   readonly applyPct = computed(() => {
     const operations = this.operations();
     if (operations.length === 0) {
@@ -298,23 +302,14 @@ export class WorkflowService {
     const finished = operations.filter((operation) => ['done', 'failed', 'skipped'].includes(operation.status)).length;
     return Math.round((finished / operations.length) * 100);
   });
-  readonly summaryCards = computed<SummaryCardView[]>(() => {
-    const operations = this.operations();
-    return [
-      { label: '保留', value: this.decisionStats().keep, color: '#c3e88d' },
-      { label: '已归档', value: operations.filter((operation) => operation.type === 'archive' && operation.status === 'done').length, color: '#ffcb6b' },
-      { label: '已删除', value: operations.filter((operation) => operation.type === 'delete' && operation.status === 'done').length, color: '#ff5370' },
-      { label: '已迁移', value: operations.filter((operation) => operation.type === 'move' && operation.status === 'done').length, color: '#82aaff' }
-    ];
-  });
   readonly summaryLine = computed(() => {
     const operations = this.operations();
     const failed = operations.filter((operation) => operation.status === 'failed').length;
     const skipped = operations.filter((operation) => operation.status === 'skipped').length;
     const success = operations.filter((operation) => operation.status === 'done').length;
-    return `共执行 ${operations.length} 项操作，成功 ${success} 项${failed ? `，失败 ${failed} 项` : ''}${skipped ? `，跳过 ${skipped} 项` : ''}`;
+    const failedGroups = Object.keys(this.operationGroupErrors()).length;
+    return `共执行 ${operations.length} 项操作，成功 ${success} 项${failed ? `，失败 ${failed} 项` : ''}${failedGroups ? `，${failedGroups} 组校验失败` : ''}${skipped ? `，跳过 ${skipped} 项` : ''}`;
   });
-  readonly hasFailed = computed(() => this.operations().some((operation) => operation.status === 'failed'));
 
   constructor(
     private readonly api: ApiService,
@@ -541,7 +536,6 @@ export class WorkflowService {
     try {
       const result = await this.api.analyze(scan.scanId);
       this.restoreAnalysisResult(result);
-      this.analysisDisplayMode.set('edit');
       this.clearAnalysisFilters();
       this.analysisPct.set(100);
       this.status.set(result.groups.length ? `分析完成，发现 ${result.groups.length} 组疑似重复。` : '分析完成，没有发现疑似重复。');
@@ -577,10 +571,6 @@ export class WorkflowService {
     }
     this.activeKind.set(kind);
     this.clearAnalysisFilters();
-  }
-
-  setAnalysisDisplayMode(mode: AnalysisDisplayMode): void {
-    this.analysisDisplayMode.set(mode);
   }
 
   toggleAnalysisFilter(sectionId: AnalysisFilterSectionId, optionId: string, selected: boolean): void {
@@ -735,7 +725,7 @@ export class WorkflowService {
       this.replaceAnalysisResult(response.scan);
       this.status.set(skippedGroups[groupId]
         ? "已取消跳过标记，该组重新纳入执行计划。"
-        : "已标记跳过；该组不会执行，且会在预览中保留记录。");
+        : "已标记跳过；该组不会纳入执行计划。");
     } catch (error) {
       this.error.set(messageFor(error));
     } finally {
@@ -995,11 +985,6 @@ export class WorkflowService {
     }
   }
 
-  prepareBatchPreview(): void {
-    this.analysisDisplayMode.set('preview');
-    this.operations.set(this.buildOperations(this.visiblePreviewGroups()));
-  }
-
   async applyPlan(): Promise<void> {
     if (!this.canApply()) {
       return;
@@ -1007,48 +992,56 @@ export class WorkflowService {
     const groups = this.visiblePreviewGroups();
     const operations = this.buildOperations(groups);
     this.operations.set(operations);
-    this.phase.set('applying');
+    this.operationGroupErrors.set({});
+    const draft = this.actionDraftForGroups(groups);
     this.applying.set(true);
     this.applyDialogOpen.set(true);
-    this.applyMessage.set(undefined);
-
-    for (const group of groups) {
-      const groupOps = this.operations().filter((operation) => operation.groupId === group.id);
-      if (groupOps.length === 0) {
-        continue;
+    this.actionExecutionRefreshProgress.set(undefined);
+    try {
+      const hasDelete = draft.groups.some((group) => group.items.some((item) => !item.keep && item.deleteMode === 'delete'));
+      const execution = await this.api.startActionExecution(draft, hasDelete ? deleteConfirmationPhrase : undefined);
+      if (!execution.eventsToken) {
+        throw new Error('执行任务缺少进度令牌。');
       }
-      this.patchGroupOperations(group.id, 'running');
-      try {
-        const decision = this.groupDecisionById(group.id);
-        if (!decision) {
-          throw new Error('找不到待执行的重复组。');
-        }
-        const response = await this.executeGroupDecision(decision);
-        if (response.blocked || response.error) {
-          this.failGroup(group.id, response.error || '执行被本地 API 阻止。');
-          this.skipPendingOperations();
-          break;
-        }
-        if (response.scanInvalidated) {
-          if (response.verification && !response.verification.ok) {
-            this.failGroup(group.id, executionInvalidatedMessage(response));
-          } else {
-            this.applyGroupResult(group.id, response);
-          }
-          this.skipPendingOperations();
-          break;
-        }
-        this.applyGroupResult(group.id, response);
-      } catch (error) {
-        this.failGroup(group.id, messageFor(error));
-        this.skipPendingOperations();
-        break;
-      }
+      this.actionExecutionId.set(execution.executionId);
+      this.actionExecutionStatus.set(execution.status);
+      this.actionExecutionWriteEnabled.set(execution.writeEnabled);
+      await this.api.streamActionExecutionEvents(execution.executionId, execution.eventsToken, (event) => this.applyActionExecutionEvent(event));
+    } catch (error) {
+      this.error.set(messageFor(error));
+      this.skipPendingOperations('执行未完成。');
+      this.actionExecutionStatus.set('failed');
+    } finally {
+      this.applying.set(false);
+      this.status.set(this.actionExecutionWriteEnabled() ? this.summaryLine() : `试写完成，${this.summaryLine()}`);
     }
+  }
 
-    this.phase.set('summary');
-    this.applying.set(false);
-    this.status.set(this.operations().some((operation) => operation.dryRun) ? `试写完成，${this.summaryLine()}` : this.summaryLine());
+  async pauseActionExecution(): Promise<void> {
+    const executionId = this.actionExecutionId();
+    if (!executionId || !this.applying()) {
+      return;
+    }
+    const snapshot = await this.api.pauseActionExecution(executionId);
+    this.actionExecutionStatus.set(snapshot.status);
+  }
+
+  async resumeActionExecution(): Promise<void> {
+    const executionId = this.actionExecutionId();
+    if (!executionId || this.actionExecutionStatus() !== 'paused') {
+      return;
+    }
+    const snapshot = await this.api.resumeActionExecution(executionId);
+    this.actionExecutionStatus.set(snapshot.status);
+  }
+
+  async stopActionExecution(): Promise<void> {
+    const executionId = this.actionExecutionId();
+    if (!executionId || !this.applying()) {
+      return;
+    }
+    const snapshot = await this.api.stopActionExecution(executionId);
+    this.actionExecutionStatus.set(snapshot.status);
   }
 
   closeApplyDialog(): void {
@@ -1099,7 +1092,6 @@ export class WorkflowService {
     this.reveal.set(false);
     this.activeKind.set(firstAvailableKind(result.groups));
     this.clearAnalysisFilters();
-    this.analysisDisplayMode.set('edit');
     this.status.set(result.groups.length ? `已恢复本 tab 的分析缓存，剩余 ${result.groups.length} 组疑似重复。` : '已恢复本 tab 的分析缓存，没有剩余疑似重复。');
   }
 
@@ -1117,7 +1109,7 @@ export class WorkflowService {
     this.skippedGroups.set(skippedGroupMap(result.skippedGroupIds));
   }
 
-  private localPlanForGroup(groupId: string): ExecutionPlan | undefined {
+  private localPlanForGroup(groupId: string): ActionPlanGroup | undefined {
     const group = this.groups().find((candidate) => candidate.id === groupId);
     const result = this.scanResult();
     if (!group || !result || this.skippedGroups()[group.id]) {
@@ -1126,7 +1118,7 @@ export class WorkflowService {
     return this.createLocalPlan(group, result.items);
   }
 
-  private buildGroupPlanDialog(groupId: string, plan: ExecutionPlan): GroupPlanDialogView {
+  private buildGroupPlanDialog(groupId: string, plan: ActionPlanGroup): GroupPlanDialogView {
     const group = this.groups().find((candidate) => candidate.id === groupId);
     const result = this.scanResult();
     const items = result && group
@@ -1173,19 +1165,17 @@ export class WorkflowService {
     this.analysisFilters.set(emptyAnalysisFilters());
     this.filterSectionsOpen.set({ ...defaultFilterSectionsOpen });
     this.clearGlobalSearch();
-    this.analysisDisplayMode.set('edit');
-    this.phase.set('summary');
     this.operations.set([]);
+    this.operationGroupErrors.set({});
     this.applying.set(false);
-    this.applyMessage.set(undefined);
     this.groupPlanDialog.set(undefined);
     this.groupPlanLoading.set({});
     this.groupApplying.set(false);
     this.groupApplyError.set(undefined);
   }
 
-  private defaultDecisions(result: ScanResult): Record<string, ItemDecision> {
-    const decisions: Record<string, ItemDecision> = {};
+  private defaultDecisions(result: ScanResult): Record<string, ActionDraftItem> {
+    const decisions: Record<string, ActionDraftItem> = {};
     for (const group of result.groups) {
       const recommended = new Set(group.recommendedKeepIds);
       const items = group.itemIds
@@ -1559,13 +1549,13 @@ export class WorkflowService {
     }, 0);
   }
 
-  private createLocalPlan(group: DuplicateGroup, items: ItemSummary[]): ExecutionPlan {
-    return createExecutionPlan(group.id, this.groupDecision(group, items), items, {
+  private createLocalPlan(group: DuplicateGroup, items: ItemSummary[]): ActionPlanGroup {
+    return createActionPlanGroup(group.id, this.groupDecision(group, items), items, {
       requireKeep: group.candidateClass !== 'delete-suggestion'
     });
   }
 
-  private planActionPreviewRows(plan: ExecutionPlan): PlanActionPreviewView[] {
+  private planActionPreviewRows(plan: ActionPlanGroup): PlanActionPreviewView[] {
     const result = this.scanResult();
     if (!result) {
       return [];
@@ -1610,39 +1600,99 @@ export class WorkflowService {
       }
       return plan.actions
         .filter((action) => action.type !== 'keep')
-        .map((action) => this.toApplyOperation(group.id, action));
+        .map((action) => this.toApplyOperation(group, action));
     });
   }
 
-  private toApplyOperation(groupId: string, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {
+  private actionDraftForGroups(groups: PreviewGroupView[]): ActionDraft {
+    const scanId = this.scanResult()?.scanId ?? '';
+    return {
+      scanId,
+      groups: groups.map((group) => {
+        const draft = this.groupDecisionById(group.id);
+        if (!draft) {
+          throw new Error(`找不到待执行的重复组：${ group.id }`);
+        }
+        return { groupId: draft.groupId, items: draft.items };
+      }),
+    };
+  }
+
+  private applyActionExecutionEvent(event: ActionExecutionEvent): void {
+    this.actionExecutionStatus.set(event.status);
+    if (event.progress) {
+      this.actionExecutionRefreshProgress.set(event.progress);
+    }
+    if (event.type === 'action-started' && event.action && event.groupId) {
+      this.applyExecutionEvent(event.groupId, {
+        type: 'action-started',
+        sequence: event.sequence,
+        executionId: event.executionId,
+        dryRun: !event.writeEnabled,
+        totalOperations: event.totalOperations,
+        completedOperations: event.completedOperations,
+        action: event.action,
+      });
+    } else if ((event.type === 'action-completed' || event.type === 'action-failed') && event.result && event.groupId) {
+      this.applyExecutionEvent(event.groupId, {
+        type: 'action',
+        sequence: event.sequence,
+        executionId: event.executionId,
+        dryRun: !event.writeEnabled,
+        totalOperations: event.totalOperations,
+        completedOperations: event.completedOperations,
+        result: event.result,
+      });
+    }
+    if (event.type === 'refreshed' && event.response) {
+      this.replaceAnalysisResult(event.response.scan);
+      this.decisions.set(Object.fromEntries(event.response.draft.groups.flatMap((group) => group.items).map((item) => [item.itemId, item])));
+    }
+    if ((event.type === 'stopped' || event.type === 'failed') && event.response) {
+      this.skipPendingOperations(event.type === 'stopped' ? '执行已停止。' : '执行失败，未继续处理。');
+    }
+    if (event.type === 'failed' && event.groupId) {
+      this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? '执行失败。' });
+      this.skipPendingOperations('执行失败，未继续处理。');
+    }
+  }
+
+  private toApplyOperation(group: PreviewGroupView, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {
     const item = this.itemById(action.itemId);
     const title = item?.title || action.itemId;
+    const groupLabel = `${group.username} @ ${group.site}`;
     if (action.type === 'copy-to-vault-and-archive-source') {
       const targetName = vaultName(this.scanResult()?.vaults ?? [], action.targetVaultId);
       return {
-        id: `op-${action.itemId}`,
-        groupId,
+        id: `op-${group.id}-${action.type}-${action.itemId}`,
+        groupId: group.id,
+        groupLabel,
         itemId: action.itemId,
         type: 'move',
+        sourceAction: action.type,
         label: `迁移「${title}」：${item?.vaultName ?? action.vaultId} → ${targetName}${action.removeTags.length > 0 ? `，同时${removedTagsLabel(action.removeTags)}` : ''}`,
         status: 'pending'
       };
     }
     if (action.type === 'update-tags') {
       return {
-        id: `op-${action.itemId}`,
-        groupId,
+        id: `op-${group.id}-${action.type}-${action.itemId}`,
+        groupId: group.id,
+        groupLabel,
         itemId: action.itemId,
         type: 'tags',
+        sourceAction: action.type,
         label: `更新「${title}」：${removedTagsLabel(action.removeTags)}`,
         status: 'pending'
       };
     }
     return {
-      id: `op-${action.itemId}`,
-      groupId,
+      id: `op-${group.id}-${action.type}-${action.itemId}`,
+      groupId: group.id,
+      groupLabel,
       itemId: action.itemId,
       type: action.type,
+      sourceAction: action.type,
       label: `${action.type === 'delete' ? '删除' : '归档'}「${title}」（${item?.vaultName ?? action.vaultId}）`,
       status: 'pending'
     };
@@ -1669,12 +1719,20 @@ export class WorkflowService {
   }
 
   private applyExecutionEvent(groupId: string, event: ExecuteProgressEvent): void {
+    if (event.type === 'action-started' && event.action) {
+      this.operations.set(this.operations().map((operation) =>
+        operation.groupId === groupId && operation.itemId === event.action?.itemId && operation.sourceAction === event.action.type
+          ? { ...operation, status: 'running' as ApplyStatus }
+          : operation
+      ));
+      return;
+    }
     if (event.type !== 'action' || !event.result) {
       return;
     }
     const result = event.result;
     this.operations.set(this.operations().map((operation) => {
-      if (operation.groupId !== groupId || operation.itemId !== result.itemId) {
+      if (operation.groupId !== groupId || operation.itemId !== result.itemId || operation.sourceAction !== result.action) {
         return operation;
       }
       if (result.skipped) {
@@ -1705,7 +1763,7 @@ export class WorkflowService {
       if (operation.groupId !== groupId) {
         return operation;
       }
-      const result = results.find((candidate) => candidate.itemId === operation.itemId);
+      const result = results.find((candidate) => candidate.itemId === operation.itemId && candidate.action === operation.sourceAction);
       if (!result) {
         return { ...operation, status: 'done' as ApplyStatus, dryRun: response.dryRun || operation.dryRun };
       }
@@ -1722,12 +1780,16 @@ export class WorkflowService {
   }
 
   private failGroup(groupId: string, error: string): void {
-    this.operations.set(this.operations().map((operation) => operation.groupId === groupId ? { ...operation, status: 'failed', error } : operation));
-    this.applyMessage.set(error);
+    this.operationGroupErrors.set({ ...this.operationGroupErrors(), [groupId]: error });
+    this.operations.set(this.operations().map((operation) =>
+      operation.groupId === groupId && (operation.status === 'pending' || operation.status === 'running')
+        ? { ...operation, status: 'failed', error }
+        : operation
+    ));
   }
 
-  private skipPendingOperations(): void {
-    this.operations.set(this.operations().map((operation) => operation.status === 'pending' ? { ...operation, status: 'skipped', error: '前序操作失败，已跳过。' } : operation));
+  private skipPendingOperations(error = '前序操作失败，已跳过。'): void {
+    this.operations.set(this.operations().map((operation) => operation.status === 'pending' ? { ...operation, status: 'skipped', error } : operation));
   }
 }
 
@@ -2206,7 +2268,7 @@ function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
   const statusText = operation.status === 'done'
     ? operation.dryRun ? '已试写' : '成功'
     : operation.status === 'failed'
-      ? operation.error || '失败'
+      ? '失败'
       : operation.status === 'running'
         ? '执行中…'
         : operation.status === 'skipped'
@@ -2222,6 +2284,75 @@ function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
     border: operation.status === 'failed' ? 'rgba(255,83,112,0.4)' : '#3a3a3a',
     opacity: operation.status === 'pending' || operation.status === 'skipped' ? 0.5 : 1
   };
+}
+
+function buildOperationGroups(operations: ApplyOperationRowView[], errors: Record<string, string>): ApplyOperationGroupView[] {
+  const groups = new Map<string, ApplyOperationRowView[]>();
+  for (const operation of operations) {
+    const groupOperations = groups.get(operation.groupId) ?? [];
+    groupOperations.push(operation);
+    groups.set(operation.groupId, groupOperations);
+  }
+  return Array.from(groups, ([id, groupOperations]) => {
+    const error = errors[id];
+    const status = error ? "failed" : operationGroupStatus(groupOperations);
+    return {
+      id,
+      label: groupOperations[0]?.groupLabel ?? id,
+      status,
+      statusText: error ? "校验失败" : operationGroupStatusText(status, groupOperations),
+      statusColor: operationGroupStatusColor(status),
+      completed: groupOperations.filter((operation) => operation.status === "done" || operation.status === "failed" || operation.status === "skipped").length,
+      total: groupOperations.length,
+      error,
+      operations: groupOperations,
+    };
+  });
+}
+
+function operationGroupStatus(operations: ApplyOperationRowView[]): ApplyStatus {
+  if (operations.some((operation) => operation.status === "failed")) {
+    return "failed";
+  }
+  if (operations.some((operation) => operation.status === "running")) {
+    return "running";
+  }
+  if (operations.some((operation) => operation.status === "pending")) {
+    return "pending";
+  }
+  if (operations.some((operation) => operation.status === "skipped")) {
+    return "skipped";
+  }
+  return "done";
+}
+
+function operationGroupStatusText(status: ApplyStatus, operations: ApplyOperationRowView[]): string {
+  if (status === "failed") {
+    return "执行失败";
+  }
+  if (status === "running") {
+    return "执行中";
+  }
+  if (status === "pending") {
+    return "等待执行";
+  }
+  if (status === "skipped") {
+    return operations.every((operation) => operation.status === "skipped") ? "已跳过" : "部分跳过";
+  }
+  return operations.some((operation) => operation.dryRun) ? "试写完成" : "执行成功";
+}
+
+function operationGroupStatusColor(status: ApplyStatus): string {
+  if (status === "done") {
+    return "#C3E88D";
+  }
+  if (status === "failed") {
+    return "#FF5370";
+  }
+  if (status === "running") {
+    return "#82AAFF";
+  }
+  return "#727272";
 }
 
 function searchKeywords(value: string): string[] {

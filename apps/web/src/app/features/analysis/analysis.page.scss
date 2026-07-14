@@ -312,7 +312,7 @@
     }
     
     .apply-progress-modal {
-      width: min(680px, 100%);
+      width: min(760px, 100%);
       max-height: min(720px, calc(100vh - 72px));
       display: flex;
       flex-direction: column;
@@ -324,13 +324,6 @@
       flex-shrink: 0;
       height: 6px;
     }
-    
-    .apply-progress-modal .op-list {
-      min-height: 0;
-      overflow-y: auto;
-      padding-right: 4px;
-    }
-    
     
     .analysis-page {
       width: 100%;
@@ -481,10 +474,6 @@
     
     .main-view-head .op-tabs {
       align-self: center;
-    }
-    
-    .display-mode-tabs .op-tabs-indicator {
-      background: rgba(199, 146, 234, 0.2);
     }
     
     .filter-total {

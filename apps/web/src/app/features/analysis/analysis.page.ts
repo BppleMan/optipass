@@ -1,6 +1,6 @@
 import { afterNextRender, AfterViewChecked, ChangeDetectionStrategy, Component, ElementRef, Injector, OnInit, ViewChild } from "@angular/core";
 import { FormsModule } from "@angular/forms";
-import type { AnalysisDisplayMode, DuplicateGroupView, DuplicateItemView, DuplicateKind, RemoveAction, TabView } from "../../core/models/workflow.models";
+import type { DuplicateGroupView, DuplicateItemView, DuplicateKind, RemoveAction } from "../../core/models/workflow.models";
 import { ItemTypeIconComponent } from "../../shared/ui/item-type-icon/item-type-icon";
 import { resolveItemTypeIcon } from "../../shared/library/icon-library";
 import { OpButtonComponent } from "../../shared/ui/op-button/op-button";
@@ -38,17 +38,11 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     { value: 'delete', label: '本组统一删除', icon: 'delete', activeColor: '#FFB8C3', activeBackground: 'rgba(255, 83, 112, 0.16)' },
     { value: 'manual', label: '手动处理', icon: 'manual', activeColor: '#82AAFF', activeBackground: 'rgba(130, 170, 255, 0.16)', disabled: true },
   ];
-  readonly displayModeTabs: TabView[] = [
-    { kind: 'edit', label: '编辑', color: '#c792ea', bg: 'rgba(199, 146, 234, 0.16)' },
-    { kind: 'preview', label: '预览', color: '#c792ea', bg: 'rgba(199, 146, 234, 0.16)' }
-  ];
-
   tagScopePrompt: { groupId: string; itemId: string; tag: string; eligibleCount: number } | undefined;
 
-  @ViewChild('groupList') private readonly groupList?: ElementRef<HTMLElement>;
   @ViewChild('applyOperationList') private readonly applyOperationList?: ElementRef<HTMLElement>;
   @ViewChild("globalSearchSuggestions") private readonly globalSearchSuggestions?: ElementRef<HTMLElement>;
-  private completedOperationCount = 0;
+  private followedOperationId: string | undefined;
   private followApplyProgress = true;
 
   constructor(
@@ -61,23 +55,23 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
   }
 
   ngAfterViewChecked(): void {
-    const completed = this.wf.operations().filter((operation) =>
-      operation.status === "done" || operation.status === "failed" || operation.status === "skipped"
-    ).length;
-    if (completed === 0) {
-      this.completedOperationCount = 0;
+    const operations = this.wf.operations();
+    const followedOperation = operations.find((operation) => operation.status === "running")
+      ?? [...operations].reverse().find((operation) => operation.status === "done" || operation.status === "failed" || operation.status === "skipped");
+    if (!followedOperation) {
+      this.followedOperationId = undefined;
       this.followApplyProgress = true;
       return;
     }
-    if (completed <= this.completedOperationCount) {
+    if (followedOperation.id === this.followedOperationId) {
       return;
     }
-    this.completedOperationCount = completed;
+    this.followedOperationId = followedOperation.id;
     if (this.injector) {
-      afterNextRender(() => this.scrollApplyProgressToLatest(), { injector: this.injector });
+      afterNextRender(() => this.scrollApplyProgressToOperation(followedOperation.id), { injector: this.injector });
       return;
     }
-    queueMicrotask(() => this.scrollApplyProgressToLatest());
+    queueMicrotask(() => this.scrollApplyProgressToOperation(followedOperation.id));
   }
 
   setKind(kind: string): void {
@@ -184,38 +178,22 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     }
   }
 
-  switchDisplayMode(mode: string): void {
-    const displayMode = mode as AnalysisDisplayMode;
-    if (this.wf.analysisDisplayMode() === displayMode) {
-      return;
-    }
-    const anchorGroupId = this.visibleAnchorGroupId();
-    this.wf.setAnalysisDisplayMode(displayMode);
-    this.restoreAnchorGroup(anchorGroupId);
-  }
-
   handleBatchApply(): void {
-    if (this.wf.analysisDisplayMode() !== 'preview') {
-      const anchorGroupId = this.visibleAnchorGroupId();
-      this.wf.prepareBatchPreview();
-      this.restoreAnchorGroup(anchorGroupId);
-      return;
-    }
     void this.wf.applyPlan();
   }
 
+  public requestStopActionExecution(): void {
+    if (window.confirm("停止后，当前操作会执行完，已完成的真实写入不会回滚。确定停止吗？")) {
+      void this.wf.stopActionExecution();
+    }
+  }
+
   batchApplyLabel(): string {
-    const count = this.wf.planOperationCount();
-    return this.wf.analysisDisplayMode() === 'preview'
-      ? `应用计划 (${count} 项操作)`
-      : `应用计划 (${count} 项操作) →`;
+    return `应用计划 (${this.wf.planOperationCount()} 项操作)`;
   }
 
   batchApplyDisabled(): boolean {
-    if (this.wf.analysisDisplayMode() === 'preview') {
-      return !this.wf.canApply();
-    }
-    return this.wf.planOperationCount() === 0 || this.wf.loading() || this.wf.applying();
+    return !this.wf.canApply();
   }
 
   onApplyOperationListScroll(): void {
@@ -243,40 +221,12 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     return resolveItemTypeIcon(this.groupCategory(group)).color;
   }
 
-  private visibleAnchorGroupId(): string | undefined {
-    const container = this.groupList?.nativeElement;
-    if (!container) {
-      return undefined;
-    }
-    const containerTop = container.getBoundingClientRect().top;
-    const groups = Array.from(container.querySelectorAll<HTMLElement>('[data-group-id]'));
-    return groups
-      .map((element) => ({
-        element,
-        distance: Math.abs(element.getBoundingClientRect().top - containerTop)
-      }))
-      .sort((a, b) => a.distance - b.distance)[0]?.element.dataset['groupId'];
-  }
-
-  private restoreAnchorGroup(groupId: string | undefined): void {
-    if (!groupId) {
-      return;
-    }
-    window.setTimeout(() => {
-      const container = this.groupList?.nativeElement;
-      const target = container?.querySelector<HTMLElement>(`[data-group-id="${cssEscape(groupId)}"]`);
-      if (container && target) {
-        container.scrollTop += target.getBoundingClientRect().top - container.getBoundingClientRect().top;
-      }
-    }, 0);
-  }
-
-  private scrollApplyProgressToLatest(): void {
+  private scrollApplyProgressToOperation(operationId: string): void {
     const list = this.applyOperationList?.nativeElement;
     if (!list || !this.followApplyProgress) {
       return;
     }
-    list.scrollTop = list.scrollHeight - list.clientHeight;
+    list.querySelector<HTMLElement>(`[data-operation-id="${cssEscape(operationId)}"]`)?.scrollIntoView({ block: "nearest" });
   }
 }
 

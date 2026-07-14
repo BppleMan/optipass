@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input } from "@angular/core";
 
-import type { ExecutionPlan } from "@optimize-password/core";
+import type { ActionPlanGroup } from "@optimize-password/core";
 import type { PlanActionPreviewView } from "../../../../core/models/workflow.models";
 import { PlanActionItemComponent } from "../plan-action-item/plan-action-item";
 
@@ -14,7 +14,7 @@ import { PlanActionItemComponent } from "../plan-action-item/plan-action-item";
 })
 export class PlanActionGroupComponent {
     public readonly actions = input.required<PlanActionPreviewView[]>();
-    public readonly plan = input<ExecutionPlan | undefined>();
+    public readonly plan = input<ActionPlanGroup | undefined>();
     public readonly summary = computed(() => {
         const actions = this.actions();
         return {
