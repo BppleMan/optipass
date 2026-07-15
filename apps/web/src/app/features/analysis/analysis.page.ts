@@ -9,7 +9,6 @@ import { SegmentedControlComponent, type SegmentedControlItem } from "../../shar
 import { OpTabsComponent } from "../../shared/ui/op-tabs/op-tabs";
 import { VaultIconComponent } from "../../shared/ui/vault-icon/vault-icon";
 import { AnalysisItemMatrix } from "./components/analysis-item-matrix/analysis-item-matrix";
-import { PlanActionGroupComponent } from "./components/plan-action-group/plan-action-group";
 import { WorkflowService } from "./state/workflow.service";
 
 type GroupRemovalMode = RemoveAction | 'manual';
@@ -18,7 +17,7 @@ type GroupRemovalMode = RemoveAction | 'manual';
   selector: "op-analysis-page",
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [AnalysisItemMatrix, FormsModule, ItemTypeIconComponent, OpButtonComponent, OpProgressComponent, SegmentedControlComponent, OpTabsComponent, PlanActionGroupComponent, VaultIconComponent],
+  imports: [AnalysisItemMatrix, FormsModule, ItemTypeIconComponent, OpButtonComponent, OpProgressComponent, SegmentedControlComponent, OpTabsComponent, VaultIconComponent],
   templateUrl: "./analysis.page.html",
   styleUrls: [
     "./analysis.page.scss",

@@ -190,15 +190,6 @@ export interface PlanActionPreviewView {
   border: string;
 }
 
-export interface GroupPlanDialogView {
-  groupId: string;
-  title: string;
-  subtitle: string;
-  plan: ActionPlanGroup;
-  actions: PlanActionPreviewView[];
-  operationCount: number;
-}
-
 export interface ApplyOperationView {
   id: string;
   groupId: string;

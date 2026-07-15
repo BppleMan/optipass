@@ -14,7 +14,6 @@ describe('App', () => {
     mutationsEnabled: signal(false),
     mutationToggleBusy: signal(false),
     applying: signal(false),
-    groupApplying: signal(false),
     setMutationsEnabled: () => Promise.resolve(),
     loadSession: () => Promise.resolve()
   };

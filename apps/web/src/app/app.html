@@ -3,9 +3,9 @@
     [accountChip]="wf.accountChip()"
     [accountAuthorizationState]="wf.authState()"
     [dryRunSpeedMultiplier]="wf.dryRunSpeedMultiplier()"
-    [dryRunSpeedDisabled]="wf.applying() || wf.groupApplying()"
+    [dryRunSpeedDisabled]="wf.applying()"
     [mutationsEnabled]="wf.mutationsEnabled()"
-    [mutationToggleDisabled]="wf.mutationToggleBusy() || wf.applying() || wf.groupApplying()"
+    [mutationToggleDisabled]="wf.mutationToggleBusy() || wf.applying()"
     (dryRunSpeedMultiplierChange)="wf.dryRunSpeedMultiplier.set($event)"
     (mutationsEnabledChange)="wf.setMutationsEnabled($event)"
   ></op-header>

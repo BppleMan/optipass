@@ -30,8 +30,6 @@ import {
   type ActionExecutionRefreshResponse,
   type ActionExecutionStatus,
   type DryRunSpeedMultiplier,
-  type ExecuteProgressEvent,
-  type ExecuteResponse,
   type ItemSearchField,
   type ItemSearchSuggestion,
   type ItemSearchSuggestionKind
@@ -52,7 +50,6 @@ import {
   type DuplicateItemView,
   type DuplicateKind,
   type FilterCredentialKind,
-  type GroupPlanDialogView,
   type KindTabView,
   type PlanActionPreviewView,
   type PreviewGroupView,
@@ -68,6 +65,9 @@ const deleteConfirmationPhrase = '永久删除';
 const missingYearId = '__missing_year__';
 const scanRecoveryTimeoutMs = 120_000;
 const scanRecoveryPollMs = 500;
+
+type ActionExecutionViewStatus = ActionExecutionStatus | 'ready' | 'starting';
+type ActionExecutionScope = 'plan' | 'group';
 
 const kindOrder: DuplicateKind[] = ['similar', 'identical', 'incomplete'];
 const kindMeta: Record<DuplicateKind, { label: string; color: string; bg: string }> = {
@@ -219,15 +219,14 @@ export class WorkflowService {
   readonly applying = signal(false);
   readonly applyDialogOpen = signal(false);
   readonly actionExecutionId = signal<string | undefined>(undefined);
-  readonly actionExecutionStatus = signal<ActionExecutionStatus | undefined>(undefined);
+  readonly actionExecutionStatus = signal<ActionExecutionViewStatus | undefined>(undefined);
+  readonly actionExecutionScope = signal<ActionExecutionScope>('plan');
   readonly actionExecutionWriteEnabled = signal(false);
   readonly actionExecutionRefreshProgress = signal<ScanProgress | undefined>(undefined);
-  readonly groupPlanDialog = signal<GroupPlanDialogView | undefined>(undefined);
   readonly groupPlanLoading = signal<Record<string, boolean>>({});
-  readonly groupApplying = signal(false);
-  readonly groupApplyError = signal<string | undefined>(undefined);
   readonly mutationToggleBusy = signal(false);
   readonly dryRunSpeedMultiplier = signal<DryRunSpeedMultiplier>(1);
+  private readonly preparedActionDraft = signal<ActionDraft | undefined>(undefined);
   private scanAbortController: AbortController | undefined;
   private globalSearchRequestId = 0;
 
@@ -311,6 +310,10 @@ export class WorkflowService {
   });
   readonly actionExecutionStatusLabel = computed(() => {
     switch (this.actionExecutionStatus()) {
+      case 'ready':
+        return '待开始';
+      case 'starting':
+        return '正在启动';
       case 'running':
         return '执行中';
       case 'pause-requested':
@@ -739,7 +742,7 @@ export class WorkflowService {
 
   async toggleGroupSkip(groupId: string): Promise<void> {
     const result = this.scanResult();
-    if (!result || this.groupApplying() || this.groupPlanLoading()[groupId]) {
+    if (!result || this.applying() || this.groupPlanLoading()[groupId]) {
       return;
     }
 
@@ -941,93 +944,36 @@ export class WorkflowService {
     return this.groupOperationCount(groupId) > 0 &&
       !this.loading() &&
       !this.applying() &&
-      !this.groupApplying() &&
       !this.groupPlanLoading()[groupId];
   }
 
-  async openGroupPlanDialog(groupId: string): Promise<void> {
+  openGroupExecutionDialog(groupId: string): void {
     if (!this.canApplyGroup(groupId)) {
       return;
     }
-    const decision = this.groupDecisionById(groupId);
-    if (!decision) {
+    const group = this.allPreviewGroups().find((candidate) => candidate.id === groupId);
+    if (!group?.plan) {
       this.error.set('找不到待执行的重复组。');
       return;
     }
-
-    this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: true });
-    this.groupApplyError.set(undefined);
-    this.error.set(undefined);
-    try {
-      const plan = await this.api.createPlan(decision);
-      this.groupPlanDialog.set(this.buildGroupPlanDialog(groupId, plan));
-    } catch (error) {
-      this.error.set(messageFor(error));
-    } finally {
-      this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: false });
-    }
+    this.prepareActionExecution([group], 'group');
   }
 
-  closeGroupPlanDialog(): void {
-    if (this.groupApplying()) {
-      return;
-    }
-    this.groupPlanDialog.set(undefined);
-    this.groupApplyError.set(undefined);
-  }
-
-  async confirmGroupPlanDialog(): Promise<void> {
-    const dialog = this.groupPlanDialog();
-    if (!dialog || this.groupApplying() || dialog.plan.blockers.length > 0) {
-      return;
-    }
-    const decision = this.groupDecisionById(dialog.groupId);
-    if (!decision) {
-      this.groupApplyError.set('找不到待执行的重复组。');
-      return;
-    }
-
-    this.groupApplying.set(true);
-    this.groupApplyError.set(undefined);
-    this.error.set(undefined);
-    try {
-      const response = await this.executeGroupDecision(decision);
-      const failed = response.results?.find((result) => !result.ok && !result.skipped);
-      if (response.blocked || response.error || failed) {
-        this.groupApplyError.set(response.error || failed?.error || '执行被本地 API 阻止。');
-        return;
-      }
-      if (response.scanInvalidated) {
-        this.groupApplyError.set(executionInvalidatedMessage(response));
-        return;
-      }
-      if (response.scan) {
-        this.replaceAnalysisResult(response.scan);
-      }
-      this.status.set(response.dryRun ? '试写完成，未写入 1Password。' : '已应用该组，本轮分析不再显示。');
-      this.groupPlanDialog.set(undefined);
-    } catch (error) {
-      this.groupApplyError.set(messageFor(error));
-    } finally {
-      this.groupApplying.set(false);
-    }
-  }
-
-  async applyPlan(): Promise<void> {
+  applyPlan(): void {
     if (!this.canApply()) {
       return;
     }
-    const groups = this.visiblePreviewGroups();
-    const operations = this.buildOperations(groups);
-    this.operations.set(operations);
-    this.operationGroupErrors.set({});
-    const draft = this.actionDraftForGroups(groups);
+    this.prepareActionExecution(this.visiblePreviewGroups(), 'plan');
+  }
+
+  async startPreparedActionExecution(): Promise<void> {
+    const draft = this.preparedActionDraft();
+    if (!draft || this.actionExecutionStatus() !== 'ready' || this.applying()) {
+      return;
+    }
     this.error.set(undefined);
     this.applying.set(true);
-    this.applyDialogOpen.set(true);
-    this.actionExecutionId.set(undefined);
-    this.actionExecutionStatus.set(undefined);
-    this.actionExecutionRefreshProgress.set(undefined);
+    this.actionExecutionStatus.set('starting');
     try {
       const hasDelete = draft.groups.some((group) => group.items.some((item) => !item.keep && item.deleteMode === 'delete'));
       const execution = await this.api.startActionExecution(
@@ -1052,10 +998,29 @@ export class WorkflowService {
       }
     } finally {
       this.applying.set(false);
+      this.preparedActionDraft.set(undefined);
       this.status.set(this.actionExecutionStatus() === 'failed'
         ? this.error() ?? '执行失败。'
         : this.actionExecutionWriteEnabled() ? this.summaryLine() : `试写完成，${this.summaryLine()}`);
     }
+  }
+
+  private prepareActionExecution(groups: PreviewGroupView[], scope: ActionExecutionScope): void {
+    const operations = this.buildOperations(groups);
+    if (operations.length === 0) {
+      return;
+    }
+    this.operations.set(operations);
+    this.operationGroupErrors.set({});
+    this.preparedActionDraft.set(this.actionDraftForGroups(groups));
+    this.error.set(undefined);
+    this.applying.set(false);
+    this.applyDialogOpen.set(true);
+    this.actionExecutionId.set(undefined);
+    this.actionExecutionStatus.set('ready');
+    this.actionExecutionScope.set(scope);
+    this.actionExecutionWriteEnabled.set(this.mutationsEnabled());
+    this.actionExecutionRefreshProgress.set(undefined);
   }
 
   async pauseActionExecution(): Promise<void> {
@@ -1082,7 +1047,9 @@ export class WorkflowService {
       return;
     }
     const snapshot = await this.api.stopActionExecution(executionId);
-    this.actionExecutionStatus.set(snapshot.status);
+    if (!['refreshing', 'refreshing-after-stop', 'stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '')) {
+      this.actionExecutionStatus.set(snapshot.status);
+    }
   }
 
   closeApplyDialog(): void {
@@ -1090,6 +1057,11 @@ export class WorkflowService {
       return;
     }
     this.applyDialogOpen.set(false);
+    if (this.actionExecutionStatus() === 'ready') {
+      this.preparedActionDraft.set(undefined);
+      this.actionExecutionStatus.set(undefined);
+      this.operations.set([]);
+    }
   }
 
   openApplyDialog(): void {
@@ -1167,22 +1139,6 @@ export class WorkflowService {
     return this.createLocalPlan(group, result.items);
   }
 
-  private buildGroupPlanDialog(groupId: string, plan: ActionPlanGroup): GroupPlanDialogView {
-    const group = this.groups().find((candidate) => candidate.id === groupId);
-    const result = this.scanResult();
-    const items = result && group
-      ? group.itemIds.map((id) => result.items.find((item) => item.id === id)).filter((item): item is ItemSummary => Boolean(item))
-      : [];
-    return {
-      groupId,
-      title: group ? `${groupUsername(group, items)} @ ${groupSite(group, items)}` : groupId,
-      subtitle: `${plan.summary.keep} 保留 · ${plan.summary.archive} 归档 · ${plan.summary.delete} 删除 · ${plan.summary.move} 迁移${plan.summary.tagUpdate > 0 ? ` · ${plan.summary.tagUpdate} 项标签修改 / 移除 ${plan.summary.removedTagCount} 个` : ''}`,
-      plan,
-      actions: this.planActionPreviewRows(plan),
-      operationCount: plan.actions.filter((action) => action.type !== 'keep').length
-    };
-  }
-
   private clearGlobalSearch(): void {
     this.globalSearchRequestId += 1;
     this.globalSearchQuery.set('');
@@ -1217,10 +1173,10 @@ export class WorkflowService {
     this.operations.set([]);
     this.operationGroupErrors.set({});
     this.applying.set(false);
-    this.groupPlanDialog.set(undefined);
+    this.preparedActionDraft.set(undefined);
+    this.actionExecutionStatus.set(undefined);
+    this.applyDialogOpen.set(false);
     this.groupPlanLoading.set({});
-    this.groupApplying.set(false);
-    this.groupApplyError.set(undefined);
   }
 
   private defaultDecisions(result: ScanResult): Record<string, ActionDraftItem> {
@@ -1701,25 +1657,27 @@ export class WorkflowService {
       this.actionExecutionRefreshProgress.set(event.progress);
     }
     if (event.type === 'action-started' && event.action && event.groupId) {
-      this.applyExecutionEvent(event.groupId, {
-        type: 'action-started',
-        sequence: event.sequence,
-        executionId: event.executionId,
-        dryRun: !event.writeEnabled,
-        totalOperations: event.totalOperations,
-        completedOperations: event.completedOperations,
-        action: event.action,
-      });
+      this.operations.set(this.operations().map((operation) =>
+        operation.groupId === event.groupId && operation.itemId === event.action?.itemId && operation.sourceAction === event.action.type
+          ? { ...operation, status: 'running' as ApplyStatus }
+          : operation
+      ));
     } else if ((event.type === 'action-completed' || event.type === 'action-failed') && event.result && event.groupId) {
-      this.applyExecutionEvent(event.groupId, {
-        type: 'action',
-        sequence: event.sequence,
-        executionId: event.executionId,
-        dryRun: !event.writeEnabled,
-        totalOperations: event.totalOperations,
-        completedOperations: event.completedOperations,
-        result: event.result,
-      });
+      const result = event.result;
+      this.operations.set(this.operations().map((operation) => {
+        if (operation.groupId !== event.groupId || operation.itemId !== result.itemId || operation.sourceAction !== result.action) {
+          return operation;
+        }
+        if (result.skipped) {
+          return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
+        }
+        return {
+          ...operation,
+          status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus),
+          dryRun: !event.writeEnabled,
+          error: result.error
+        };
+      }));
     }
     if (event.type === 'refreshed' && event.response) {
       const previousDecisions = this.decisions();
@@ -1802,96 +1760,6 @@ export class WorkflowService {
       label: `${action.type === 'delete' ? '删除' : '归档'}「${title}」（${item?.vaultName ?? action.vaultId}）`,
       status: 'pending'
     };
-  }
-
-  private async executeGroupDecision(decision: GroupDecision): Promise<ExecuteResponse> {
-    const hasDelete = decision.items.some((item) => !item.keep && item.deleteMode === 'delete');
-    const execution = await this.api.startExecution({
-      ...decision,
-      confirmPermanentDelete: hasDelete || undefined,
-      permanentDeleteConfirmationPhrase: hasDelete ? deleteConfirmationPhrase : undefined
-    });
-    let response: ExecuteResponse | undefined;
-    await this.api.streamExecutionEvents(execution.executionId, execution.eventsToken, (event) => {
-      this.applyExecutionEvent(decision.groupId, event);
-      if (event.type === 'completed') {
-        response = event.response;
-      }
-    });
-    if (!response) {
-      throw new Error('执行进度流未返回最终结果。');
-    }
-    return response;
-  }
-
-  private applyExecutionEvent(groupId: string, event: ExecuteProgressEvent): void {
-    if (event.type === 'action-started' && event.action) {
-      this.operations.set(this.operations().map((operation) =>
-        operation.groupId === groupId && operation.itemId === event.action?.itemId && operation.sourceAction === event.action.type
-          ? { ...operation, status: 'running' as ApplyStatus }
-          : operation
-      ));
-      return;
-    }
-    if (event.type !== 'action' || !event.result) {
-      return;
-    }
-    const result = event.result;
-    this.operations.set(this.operations().map((operation) => {
-      if (operation.groupId !== groupId || operation.itemId !== result.itemId || operation.sourceAction !== result.action) {
-        return operation;
-      }
-      if (result.skipped) {
-        return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
-      }
-      return {
-        ...operation,
-        status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus),
-        dryRun: event.dryRun,
-        error: result.error
-      };
-    }));
-  }
-
-  private applyGroupResult(groupId: string, response: ExecuteResponse): void {
-    const results = response.results ?? [];
-    if (results.length === 0) {
-      if (response.dryRun) {
-        this.operations.set(this.operations().map((operation) => operation.groupId === groupId
-          ? { ...operation, status: 'done' as ApplyStatus, dryRun: true }
-          : operation));
-        return;
-      }
-      this.patchGroupOperations(groupId, 'done');
-      return;
-    }
-    const next = this.operations().map((operation) => {
-      if (operation.groupId !== groupId) {
-        return operation;
-      }
-      const result = results.find((candidate) => candidate.itemId === operation.itemId && candidate.action === operation.sourceAction);
-      if (!result) {
-        return { ...operation, status: 'done' as ApplyStatus, dryRun: response.dryRun || operation.dryRun };
-      }
-      if (result.skipped) {
-        return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
-      }
-      return { ...operation, status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus), error: result.error, dryRun: result.dryRun };
-    });
-    this.operations.set(next);
-  }
-
-  private patchGroupOperations(groupId: string, status: ApplyStatus): void {
-    this.operations.set(this.operations().map((operation) => operation.groupId === groupId ? { ...operation, status } : operation));
-  }
-
-  private failGroup(groupId: string, error: string): void {
-    this.operationGroupErrors.set({ ...this.operationGroupErrors(), [groupId]: error });
-    this.operations.set(this.operations().map((operation) =>
-      operation.groupId === groupId && (operation.status === 'pending' || operation.status === 'running')
-        ? { ...operation, status: 'failed', error }
-        : operation
-    ));
   }
 
   private skipPendingOperations(error = '前序操作失败，已跳过。'): void {
@@ -2477,14 +2345,6 @@ function messageFor(error: unknown): string {
 
 function isStaleAnalysisError(message: string): boolean {
   return message.includes('分析结果已过期');
-}
-
-function executionInvalidatedMessage(response: ExecuteResponse): string {
-  if (response.verification && !response.verification.ok) {
-    const detail = response.verification.results.find((result) => !result.ok)?.message;
-    return detail ? `${detail} 请重新扫描确认。` : '执行后校验失败，请重新扫描确认。';
-  }
-  return '部分操作失败，当前扫描结果已失效，请重新扫描后继续。';
 }
 
 function sleep(ms: number): Promise<void> {

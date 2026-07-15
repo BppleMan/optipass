@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
 import { vi } from 'vitest';
-import { createExecutionPlan, type ActionDraft, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
+import { type ActionDraft, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
 import type { ExecuteResponse, SkipGroupResponse } from '../../../core/services/api.service';
 import { WorkflowService } from './workflow.service';
 
@@ -216,11 +216,17 @@ describe('WorkflowService analysis filters', () => {
     expect(service.planOperationCount()).toBe(2);
 
     service.toggleAnalysisFilter('vaults', 'icloud', true);
-    await service.applyPlan();
+    service.applyPlan();
 
     expect(service.visiblePreviewGroups().map((group) => group.id)).toEqual(['github-group']);
     expect(service.planOperationCount()).toBe(1);
     expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
+    expect(service.operations().map((operation) => operation.status)).toEqual(['pending']);
+    expect(service.actionExecutionStatus()).toBe('ready');
+    expect(service.applying()).toBe(false);
+
+    await service.startPreparedActionExecution();
+
     expect(service.operationGroups()).toHaveLength(1);
     expect(service.operationGroups()[0]).toMatchObject({
       id: 'github-group',
@@ -228,6 +234,46 @@ describe('WorkflowService analysis filters', () => {
       completed: 1,
       status: 'done'
     });
+  });
+
+  it('does not create a backend execution until Start is pressed', async () => {
+    const startActionExecution = vi.fn(async () => ({
+      executionId: 'action-execution-test',
+      eventsToken: 'events-token',
+      status: 'running',
+      writeEnabled: false,
+    }));
+    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+      onEvent({
+        type: 'completed',
+        sequence: 1,
+        executionId: 'action-execution-test',
+        status: 'completed',
+        writeEnabled: false,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1,
+      } as never);
+    });
+    const service = createService({ startActionExecution, streamActionExecutionEvents, enableMutations: false });
+    service.scanResult.set(scanResult());
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
+    });
+    service.toggleAnalysisFilter('vaults', 'icloud', true);
+
+    service.applyPlan();
+
+    expect(startActionExecution).not.toHaveBeenCalled();
+    expect(streamActionExecutionEvents).not.toHaveBeenCalled();
+    expect(service.actionExecutionStatus()).toBe('ready');
+
+    await service.startPreparedActionExecution();
+
+    expect(startActionExecution).toHaveBeenCalledTimes(1);
+    expect(streamActionExecutionEvents).toHaveBeenCalledTimes(1);
+    expect(service.actionExecutionStatus()).toBe('completed');
   });
 
   it('keeps skipped groups as reversible no-op preview entries', async () => {
@@ -404,41 +450,31 @@ describe('WorkflowService analysis filters', () => {
     expect(service.loading()).toBe(false);
   });
 
-  it('shows verification failure when applying one group', async () => {
+  it('uses the shared execution dialog for one group and waits for Start', async () => {
     const result = scanResult();
-    const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => {
-      if (decision.dryRun) {
-        return { dryRun: true, dryRunKey: 'dry-run-key' };
-      }
-      return {
-        scanInvalidated: true,
-        results: [{ itemId: 'private:github-old', action: 'archive', ok: true }],
-        verification: {
-          ok: false,
-          results: [{
-            itemId: 'icloud:github-new',
-            vaultId: 'icloud',
-            action: 'keep',
-            ok: false,
-            severity: 'critical',
-            message: '执行后校验失败：保留项 GitHub 已不在原保险库的活跃列表中。'
-          }]
-        }
-      };
-    });
-    const service = createService({ execute, createPlan: planFrom(result) });
+    const execute = vi.fn(async (): Promise<ExecuteResponse> => ({
+      dryRun: false,
+      results: [{ itemId: 'private:github-old', action: 'archive', ok: true }],
+    }));
+    const service = createService({ execute });
     service.scanResult.set(result);
     service.decisions.set({
       'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
       'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
     });
 
-    await service.openGroupPlanDialog('github-group');
-    await service.confirmGroupPlanDialog();
+    service.openGroupExecutionDialog('github-group');
 
-    expect(service.groupApplyError()).toContain('执行后校验失败');
-    expect(service.groupApplyError()).toContain('请重新扫描确认');
-    expect(service.groupPlanDialog()).toBeDefined();
+    expect(service.applyDialogOpen()).toBe(true);
+    expect(service.actionExecutionScope()).toBe('group');
+    expect(service.actionExecutionStatus()).toBe('ready');
+    expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
+    expect(execute).not.toHaveBeenCalled();
+
+    await service.startPreparedActionExecution();
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(service.operations().map((operation) => operation.status)).toEqual(['done']);
   });
 
   it('updates the current action and grouped progress from SSE events', async () => {
@@ -495,7 +531,12 @@ describe('WorkflowService analysis filters', () => {
     });
     service.toggleAnalysisFilter('vaults', 'icloud', true);
 
-    await service.applyPlan();
+    service.applyPlan();
+
+    expect(streamActionExecutionEvents).not.toHaveBeenCalled();
+    expect(service.actionExecutionStatus()).toBe('ready');
+
+    await service.startPreparedActionExecution();
 
     expect(streamActionExecutionEvents).toHaveBeenCalledTimes(1);
     expect(service.applyDialogOpen()).toBe(true);
@@ -555,7 +596,8 @@ describe('WorkflowService analysis filters', () => {
     });
     service.toggleAnalysisFilter('vaults', 'icloud', true);
 
-    await service.applyPlan();
+    service.applyPlan();
+    await service.startPreparedActionExecution();
 
     expect(service.scanResult()?.scanId).toBe('scan-refreshed');
     expect(service.decisions()['icloud:github-new']).toMatchObject({ removeTags: ['CSV Import'] });
@@ -594,7 +636,8 @@ describe('WorkflowService analysis filters', () => {
       'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
     });
 
-    await service.applyPlan();
+    service.applyPlan();
+    await service.startPreparedActionExecution();
 
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'github-group' }));
@@ -625,7 +668,12 @@ describe('WorkflowService analysis filters', () => {
     expect(service.canApply()).toBe(true);
     expect(service.applyDialogOpen()).toBe(false);
 
-    await service.applyPlan();
+    service.applyPlan();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(service.actionExecutionStatus()).toBe('ready');
+
+    await service.startPreparedActionExecution();
 
     expect(execute).toHaveBeenCalledTimes(2);
     expect(service.operations().every((operation) => operation.status === 'done' && operation.dryRun)).toBe(true);
@@ -663,6 +711,25 @@ describe('WorkflowService analysis filters', () => {
     expect(service.applyDialogOpen()).toBe(true);
   });
 
+  it('keeps the stopped terminal state when the Stop response arrives after SSE', async () => {
+    let resolveStop!: (snapshot: { status: 'stop-requested' }) => void;
+    const stopActionExecution = vi.fn(() => new Promise<{ status: 'stop-requested' }>((resolve) => {
+      resolveStop = resolve;
+    }));
+    const service = createService({ stopActionExecution });
+    service.applying.set(true);
+    service.actionExecutionId.set('action-execution-test');
+    service.actionExecutionStatus.set('running');
+
+    const stopping = service.stopActionExecution();
+    service.actionExecutionStatus.set('stopped');
+    resolveStop({ status: 'stop-requested' });
+    await stopping;
+
+    expect(stopActionExecution).toHaveBeenCalledWith('action-execution-test');
+    expect(service.actionExecutionStatus()).toBe('stopped');
+  });
+
   it('recovers a stale analysis before allowing the plan to be restarted', async () => {
     const refreshed = { ...scanResult(), scanId: 'scan-refreshed', skippedGroupIds: [] };
     const service = createService({
@@ -679,7 +746,8 @@ describe('WorkflowService analysis filters', () => {
       'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive', removeTags: [] }
     });
 
-    await service.applyPlan();
+    service.applyPlan();
+    await service.startPreparedActionExecution();
 
     expect(service.scanResult()?.scanId).toBe('scan-refreshed');
     expect(service.decisions()['icloud:github-new']).toMatchObject({ keep: true, removeTags: ['CSV Import'] });
@@ -693,7 +761,6 @@ describe('WorkflowService analysis filters', () => {
 function createService(overrides: {
   clearScan?: () => Promise<{ ok: boolean }>;
   navigateByUrl?: (url: string) => Promise<boolean>;
-  createPlan?: (decision: GroupDecision) => Promise<ReturnType<typeof createExecutionPlan>>;
   execute?: (decision: GroupDecision) => Promise<ExecuteResponse>;
   skipGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
   restoreSkippedGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
@@ -707,6 +774,7 @@ function createService(overrides: {
   }> }>;
   loadAnalysis?: () => Promise<ReturnType<typeof scanResult> & { skippedGroupIds: string[] }>;
   startActionExecution?: (draft: ActionDraft) => Promise<unknown>;
+  stopActionExecution?: (executionId: string) => Promise<unknown>;
   streamActionExecutionEvents?: (
     executionId: string,
     eventsToken: string,
@@ -730,7 +798,6 @@ function createService(overrides: {
       session: signal({ token: 'test-session', enableMutations: overrides.enableMutations ?? true }),
       clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true })),
       loadAnalysis: overrides.loadAnalysis ?? vi.fn(async () => ({ ...scanResult(), skippedGroupIds: [] })),
-      createPlan: overrides.createPlan ?? vi.fn(async (decision: GroupDecision) => createExecutionPlan(decision.groupId, decision, scanResult().items)),
       execute,
       startExecution: vi.fn(async (decision: GroupDecision) => {
         pendingDecision = decision;
@@ -758,7 +825,7 @@ function createService(overrides: {
       }),
       pauseActionExecution: vi.fn(),
       resumeActionExecution: vi.fn(),
-      stopActionExecution: vi.fn(),
+      stopActionExecution: overrides.stopActionExecution ?? vi.fn(),
       streamActionExecutionEvents: overrides.streamActionExecutionEvents ?? vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
         let sequence = 0;
         let completedOperations = 0;
@@ -873,10 +940,6 @@ function createService(overrides: {
     } as never,
     { navigateByUrl: overrides.navigateByUrl ?? vi.fn() } as never
   );
-}
-
-function planFrom(result: ScanResult): (decision: GroupDecision) => Promise<ReturnType<typeof createExecutionPlan>> {
-  return async (decision) => createExecutionPlan(decision.groupId, decision, result.items);
 }
 
 function scanResult(): ScanResult {

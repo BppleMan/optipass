@@ -109,19 +109,6 @@
       overflow-wrap: anywhere;
     }
     
-    .group-plan-modal {
-      width: min(760px, 100%);
-      max-height: min(720px, calc(100vh - 72px));
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-    
-    .group-plan-modal .op-modal-head {
-      align-items: flex-start;
-      flex-shrink: 0;
-    }
-
     .global-search-shell {
       flex: 0 1 320px;
       min-width: 220px;
@@ -270,7 +257,6 @@
       white-space: nowrap;
     }
     
-    .group-plan-modal .modal-subtitle,
     .apply-progress-modal .modal-subtitle {
       display: flex;
       align-items: center;
@@ -281,10 +267,6 @@
       font-size: 12px;
       line-height: 1.5;
       white-space: normal;
-    }
-    
-    .group-plan-modal .modal-subtitle span:last-child {
-      color: #727272;
     }
     
     .warning-list {

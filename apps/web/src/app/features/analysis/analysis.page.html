@@ -280,13 +280,13 @@
                 type="button"
                 class="group-tool-button apply-group-button"
                 [disabled]="!wf.canApplyGroup(group.id)"
-                (click)="wf.openGroupPlanDialog(group.id)"
-              >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
+                (click)="wf.openGroupExecutionDialog(group.id)"
+              >应用本组 ({{ wf.groupOperationCount(group.id) }})</button>
               <button
                 type="button"
                 class="skip-button group-icon-button"
                 [style.color]="group.skipColor"
-                [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                [disabled]="wf.groupPlanLoading()[group.id] || wf.applying()"
                 [attr.aria-label]="group.skipLabel"
                 [attr.title]="group.skipLabel"
                 (click)="wf.toggleGroupSkip(group.id)"
@@ -322,51 +322,22 @@
       </div>
     </div>
 
-    @if (wf.groupPlanDialog(); as dialog) {
-      <div class="op-modal-backdrop" (click)="wf.closeGroupPlanDialog()">
-        <div class="op-modal group-plan-modal" role="dialog" aria-modal="true" aria-labelledby="group-plan-title" (click)="$event.stopPropagation()">
-          <div class="op-modal-head">
-            <div>
-              <h2 id="group-plan-title">应用本组</h2>
-              <p class="modal-subtitle">
-                <span class="mono">{{ dialog.title }}</span>
-                <span>{{ dialog.subtitle }}</span>
-              </p>
-            </div>
-            <button type="button" class="modal-close" aria-label="关闭" [disabled]="wf.groupApplying()" (click)="wf.closeGroupPlanDialog()">X</button>
-          </div>
-
-          <op-plan-action-group class="modal-plan-preview" [actions]="dialog.actions" [plan]="dialog.plan"></op-plan-action-group>
-
-          @if (wf.groupApplyError()) {
-            <div class="page-notice danger-text">{{ wf.groupApplyError() }}</div>
-          }
-
-          <div class="modal-actions">
-            <op-button size="sm" variant="ghost" label="取消" [disabled]="wf.groupApplying()" (pressed)="wf.closeGroupPlanDialog()"></op-button>
-            <op-button
-              size="sm"
-              [label]="wf.groupApplying() ? '正在应用…' : '确认应用 (' + dialog.operationCount + ' 项操作)'"
-              [disabled]="wf.groupApplying() || dialog.plan.blockers.length > 0"
-              (pressed)="wf.confirmGroupPlanDialog()"
-            ></op-button>
-          </div>
-        </div>
-      </div>
-    }
-
     @if (wf.applyDialogOpen()) {
       <div class="op-modal-backdrop">
         <div class="op-modal apply-progress-modal" role="dialog" aria-modal="true" aria-labelledby="batch-apply-title">
           <div class="op-modal-head">
             <div>
               <h2 id="batch-apply-title">
-                {{ wf.actionExecutionStatus() === 'refreshing' || wf.actionExecutionStatus() === 'refreshing-after-stop'
+                {{ wf.actionExecutionStatus() === 'ready'
+                  ? (wf.actionExecutionScope() === 'group' ? '应用本组' : '应用计划')
+                  : wf.actionExecutionStatus() === 'refreshing' || wf.actionExecutionStatus() === 'refreshing-after-stop'
                   ? '正在更新分析结果'
                   : wf.applying() ? '正在应用计划' : '应用结果' }}
               </h2>
               <p class="modal-subtitle">
-                @if (wf.actionExecutionStatus() === 'paused') {
+                @if (wf.actionExecutionStatus() === 'ready') {
+                  已准备 {{ wf.operationGroups().length }} 组、{{ wf.operations().length }} 项操作，点击开始后才会执行
+                } @else if (wf.actionExecutionStatus() === 'paused') {
                   执行已暂停，计划和剩余队列保持不变
                 } @else if (wf.actionExecutionStatus() === 'stop-requested') {
                   正在停止，当前操作完成后不会再执行新操作
@@ -424,7 +395,12 @@
               </section>
             }
           </div>
-          @if (wf.applying()) {
+          @if (wf.actionExecutionStatus() === 'ready') {
+            <div class="modal-actions execution-controls">
+              <op-button size="sm" variant="ghost" label="取消" (pressed)="wf.closeApplyDialog()"></op-button>
+              <op-button size="sm" [label]="'开始执行 (' + wf.operations().length + ' 项操作)'" (pressed)="wf.startPreparedActionExecution()"></op-button>
+            </div>
+          } @else if (wf.applying()) {
             <div class="modal-actions execution-controls">
               @if (wf.actionExecutionStatus() === 'paused') {
                 <op-button size="sm" variant="ghost" label="继续" (pressed)="wf.resumeActionExecution()"></op-button>
