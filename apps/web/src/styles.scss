@@ -111,6 +111,7 @@ select:disabled {
 .group-list,
 .matrix-viewport,
 .filter-container,
+.global-search-suggestions,
 .execution-group-list {
     scrollbar-width: thin;
     scrollbar-color: #3F5368 #1F2A34;
@@ -120,6 +121,7 @@ select:disabled {
 .group-list::-webkit-scrollbar,
 .matrix-viewport::-webkit-scrollbar,
 .filter-container::-webkit-scrollbar,
+.global-search-suggestions::-webkit-scrollbar,
 .execution-group-list::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -129,6 +131,7 @@ select:disabled {
 .group-list::-webkit-scrollbar-track,
 .matrix-viewport::-webkit-scrollbar-track,
 .filter-container::-webkit-scrollbar-track,
+.global-search-suggestions::-webkit-scrollbar-track,
 .execution-group-list::-webkit-scrollbar-track {
     background: #1F2A34;
     border-radius: 999px;
@@ -138,6 +141,7 @@ select:disabled {
 .group-list::-webkit-scrollbar-thumb,
 .matrix-viewport::-webkit-scrollbar-thumb,
 .filter-container::-webkit-scrollbar-thumb,
+.global-search-suggestions::-webkit-scrollbar-thumb,
 .execution-group-list::-webkit-scrollbar-thumb {
     background: #3F5368;
     border: 2px solid #1F2A34;
@@ -148,6 +152,7 @@ select:disabled {
 .group-list::-webkit-scrollbar-thumb:hover,
 .matrix-viewport::-webkit-scrollbar-thumb:hover,
 .filter-container::-webkit-scrollbar-thumb:hover,
+.global-search-suggestions::-webkit-scrollbar-thumb:hover,
 .execution-group-list::-webkit-scrollbar-thumb:hover {
     background: #5F7892;
 }

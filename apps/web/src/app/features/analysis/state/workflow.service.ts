@@ -1293,12 +1293,22 @@ export class WorkflowService {
     const filters = this.analysisFilters();
     const searchItemIds = this.globalSearchItemIds();
     const searchItemIdSet = searchItemIds ? new Set(searchItemIds) : undefined;
+    const selectedSuggestionItemIdsByKind = new Map<ItemSearchSuggestionKind, Set<string>>();
+    for (const suggestion of this.selectedGlobalSearchSuggestions()) {
+      const itemIds = selectedSuggestionItemIdsByKind.get(suggestion.kind) ?? new Set<string>();
+      for (const itemId of suggestion.itemIds) {
+        itemIds.add(itemId);
+      }
+      selectedSuggestionItemIdsByKind.set(suggestion.kind, itemIds);
+    }
     return groups.filter((group) =>
       matchesSelected(filters.years, group.filterYears) &&
       matchesSelected(filters.vaultIds, group.filterVaultIds) &&
       matchesSelected(filters.domains, group.filterDomains) &&
       matchesSelected(filters.credentialKinds, group.filterCredentialKinds) &&
-      (!searchItemIdSet || group.items.some((item) => searchItemIdSet.has(item.id)))
+      (selectedSuggestionItemIdsByKind.size > 0
+        ? Array.from(selectedSuggestionItemIdsByKind.values()).every((itemIds) => group.items.some((item) => itemIds.has(item.id)))
+        : !searchItemIdSet || group.items.some((item) => searchItemIdSet.has(item.id)))
     );
   }
 
@@ -1871,7 +1881,7 @@ function vaultOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] 
 
 function domainOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
   return countGroupValues(groups, (group) => group.filterDomains, (id) => id)
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function credentialOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {

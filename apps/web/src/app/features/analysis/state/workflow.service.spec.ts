@@ -95,6 +95,20 @@ describe('WorkflowService analysis filters', () => {
     expect(service.visibleGroups().map((group) => group.id)).toEqual(['apple-group']);
   });
 
+  it('sorts domain filter options lexicographically instead of by frequency', () => {
+    const service = createService();
+    const result = scanResult();
+    service.scanResult.set({
+      ...result,
+      groups: [...result.groups, { ...result.groups[0], id: 'github-group-copy' }]
+    });
+
+    const domainSection = service.analysisFilterSections().find((section) => section.id === 'domains');
+
+    expect(domainSection?.options.map((option) => option.label)).toEqual(['apple.com', 'github.com']);
+    expect(domainSection?.options.map((option) => option.count)).toEqual([1, 2]);
+  });
+
   it('filters complete groups by item ids returned from global search', async () => {
     const suggestion = {
       id: 'field:title:private:github-old',
@@ -174,6 +188,11 @@ describe('WorkflowService analysis filters', () => {
     expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
     expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['已选 2 个补全项']);
 
+    service.selectGlobalSearchSuggestion(titleSuggestion);
+    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
+    service.selectGlobalSearchSuggestion(titleSuggestion);
+    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
+
     const domainGroup = service.globalSearchSuggestionGroups().find((group) => group.kind === 'domain')!;
     expect(domainGroup.allSelected).toBe(true);
     service.toggleGlobalSearchSuggestionGroup(domainGroup);
@@ -183,6 +202,7 @@ describe('WorkflowService analysis filters', () => {
     service.toggleAllGlobalSearchSuggestions();
     expect(service.selectedGlobalSearchSuggestionCount()).toBe(3);
     expect(service.allGlobalSearchSuggestionsSelected()).toBe(true);
+    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
     service.toggleAllGlobalSearchSuggestions();
     expect(service.selectedGlobalSearchSuggestionCount()).toBe(0);
   });
