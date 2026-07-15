@@ -75,7 +75,7 @@
         --account-glow: transparent;
         width: 100%;
         min-height: 14px;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 7px;
         color: var(--account-color);
         font-size: 12px;
@@ -103,10 +103,14 @@
 
     .account-chip strong {
         min-width: 0;
+        flex: 1 1 auto;
         overflow: hidden;
         text-overflow: ellipsis;
         color: inherit;
         font-weight: 650;
+        text-align: justify;
+        text-align-last: justify;
+        text-justify: inter-character;
     }
 
     .account-chip span {
@@ -121,13 +125,21 @@
     .mutation-switch {
         width: 100%;
         height: 18px;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 7px;
         padding: 0;
         border: 0;
         background: transparent;
         font-weight: 700;
         white-space: nowrap;
+    }
+
+    .mutation-switch strong {
+        min-width: 0;
+        flex: 1 1 auto;
+        text-align: justify;
+        text-align-last: justify;
+        text-justify: inter-character;
     }
     
     .mutation-switch-track {
