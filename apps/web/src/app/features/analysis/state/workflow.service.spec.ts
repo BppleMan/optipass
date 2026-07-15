@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
 import { vi } from 'vitest';
-import { type ActionDraft, type DuplicateGroup, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot } from '@optimize-password/core';
+import { type ActionDraft, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot, type SimilarityGroup } from '@optimize-password/core';
 import type { ExecuteResponse, SkipGroupResponse } from '../../../core/services/api.service';
 import { WorkflowService } from './workflow.service';
 
@@ -207,7 +207,7 @@ describe('WorkflowService analysis filters', () => {
     expect(service.selectedGlobalSearchSuggestionCount()).toBe(0);
   });
 
-  it("only exposes autocomplete suggestions that can match the active duplicate kind", async () => {
+  it("only exposes autocomplete suggestions that belong to similarity groups", async () => {
     const githubSuggestion = {
       id: "field:title:private:github-old",
       kind: "field" as const,
@@ -216,23 +216,13 @@ describe('WorkflowService analysis filters', () => {
       itemIds: ["private:github-old"],
       count: 1,
     };
-    const appleSuggestion = {
-      id: "field:title:private:apple-new",
-      kind: "field" as const,
-      label: "Apple",
-      field: "title" as const,
-      itemIds: ["private:apple-new"],
-      count: 1,
-    };
     const service = createService({
       searchItems: vi.fn(async () => ({
-        itemIds: ["private:github-old", "private:apple-new"],
-        suggestions: [githubSuggestion, appleSuggestion],
+        itemIds: ["private:github-old"],
+        suggestions: [githubSuggestion],
       })),
     });
-    const result = scanResult();
-    result.groups[1].candidateClass = "exact-duplicate";
-    service.scanResult.set(result);
+    service.scanResult.set(scanResult());
 
     await service.updateGlobalSearchQuery("old");
 
@@ -246,7 +236,7 @@ describe('WorkflowService analysis filters', () => {
     expect(service.visibleGroups().map((group) => group.id)).toEqual(["github-group"]);
   });
 
-  it('exposes removable chips and clears filters on kind changes', () => {
+  it('exposes removable filter chips', () => {
     const service = createService();
     service.scanResult.set(scanResult());
 
@@ -258,8 +248,6 @@ describe('WorkflowService analysis filters', () => {
     service.removeAnalysisFilter('year', '2025');
     expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['iCloud']);
 
-    service.setActiveKind('identical');
-    expect(service.analysisFilterSummary().chips).toEqual([]);
   });
 
   it('limits batch apply operations to currently filtered groups', async () => {
@@ -1124,15 +1112,13 @@ function scanProgress(scanId: string): ScanProgress {
   };
 }
 
-function group(id: string, itemIds: string[]): DuplicateGroup {
+function group(id: string, itemIds: string[]): SimilarityGroup {
   return {
     id,
-    candidateClass: 'similar-login',
     itemIds,
     reasons: [],
     recommendedKeepIds: [itemIds[0]],
-    recommendedKeepReasons: [],
-    confidence: 'high'
+    recommendedKeepReasons: []
   };
 }
 

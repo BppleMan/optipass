@@ -1687,7 +1687,7 @@ describe("api app", () => {
     vi.mocked(service.delete).mockResolvedValue(undefined);
 
     const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
+    const group = scan.groups.find((candidate) => candidate.itemIds.some((itemId: string) => itemId.includes("github")))!;
     const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
     const deleteItem = scan.items.find((item) => item.id === group.itemIds[1])!;
     const payload = {
@@ -1770,7 +1770,7 @@ describe("api app", () => {
     vi.mocked(service.copyToVaultAndArchiveSource).mockResolvedValue({ createdItemId: "created-copy-1" });
 
     const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
+    const group = scan.groups.find((candidate) => candidate.itemIds.some((itemId: string) => itemId.includes("github")))!;
     const moveItem = scan.items.find((item) => item.id === group.itemIds[0])!;
     const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
     const payload = {

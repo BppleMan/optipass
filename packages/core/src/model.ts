@@ -25,20 +25,7 @@ export type ItemCategory =
   | "unsupported"
   | "unknown";
 
-export type DuplicateRule =
-  | "title"
-  | "url"
-  | "username-url"
-  | "credential-material"
-  | "item-fingerprint"
-  | "missing-account-identity"
-  | "missing-credential-material";
-
-export type DuplicateCandidateClass =
-  | "exact-duplicate"
-  | "similar-login"
-  | "misc-title"
-  | "delete-suggestion";
+export type SimilarityRule = "account-identity-url" | "title-url";
 
 export interface VaultSummary {
   id: string;
@@ -55,11 +42,6 @@ export interface ComparableField {
 export interface ItemAnalysisMaterial {
   /** Internal-only raw note text for local search. API responses must strip this material. */
   notesText?: string;
-  notesValueHash: string;
-  exactUrlKeys: string[];
-  similarUrlKeys: string[];
-  identityValues: string[];
-  fieldSignatures: string[];
 }
 
 export interface ItemSummary {
@@ -85,21 +67,18 @@ export interface ItemSummary {
   analysis?: ItemAnalysisMaterial;
 }
 
-export interface DuplicateReason {
-  rule: DuplicateRule;
-  key: string;
+export interface SimilarityReason {
+  rule: SimilarityRule;
   label: string;
   itemIds: string[];
 }
 
-export interface DuplicateGroup {
+export interface SimilarityGroup {
   id: string;
-  candidateClass: DuplicateCandidateClass;
   itemIds: string[];
-  reasons: DuplicateReason[];
+  reasons: SimilarityReason[];
   recommendedKeepIds: string[];
   recommendedKeepReasons: RecommendedKeepReason[];
-  confidence: "high" | "medium" | "low";
 }
 
 export interface RecommendedKeepReason {
@@ -118,7 +97,7 @@ export interface ScanSnapshot {
 
 export interface ScanResult extends ScanSnapshot {
   analyzedAt: string;
-  groups: DuplicateGroup[];
+  groups: SimilarityGroup[];
 }
 
 export type ScanPhase = "idle" | "scanning" | "completed" | "failed";

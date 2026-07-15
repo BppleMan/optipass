@@ -8,7 +8,7 @@ import {
   summarizeVaults,
   type DashboardCategory,
   type ActionDraft,
-  type DuplicateGroup,
+  type SimilarityGroup,
   type ActionDraftItem,
   type ActionPlanGroup,
   type GroupDecision,
@@ -47,15 +47,12 @@ import {
   type DecisionStatsView,
   type DuplicateGroupView,
   type DuplicateItemView,
-  type DuplicateKind,
   type FilterCredentialKind,
-  type KindTabView,
   type PlanActionPreviewView,
   type PreviewGroupView,
   type RemoveAction,
   type ScanVaultRow,
   itemUpdatedDate,
-  kindFromCandidateClass,
   removeActionFromDecision
 } from '../../../core/models/workflow.models';
 
@@ -67,13 +64,6 @@ const scanRecoveryPollMs = 500;
 
 type ActionExecutionViewStatus = ActionExecutionStatus | 'ready' | 'starting';
 type ActionExecutionScope = 'plan' | 'group';
-
-const kindOrder: DuplicateKind[] = ['similar', 'identical', 'incomplete'];
-const kindMeta: Record<DuplicateKind, { label: string; color: string; bg: string }> = {
-  similar: { label: '近似组', color: '#82aaff', bg: 'rgba(130,170,255,0.14)' },
-  identical: { label: '全等组', color: '#89ddff', bg: 'rgba(137,221,255,0.14)' },
-  incomplete: { label: '建议删除', color: '#ffcb6b', bg: 'rgba(255,203,107,0.14)' }
-};
 
 const categoryDisplay: Record<string, { label: string; order: number }> = {
   login: { label: '登录', order: 1 },
@@ -203,7 +193,6 @@ export class WorkflowService {
   readonly visibleSecretItems = signal<Record<string, boolean>>({});
   readonly revealingItems = signal<Record<string, boolean>>({});
   readonly revealedCredentials = signal<Record<string, RevealedCredentialField[]>>({});
-  readonly activeKind = signal<DuplicateKind>('similar');
   readonly analysisFilters = signal<AnalysisFilterState>(emptyAnalysisFilters());
   readonly filterSectionsOpen = signal<Record<AnalysisFilterSectionId, boolean>>(defaultFilterSectionsOpen);
   readonly globalSearchQuery = signal('');
@@ -260,10 +249,9 @@ export class WorkflowService {
     }
     return '';
   });
-  readonly groups = computed(() => (this.scanResult()?.groups ?? []).filter((group) => group.candidateClass !== 'misc-title'));
-  readonly kindTabs = computed<KindTabView[]>(() => this.buildKindTabs());
-  readonly activeKindGroups = computed<DuplicateGroupView[]>(() => this.buildActiveKindGroups());
-  readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.filterGroups(this.activeKindGroups()));
+  readonly groups = computed(() => this.scanResult()?.groups ?? []);
+  readonly groupViews = computed<DuplicateGroupView[]>(() => this.buildGroupViews());
+  readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.filterGroups(this.groupViews()));
   readonly analysisFilterSections = computed<AnalysisFilterSectionView[]>(() => this.buildAnalysisFilterSections());
   readonly analysisFilterSummary = computed<AnalysisFilterSummaryView>(() => this.buildAnalysisFilterSummary());
   readonly globalSearchSuggestionGroups = computed<GlobalSearchSuggestionGroupView[]>(() => this.buildGlobalSearchSuggestionGroups());
@@ -591,14 +579,6 @@ export class WorkflowService {
     await this.router.navigateByUrl('/scan');
   }
 
-  setActiveKind(kind: DuplicateKind): void {
-    if (this.activeKind() === kind) {
-      return;
-    }
-    this.activeKind.set(kind);
-    this.clearAnalysisFilters();
-  }
-
   toggleAnalysisFilter(sectionId: AnalysisFilterSectionId, optionId: string, selected: boolean): void {
     const current = this.analysisFilters();
     switch (sectionId) {
@@ -879,7 +859,7 @@ export class WorkflowService {
 
   async toggleGroupReveal(groupId: string): Promise<void> {
     const group = this.visibleGroups().find((candidate) => candidate.id === groupId)
-      ?? this.activeKindGroups().find((candidate) => candidate.id === groupId);
+      ?? this.groupViews().find((candidate) => candidate.id === groupId);
     if (!group) {
       return;
     }
@@ -1104,7 +1084,6 @@ export class WorkflowService {
     this.revealingItems.set({});
     this.revealedCredentials.set({});
     this.reveal.set(false);
-    this.activeKind.set(firstAvailableKind(result.groups));
     this.clearAnalysisFilters();
     this.status.set(result.groups.length ? `已恢复本 tab 的分析缓存，剩余 ${result.groups.length} 组疑似重复。` : '已恢复本 tab 的分析缓存，没有剩余疑似重复。');
   }
@@ -1118,9 +1097,6 @@ export class WorkflowService {
       vaults: result.vaults,
       items: result.items
     });
-    if (!result.groups.some((group) => kindFromCandidateClass(group.candidateClass) === this.activeKind())) {
-      this.activeKind.set(firstAvailableKind(result.groups));
-    }
     this.skippedGroups.set(skippedGroupMap(result.skippedGroupIds));
   }
 
@@ -1160,7 +1136,6 @@ export class WorkflowService {
     this.visibleSecretItems.set({});
     this.revealingItems.set({});
     this.revealedCredentials.set({});
-    this.activeKind.set('similar');
     this.analysisFilters.set(emptyAnalysisFilters());
     this.filterSectionsOpen.set({ ...defaultFilterSectionsOpen });
     this.clearGlobalSearch();
@@ -1182,11 +1157,9 @@ export class WorkflowService {
         .filter((item): item is ItemSummary => Boolean(item));
       const fallbackKeepId = items.slice().sort((a, b) => itemUpdatedDate(b).localeCompare(itemUpdatedDate(a)))[0]?.id;
       for (const item of items) {
-        const keep = group.candidateClass === 'delete-suggestion'
-          ? false
-          : recommended.size > 0
-            ? recommended.has(item.id)
-            : item.id === fallbackKeepId;
+        const keep = recommended.size > 0
+          ? recommended.has(item.id)
+          : item.id === fallbackKeepId;
         decisions[item.id] = {
           itemId: item.id,
           keep,
@@ -1267,25 +1240,13 @@ export class WorkflowService {
     return Math.min(vault.itemCount, counted);
   }
 
-  private buildKindTabs(): KindTabView[] {
-    const groups = this.groups();
-    return kindOrder.map((kind) => ({
-      kind,
-      label: kindMeta[kind].label,
-      color: kindMeta[kind].color,
-      bg: kindMeta[kind].bg,
-      count: groups.filter((group) => kindFromCandidateClass(group.candidateClass) === kind).length
-    }));
-  }
-
-  private buildActiveKindGroups(): DuplicateGroupView[] {
+  private buildGroupViews(): DuplicateGroupView[] {
     const result = this.scanResult();
     if (!result) {
       return [];
     }
     const itemById = new Map(result.items.map((item) => [item.id, item]));
     return this.groups()
-      .filter((group) => kindFromCandidateClass(group.candidateClass) === this.activeKind())
       .map((group) => this.toGroupView(group, itemById, result.vaults));
   }
 
@@ -1313,7 +1274,7 @@ export class WorkflowService {
   }
 
   private buildAnalysisFilterSections(): AnalysisFilterSectionView[] {
-    const groups = this.activeKindGroups();
+    const groups = this.groupViews();
     const filters = this.analysisFilters();
     const open = this.filterSectionsOpen();
     const optionData = {
@@ -1342,7 +1303,7 @@ export class WorkflowService {
   }
 
   private buildAnalysisFilterSummary(): AnalysisFilterSummaryView {
-    const groups = this.activeKindGroups();
+    const groups = this.groupViews();
     const filters = this.analysisFilters();
     const labels = {
       years: optionLabelMap(yearOptions(groups)),
@@ -1423,7 +1384,7 @@ export class WorkflowService {
   }
 
   private scopedGlobalSearchSuggestions(): ItemSearchSuggestion[] {
-    const activeItemIds = new Set(this.activeKindGroups().flatMap((group) => group.items.map((item) => item.id)));
+    const activeItemIds = new Set(this.groupViews().flatMap((group) => group.items.map((item) => item.id)));
     return this.globalSearchSuggestions()
       .map((suggestion) => {
         const itemIds = suggestion.itemIds.filter((itemId) => activeItemIds.has(itemId));
@@ -1436,19 +1397,13 @@ export class WorkflowService {
       .filter((suggestion) => suggestion.itemIds.length > 0);
   }
 
-  private toGroupView(group: DuplicateGroup, itemById: Map<string, ItemSummary>, vaults: VaultSummary[]): DuplicateGroupView {
-    const kind = kindFromCandidateClass(group.candidateClass);
-    const meta = kindMeta[kind];
+  private toGroupView(group: SimilarityGroup, itemById: Map<string, ItemSummary>, vaults: VaultSummary[]): DuplicateGroupView {
     const items = group.itemIds.map((id) => itemById.get(id)).filter((item): item is ItemSummary => Boolean(item));
     const skipped = Boolean(this.skippedGroups()[group.id]);
     return {
       id: group.id,
-      kind,
-      kindLabel: meta.label,
-      badgeBg: meta.bg,
-      badgeColor: meta.color,
-      site: groupSite(group, items),
-      username: groupUsername(group, items),
+      site: groupSite(items),
+      username: groupUsername(items),
       count: items.length,
       skipped,
       opacity: skipped ? 0.45 : 1,
@@ -1463,7 +1418,7 @@ export class WorkflowService {
     };
   }
 
-  private toItemView(group: DuplicateGroup, item: ItemSummary, vaults: VaultSummary[], skipped: boolean): DuplicateItemView {
+  private toItemView(group: SimilarityGroup, item: ItemSummary, vaults: VaultSummary[], skipped: boolean): DuplicateItemView {
     const decision = this.decisions()[item.id] ?? {
       itemId: item.id,
       keep: false,
@@ -1572,7 +1527,7 @@ export class WorkflowService {
     return previewGroups;
   }
 
-  private skippedGroupPreviewRow(group: DuplicateGroup, items: ItemSummary[]): PlanActionPreviewView {
+  private skippedGroupPreviewRow(group: SimilarityGroup, items: ItemSummary[]): PlanActionPreviewView {
     return {
       id: `skip:${group.id}`,
       itemId: group.id,
@@ -1601,10 +1556,8 @@ export class WorkflowService {
     }, 0);
   }
 
-  private createLocalPlan(group: DuplicateGroup, items: ItemSummary[]): ActionPlanGroup {
-    return createActionPlanGroup(group.id, this.groupDecision(group, items), items, {
-      requireKeep: group.candidateClass !== 'delete-suggestion'
-    });
+  private createLocalPlan(group: SimilarityGroup, items: ItemSummary[]): ActionPlanGroup {
+    return createActionPlanGroup(group.id, this.groupDecision(group, items), items);
   }
 
   private planActionPreviewRows(plan: ActionPlanGroup): PlanActionPreviewView[] {
@@ -1616,7 +1569,7 @@ export class WorkflowService {
     return plan.actions.map((action) => describePlanAction(action, itemById.get(action.itemId), result.vaults));
   }
 
-  private groupDecision(group: DuplicateGroup, items: ItemSummary[]): GroupDecision {
+  private groupDecision(group: SimilarityGroup, items: ItemSummary[]): GroupDecision {
     const itemById = new Map(items.map((item) => [item.id, item]));
     return {
       scanId: this.scanResult()?.scanId ?? '',
@@ -1937,15 +1890,6 @@ function readStoredAccountName(): string | undefined {
   return localStorage.getItem(accountNameStorageKey) ?? undefined;
 }
 
-function firstAvailableKind(groups: DuplicateGroup[]): DuplicateKind {
-  for (const kind of kindOrder) {
-    if (groups.some((group) => kindFromCandidateClass(group.candidateClass) === kind)) {
-      return kind;
-    }
-  }
-  return 'similar';
-}
-
 function summarizeScanVaults(vaults: VaultSummary[], items: ItemSummary[]): VaultScanSummary[] {
   return vaults.map((vault) => {
     const vaultItems = items.filter((item) => item.vaultId === vault.id);
@@ -1982,17 +1926,11 @@ function typeRowsForVault(vault: VaultScanSummary) {
     .slice(0, 6);
 }
 
-function groupUsername(group: DuplicateGroup, items: ItemSummary[]): string {
-  if (group.candidateClass === 'delete-suggestion') {
-    return '（缺失关键字段）';
-  }
+function groupUsername(items: ItemSummary[]): string {
   return items.flatMap((item) => item.usernames).find(Boolean) ?? '（无 username）';
 }
 
-function groupSite(group: DuplicateGroup, items: ItemSummary[]): string {
-  if (group.candidateClass === 'delete-suggestion') {
-    return '—';
-  }
+function groupSite(items: ItemSummary[]): string {
   const url = items.flatMap((item) => item.urls).find(Boolean);
   if (!url) {
     return '—';

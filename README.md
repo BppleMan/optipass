@@ -149,7 +149,7 @@ sudo xattr -dr com.apple.quarantine /Applications/Optipass.app
 - 状态栏处于“只读”时，后端会拒绝真实归档、删除和迁移动作。
 - 永久删除必须显式选择，并输入 `永久删除` 短语确认。
 
-更完整的重复判定语义见 [docs/duplicate-semantics.md](docs/duplicate-semantics.md)。
+完整的相似分析语义见 [docs/similarity-detection.md](docs/similarity-detection.md)。
 
 ## 开发与验证
 

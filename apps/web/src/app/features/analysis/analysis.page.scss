@@ -25,7 +25,6 @@
     
     .action-bar,
     .analysis-control-row,
-    .main-view-head,
     .filter-summary {
         display: flex;
         align-items: center;
@@ -45,8 +44,7 @@
         padding: 6px 10px;
     }
     
-    .analysis-control-row,
-    .main-view-head {
+    .analysis-control-row {
         gap: 10px;
         flex: 0 0 auto;
     }
@@ -326,7 +324,12 @@
     }
     
     .analysis-running {
-      margin-top: 12vh;
+      width: min(620px, 100%);
+      margin: auto;
+      padding: 32px;
+      border: 1px solid #3A4A5A;
+      border-radius: 18px;
+      background: linear-gradient(145deg, #292929 0%, #252A30 100%);
       text-align: center;
     }
     
@@ -334,7 +337,7 @@
       margin: 0 0 8px;
       font-size: 19px;
     }
-    
+
     .spinner {
       width: 44px;
       height: 44px;
@@ -448,20 +451,6 @@
       flex-shrink: 0;
     }
     
-    .main-view-head {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      min-height: 34px;
-      padding: 0;
-    }
-    
-    .main-view-head .op-tabs {
-      align-self: center;
-    }
-    
     .filter-total {
       flex: 0 0 auto;
       text-align: left;
@@ -545,6 +534,7 @@
         min-width: 140px;
         max-width: 160px;
       }
+
     }
     
 }

@@ -11,7 +11,7 @@ import {
   ActionPlanGroup,
   createActionPlan,
   createExecutionPlan,
-  findDuplicateGroups,
+  findSimilarityGroups,
   GroupDecision,
   ItemSummary,
   normalizeLooseText,
@@ -1914,7 +1914,7 @@ function analyzeScan(scan: ScanSnapshot): ScanResult {
   return {
     ...scan,
     analyzedAt: new Date().toISOString(),
-    groups: findDuplicateGroups(scan.items)
+    groups: findSimilarityGroups(scan.items)
   };
 }
 
@@ -1941,9 +1941,7 @@ function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResul
     ...decision,
     items: decision.items.filter((item) => group.itemIds.includes(item.itemId))
   };
-  const plan = createExecutionPlan(decision.groupId, planDecision, scan.items, {
-    requireKeep: group.candidateClass !== "delete-suggestion"
-  });
+  const plan = createExecutionPlan(decision.groupId, planDecision, scan.items);
   const targetVaultBlockers = validateTargetVaults(decision, scan);
   return {
     ...plan,
@@ -2581,13 +2579,7 @@ function redactScanResultForClient(scan: ScanResult): ScanResult {
   return {
     ...redactScanSnapshotForClient(scan),
     analyzedAt: scan.analyzedAt,
-    groups: scan.groups.map((group) => ({
-      ...group,
-      reasons: group.reasons.map((reason) => ({
-        ...reason,
-        key: `${reason.rule}:redacted`
-      }))
-    }))
+    groups: scan.groups
   };
 }
 
