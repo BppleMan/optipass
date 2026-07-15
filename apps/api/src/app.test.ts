@@ -231,7 +231,7 @@ describe("api app", () => {
     });
     expect(events.statusCode).toBe(200);
     expect(events.body).toContain("event: action-started");
-    expect(events.body).toContain("event: refreshed");
+    expect(events.body).toContain("event: analysis-updated");
     expect(events.body).toContain("event: completed");
     expect(Date.now() - executionStartedAt).toBeGreaterThanOrEqual(90);
     const snapshot = await app.inject({
@@ -246,12 +246,12 @@ describe("api app", () => {
       deleteMode: item.deleteMode
     })))).toEqual(draft.groups.map((group) => group.items));
 
-    const refreshed = sseEvent(events.body, "refreshed") as { response: { draft: Record<string, unknown> } };
+    const update = sseEvent(events.body, "analysis-updated") as { response: { draft: Record<string, unknown> } };
     const restarted = await app.inject({
       method: "POST",
       url: "/api/action-executions/start",
       headers: { "x-session-token": token },
-      payload: { draft: refreshed.response.draft }
+      payload: { draft: update.response.draft }
     });
     expect(restarted.statusCode).toBe(200);
     const restartedEvents = await app.inject({
@@ -289,18 +289,16 @@ describe("api app", () => {
       method: "GET",
       url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
     });
-    const refreshed = sseEvent(events.body, "refreshed") as { response: { scan: ScanResult } };
+    const update = sseEvent(events.body, "analysis-updated") as { response: { completedGroupIds: string[] } };
 
-    expect(refreshed.response.scan.scanId).toBe(scan.scanId);
-    expect(refreshed.response.scan.items).toEqual(scan.items);
+    expect(update.response.completedGroupIds).toEqual([]);
     expect(service.scan).toHaveBeenCalledTimes(1);
   });
 
-  it("projects successful writes into memory instead of rescanning 1Password", async () => {
+  it("removes completed write groups from cached analysis without rescanning or reanalyzing", async () => {
     vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
     const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
     const group = scan.groups[0];
-    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
     mockArchiveGroupVerification(service, scan, group);
     const start = await app.inject({
       method: "POST",
@@ -312,11 +310,18 @@ describe("api app", () => {
       method: "GET",
       url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
     });
-    const refreshed = sseEvent(events.body, "refreshed") as { response: { scan: ScanResult } };
+    const update = sseEvent(events.body, "analysis-updated") as { response: { completedGroupIds: string[] } };
+    const cachedAnalysis = await app.inject({
+      method: "GET",
+      url: "/api/analysis",
+      headers: { "x-session-token": token }
+    });
 
     expect(events.body).toContain("event: completed");
-    expect(refreshed.response.scan.scanId).not.toBe(scan.scanId);
-    expect(refreshed.response.scan.items.some((item) => item.id === archiveItem.id)).toBe(false);
+    expect(update.response.completedGroupIds).toEqual([group.id]);
+    expect(cachedAnalysis.json().scanId).toBe(scan.scanId);
+    expect(cachedAnalysis.json().groups.some((candidate: { id: string }) => candidate.id === group.id)).toBe(false);
+    expect(cachedAnalysis.json().items).toEqual(scan.items);
     expect(service.scan).toHaveBeenCalledTimes(1);
   });
 
@@ -381,7 +386,7 @@ describe("api app", () => {
       url: `/api/action-executions/${executionId}/stop`,
       headers: { "x-session-token": token }
     });
-    expect(["stop-requested", "refreshing-after-stop", "stopped"]).toContain(stop.json().status);
+    expect(["stop-requested", "stopped"]).toContain(stop.json().status);
     await vi.waitFor(async () => {
       const snapshot = await app.inject({
         method: "GET",

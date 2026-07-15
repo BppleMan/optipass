@@ -25,9 +25,7 @@ const actionExecutionEventTypes = [
   'paused',
   'resumed',
   'stop-requested',
-  'refresh-started',
-  'refresh-progress',
-  'refreshed',
+  'analysis-updated',
   'stopped',
   'completed',
   'failed',
@@ -140,7 +138,7 @@ export type ExecuteRequest = GroupDecision & {
   dryRun?: boolean;
 };
 
-export type ActionExecutionStatus = 'running' | 'pause-requested' | 'paused' | 'stop-requested' | 'refreshing-after-stop' | 'refreshing' | 'stopped' | 'completed' | 'failed';
+export type ActionExecutionStatus = 'running' | 'pause-requested' | 'paused' | 'stop-requested' | 'stopped' | 'completed' | 'failed';
 
 export interface ActionExecutionSnapshot {
   executionId: string;
@@ -156,9 +154,9 @@ export interface ActionExecutionSnapshot {
   draft: ActionDraft;
 }
 
-export interface ActionExecutionRefreshResponse {
-  scan: AnalysisResultResponse;
+export interface ActionExecutionUpdateResponse {
   draft: ActionDraft;
+  completedGroupIds: string[];
   results: ExecuteActionResult[];
   effects: ActionExecutionEffect[];
   cancelledOperations: number;
@@ -187,7 +185,7 @@ export interface ActionExecutionEvent {
   action?: { itemId: string; type: string };
   result?: ExecuteActionResult;
   progress?: ScanProgress;
-  response?: ActionExecutionRefreshResponse;
+  response?: ActionExecutionUpdateResponse;
   error?: string;
 }
 

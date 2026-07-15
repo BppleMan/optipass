@@ -27,7 +27,6 @@ import {
   type ActiveScanResponse,
   type AnalysisResultResponse,
   type ActionExecutionEvent,
-  type ActionExecutionRefreshResponse,
   type ActionExecutionStatus,
   type DryRunSpeedMultiplier,
   type ItemSearchField,
@@ -222,7 +221,6 @@ export class WorkflowService {
   readonly actionExecutionStatus = signal<ActionExecutionViewStatus | undefined>(undefined);
   readonly actionExecutionScope = signal<ActionExecutionScope>('plan');
   readonly actionExecutionWriteEnabled = signal(false);
-  readonly actionExecutionRefreshProgress = signal<ScanProgress | undefined>(undefined);
   readonly groupPlanLoading = signal<Record<string, boolean>>({});
   readonly mutationToggleBusy = signal(false);
   readonly dryRunSpeedMultiplier = signal<DryRunSpeedMultiplier>(1);
@@ -322,9 +320,6 @@ export class WorkflowService {
         return '已暂停';
       case 'stop-requested':
         return '正在停止';
-      case 'refreshing':
-      case 'refreshing-after-stop':
-        return '正在更新';
       case 'stopped':
         return '已停止';
       case 'completed':
@@ -339,7 +334,7 @@ export class WorkflowService {
     if (!this.applying()) {
       return true;
     }
-    return ['refreshing', 'refreshing-after-stop', 'stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '');
+    return ['stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '');
   });
 
   constructor(
@@ -1020,7 +1015,6 @@ export class WorkflowService {
     this.actionExecutionStatus.set('ready');
     this.actionExecutionScope.set(scope);
     this.actionExecutionWriteEnabled.set(this.mutationsEnabled());
-    this.actionExecutionRefreshProgress.set(undefined);
   }
 
   async pauseActionExecution(): Promise<void> {
@@ -1047,7 +1041,7 @@ export class WorkflowService {
       return;
     }
     const snapshot = await this.api.stopActionExecution(executionId);
-    if (!['refreshing', 'refreshing-after-stop', 'stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '')) {
+    if (!['stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '')) {
       this.actionExecutionStatus.set(snapshot.status);
     }
   }
@@ -1653,9 +1647,6 @@ export class WorkflowService {
 
   private applyActionExecutionEvent(event: ActionExecutionEvent): void {
     this.actionExecutionStatus.set(event.status);
-    if (event.progress) {
-      this.actionExecutionRefreshProgress.set(event.progress);
-    }
     if (event.type === 'action-started' && event.action && event.groupId) {
       this.operations.set(this.operations().map((operation) =>
         operation.groupId === event.groupId && operation.itemId === event.action?.itemId && operation.sourceAction === event.action.type
@@ -1679,10 +1670,8 @@ export class WorkflowService {
         };
       }));
     }
-    if (event.type === 'refreshed' && event.response) {
-      const previousDecisions = this.decisions();
-      this.replaceAnalysisResult(event.response.scan);
-      this.decisions.set(this.mergeRefreshedDecisions(event.response, previousDecisions));
+    if (event.type === 'analysis-updated' && event.response && event.writeEnabled) {
+      this.removeCompletedGroups(event.response.completedGroupIds);
     }
     if (event.type === 'stopped' || event.type === 'failed') {
       this.skipPendingOperations(event.type === 'stopped' ? '执行已停止。' : '执行失败，未继续处理。');
@@ -1695,30 +1684,21 @@ export class WorkflowService {
     }
   }
 
-  private mergeRefreshedDecisions(
-    response: ActionExecutionRefreshResponse,
-    previousDecisions: Record<string, ActionDraftItem>
-  ): Record<string, ActionDraftItem> {
-    const defaults = this.defaultDecisions(response.scan);
-    const refreshed = new Map(response.draft.groups.flatMap((group) => group.items).map((item) => [item.itemId, item]));
-    const affectedItemIds = new Set(response.effects
-      .filter((effect) => effect.wroteToOnePassword && effect.succeeded)
-      .map((effect) => effect.sourceItemId));
-    const vaultIds = new Set(response.scan.vaults.map((vault) => vault.id));
-    return Object.fromEntries(Object.entries(defaults).map(([itemId, fallback]) => {
-      const previous = previousDecisions[itemId];
-      if (previous && !affectedItemIds.has(itemId)) {
-        return [itemId, {
-          ...previous,
-          itemId,
-          targetVaultId: previous.targetVaultId && vaultIds.has(previous.targetVaultId)
-            ? previous.targetVaultId
-            : fallback.targetVaultId,
-          removeTags: [...(previous.removeTags ?? [])]
-        } satisfies ActionDraftItem];
-      }
-      return [itemId, refreshed.get(itemId) ?? fallback];
-    }));
+  private removeCompletedGroups(completedGroupIds: string[]): void {
+    if (completedGroupIds.length === 0) {
+      return;
+    }
+    const result = this.scanResult();
+    if (!result) {
+      return;
+    }
+    const completed = new Set(completedGroupIds);
+    const groups = result.groups.filter((group) => !completed.has(group.id));
+    const remainingItemIds = new Set(groups.flatMap((group) => group.itemIds));
+    this.scanResult.set({ ...result, groups });
+    this.decisions.set(Object.fromEntries(
+      Object.entries(this.decisions()).filter(([itemId]) => remainingItemIds.has(itemId))
+    ));
   }
 
   private toApplyOperation(group: PreviewGroupView, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {

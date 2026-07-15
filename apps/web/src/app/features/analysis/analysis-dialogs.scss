@@ -34,13 +34,6 @@
         font-style: normal;
     }
 
-    .apply-progress-summary em[data-status="refreshing"],
-    .apply-progress-summary em[data-status="refreshing-after-stop"] {
-        border-color: rgba(255, 203, 107, 0.36);
-        background: rgba(255, 203, 107, 0.1);
-        color: #FFCB6B;
-    }
-
     .apply-progress-summary em[data-status="completed"],
     .apply-progress-summary em[data-status="stopped"] {
         border-color: rgba(195, 232, 141, 0.36);

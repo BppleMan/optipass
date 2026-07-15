@@ -7,7 +7,6 @@ import Fastify, { FastifyInstance, FastifyRequest } from "fastify";
 import {
   ActionDraft,
   ActionDraftGroup,
-  ActionDraftItem,
   ActionPlan,
   ActionPlanGroup,
   createActionPlan,
@@ -164,8 +163,6 @@ type ActionExecutionStatus =
   | "pause-requested"
   | "paused"
   | "stop-requested"
-  | "refreshing-after-stop"
-  | "refreshing"
   | "stopped"
   | "completed"
   | "failed";
@@ -184,7 +181,6 @@ interface ActionEffect {
   groupId: string;
   sourceItemId: string;
   createdItemId?: string;
-  createdOnePasswordItemId?: string;
   actionType: PlanAction["type"];
   wroteToOnePassword: boolean;
   succeeded: boolean;
@@ -223,6 +219,7 @@ interface ActionExecutionJob {
   runningAction: boolean;
   results: ExecuteActionResult[];
   effects: ActionEffect[];
+  completedGroupIds: Set<string>;
   events: ActionExecutionEvent[];
   subscribers: Set<(event: ActionExecutionEvent) => void>;
   resumeWaiters: Set<() => void>;
@@ -1210,7 +1207,6 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
             groupId: group.groupId,
             sourceItemId: entry.action.itemId,
             createdItemId,
-            createdOnePasswordItemId: result.createdItemId,
             actionType: entry.action.type,
             wroteToOnePassword: job.plan.writeEnabled && result.ok,
             succeeded: result.ok
@@ -1243,6 +1239,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
             break;
           }
         }
+        job.completedGroupIds.add(group.groupId);
         emitActionExecutionEvent(job, { type: "group-completed", groupId: group.groupId });
       }
     } catch (error) {
@@ -1254,16 +1251,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         entry.status = "cancelled";
       }
     }
-    job.status = job.stopRequested ? "refreshing-after-stop" : "refreshing";
-    emitActionExecutionEvent(job, { type: "refresh-started" });
     try {
-      const refreshed = refreshAfterActionExecution(job, state);
-      emitActionExecutionEvent(job, { type: "refreshed", response: refreshed });
+      const update = updateAnalysisAfterActionExecution(job, state);
+      emitActionExecutionEvent(job, { type: "analysis-updated", response: update });
       job.status = job.stopRequested ? "stopped" : executionError ? "failed" : "completed";
       emitActionExecutionEvent(job, {
         type: job.status,
         error: executionError,
-        response: refreshed
+        response: update
       });
     } catch (error) {
       job.status = "failed";
@@ -1274,24 +1269,37 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
   }
 
-  function refreshAfterActionExecution(job: ActionExecutionJob, state: TabAnalysisState): Record<string, unknown> {
-    if (!latestScan || !state.analysis) {
+  function updateAnalysisAfterActionExecution(job: ActionExecutionJob, state: TabAnalysisState): Record<string, unknown> {
+    if (!state.analysis) {
       throw new ClientInputError("当前分析结果已过期，请重新扫描并重新分析后再继续。");
     }
-    const refreshedScan = job.plan.writeEnabled
-      ? projectScanAfterActionExecution(latestScan, job)
-      : latestScan;
-    const analysis = job.plan.writeEnabled
-      ? analyzeScan(refreshedScan)
+
+    const completedGroupIds = job.plan.writeEnabled
+      ? Array.from(job.completedGroupIds)
+      : [];
+    const completedGroupIdSet = new Set(completedGroupIds);
+    const analysis = completedGroupIds.length > 0
+      ? {
+          ...state.analysis,
+          groups: state.analysis.groups.filter((group) => !completedGroupIdSet.has(group.id))
+        }
       : state.analysis;
-    latestScan = refreshedScan;
     state.analysis = analysis;
     state.dryRunKey = undefined;
     state.skippedGroups = state.skippedGroups.filter((groupId) => analysis.groups.some((group) => group.id === groupId));
-    const draft = reconcileActionDraft(job.draft, analysis, job.effects);
+    const remainingGroupIds = new Set(analysis.groups.map((group) => group.id));
+    const draft = {
+      scanId: analysis.scanId,
+      groups: job.draft.groups
+        .filter((group) => remainingGroupIds.has(group.groupId))
+        .map((group) => ({
+          groupId: group.groupId,
+          items: group.items.map((item) => ({ ...item, removeTags: [...(item.removeTags ?? [])] }))
+        }))
+    } satisfies ActionDraft;
     return {
-      scan: analysisResultResponse(state, analysis),
       draft,
+      completedGroupIds,
       results: job.results,
       effects: job.effects,
       cancelledOperations: job.queue.filter((entry) => entry.status === "cancelled").length
@@ -1661,6 +1669,7 @@ function createActionExecutionJob(
     runningAction: false,
     results: [],
     effects: [],
+    completedGroupIds: new Set(),
     events: [],
     subscribers: new Set(),
     resumeWaiters: new Set(),
@@ -2098,123 +2107,6 @@ async function executeActionPlanEntry(
   } catch (error) {
     return { itemId: action.itemId, action: action.type, ok: false, error: mutationActionError(action, error) };
   }
-}
-
-function projectScanAfterActionExecution(scan: ScanSnapshot, job: ActionExecutionJob): ScanSnapshot {
-  const effects = job.effects.filter((effect) => effect.wroteToOnePassword && effect.succeeded);
-  if (effects.length === 0) {
-    return scan;
-  }
-
-  const actionByEffect = new Map(job.queue.map((entry) => [
-    `${entry.action.itemId}:${entry.action.type}`,
-    entry.action
-  ]));
-  const items = new Map(scan.items.map((item) => [item.id, item]));
-  const vaultById = new Map(scan.vaults.map((vault) => [vault.id, vault]));
-  const projectedAt = new Date().toISOString();
-
-  for (const effect of effects) {
-    const action = actionByEffect.get(`${effect.sourceItemId}:${effect.actionType}`);
-    const source = items.get(effect.sourceItemId);
-    if (!action || !source) {
-      continue;
-    }
-
-    if (action.type === "update-tags") {
-      const removedTags = new Set(action.removeTags);
-      items.set(source.id, {
-        ...source,
-        tags: source.tags.filter((tag) => !removedTags.has(tag)),
-        updatedAt: projectedAt
-      });
-      continue;
-    }
-
-    if (action.type === "archive" || action.type === "delete") {
-      items.delete(source.id);
-      continue;
-    }
-
-    if (action.type === "copy-to-vault-and-archive-source" && effect.createdItemId && effect.createdOnePasswordItemId) {
-      const removedTags = new Set(action.removeTags);
-      const targetVault = vaultById.get(action.targetVaultId);
-      items.delete(source.id);
-      items.set(effect.createdItemId, {
-        ...source,
-        id: effect.createdItemId,
-        onePasswordItemId: effect.createdOnePasswordItemId,
-        vaultId: action.targetVaultId,
-        vaultName: targetVault?.name ?? action.targetVaultId,
-        createdAt: projectedAt,
-        updatedAt: projectedAt,
-        tags: source.tags.filter((tag) => !removedTags.has(tag))
-      });
-    }
-  }
-
-  return {
-    scanId: createScanId(),
-    scannedAt: projectedAt,
-    vaults: scan.vaults,
-    items: Array.from(items.values())
-  };
-}
-
-function reconcileActionDraft(draft: ActionDraft, scan: ScanResult, effects: ActionEffect[]): ActionDraft {
-  const original = new Map<string, ActionDraftItem>();
-  for (const group of draft.groups) {
-    for (const item of group.items) {
-      original.set(item.itemId, { ...item, removeTags: [...(item.removeTags ?? [])] });
-    }
-  }
-  for (const effect of effects.filter((candidate) => candidate.wroteToOnePassword && candidate.succeeded)) {
-    const decision = original.get(effect.sourceItemId);
-    if (effect.actionType === "copy-to-vault-and-archive-source" && effect.createdItemId && decision) {
-      original.set(effect.createdItemId, {
-        ...decision,
-        itemId: effect.createdItemId,
-        keep: true,
-        targetVaultId: undefined,
-        removeTags: []
-      });
-      original.delete(effect.sourceItemId);
-    } else if (effect.actionType === "archive" || effect.actionType === "delete") {
-      original.delete(effect.sourceItemId);
-    } else if (effect.actionType === "update-tags" && decision) {
-      original.set(effect.sourceItemId, { ...decision, removeTags: [] });
-    }
-  }
-
-  const itemById = new Map(scan.items.map((item) => [item.id, item]));
-  return {
-    scanId: scan.scanId,
-    groups: scan.groups.map((group) => {
-      const recommended = new Set(group.recommendedKeepIds);
-      const fallbackKeepId = group.itemIds[0];
-      return {
-        groupId: group.id,
-        items: group.itemIds.map((itemId) => {
-          const preserved = original.get(itemId);
-          if (preserved) {
-            const item = itemById.get(itemId);
-            const validTarget = preserved.targetVaultId && scan.vaults.some((vault) => vault.id === preserved.targetVaultId)
-              ? preserved.targetVaultId
-              : item?.vaultId;
-            return { ...preserved, itemId, targetVaultId: validTarget, removeTags: [...(preserved.removeTags ?? [])] };
-          }
-          const item = itemById.get(itemId)!;
-          return {
-            itemId,
-            keep: group.candidateClass === "delete-suggestion" ? false : recommended.size ? recommended.has(itemId) : itemId === fallbackKeepId,
-            targetVaultId: item.vaultId,
-            deleteMode: "archive" as const,
-            removeTags: []
-          };
-        })
-      };
-    })
-  };
 }
 
 function skippedResults(actions: PlanAction[]): ExecuteActionResult[] {

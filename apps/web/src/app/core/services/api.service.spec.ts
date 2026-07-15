@@ -212,7 +212,7 @@ describe('ApiService session bootstrap', () => {
     });
     const rejected = expect(streaming).rejects.toThrow('consumer failed');
 
-    MockEventSource.instances[0].emit('refreshed', { type: 'refreshed' });
+    MockEventSource.instances[0].emit('analysis-updated', { type: 'analysis-updated' });
 
     await rejected;
     expect(MockEventSource.instances[0].close).toHaveBeenCalledTimes(1);

@@ -543,33 +543,20 @@ describe('WorkflowService analysis filters', () => {
     expect(service.operationGroups()[0].operations[0].label).toContain('归档「GitHub old」');
   });
 
-  it('preserves existing item decisions when a dry-run returns unchanged analysis', async () => {
-    const refreshed = { ...scanResult(), scanId: 'scan-refreshed', skippedGroupIds: [] };
+  it('preserves every group and item decision after a dry-run', async () => {
     const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
       onEvent({
-        type: 'refreshed',
+        type: 'analysis-updated',
         sequence: 1,
         executionId: 'action-execution-test',
-        status: 'refreshing',
+        status: 'running',
         writeEnabled: false,
         totalGroups: 1,
         totalOperations: 1,
         completedOperations: 1,
         response: {
-          scan: refreshed,
-          draft: {
-            scanId: refreshed.scanId,
-            groups: refreshed.groups.map((group) => ({
-              groupId: group.id,
-              items: group.itemIds.map((itemId, index) => ({
-                itemId,
-                keep: index === 0,
-                targetVaultId: refreshed.items.find((item) => item.id === itemId)?.vaultId,
-                deleteMode: 'archive',
-                removeTags: []
-              }))
-            }))
-          },
+          draft: { scanId: 'scan-1', groups: [] },
+          completedGroupIds: [],
           results: [],
           effects: [],
           cancelledOperations: 0
@@ -599,10 +586,62 @@ describe('WorkflowService analysis filters', () => {
     service.applyPlan();
     await service.startPreparedActionExecution();
 
-    expect(service.scanResult()?.scanId).toBe('scan-refreshed');
+    expect(service.scanResult()?.groups).toHaveLength(2);
     expect(service.decisions()['icloud:github-new']).toMatchObject({ removeTags: ['CSV Import'] });
     expect(service.decisions()['private:github-old']).toMatchObject({ deleteMode: 'delete' });
     expect(service.decisions()['private:apple-new']).toMatchObject({ keep: true });
+  });
+
+  it('removes only completed groups after a real write and preserves remaining decisions', async () => {
+    const result = scanResult();
+    const completedGroupId = result.groups[0].id;
+    const remainingGroupId = result.groups[1].id;
+    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+      onEvent({
+        type: 'analysis-updated',
+        sequence: 1,
+        executionId: 'action-execution-test',
+        status: 'running',
+        writeEnabled: true,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1,
+        response: {
+          draft: { scanId: result.scanId, groups: [] },
+          completedGroupIds: [completedGroupId],
+          results: [],
+          effects: [],
+          cancelledOperations: 0
+        }
+      } as never);
+      onEvent({
+        type: 'completed',
+        sequence: 2,
+        executionId: 'action-execution-test',
+        status: 'completed',
+        writeEnabled: true,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1
+      } as never);
+    });
+    const service = createService({ streamActionExecutionEvents, enableMutations: true });
+    service.scanResult.set(result);
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive', removeTags: [] },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive', removeTags: [] },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive', removeTags: ['Important'] },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'delete', removeTags: [] }
+    });
+
+    service.openGroupExecutionDialog(completedGroupId);
+    await service.startPreparedActionExecution();
+
+    expect(service.scanResult()?.groups.map((group) => group.id)).toEqual([remainingGroupId]);
+    expect(service.decisions()['icloud:github-new']).toBeUndefined();
+    expect(service.decisions()['private:github-old']).toBeUndefined();
+    expect(service.decisions()['private:apple-new']).toMatchObject({ keep: true, removeTags: ['Important'] });
+    expect(service.decisions()['chrome:apple-old']).toMatchObject({ keep: false, deleteMode: 'delete' });
   });
 
   it('stops batch apply and skips pending groups after verification failure', async () => {
@@ -685,7 +724,7 @@ describe('WorkflowService analysis filters', () => {
     expect(service.applyDialogOpen()).toBe(false);
   });
 
-  it('allows closing the progress dialog during the read-only refresh stage', () => {
+  it('allows closing the progress dialog only after execution reaches a terminal state', () => {
     const service = createService();
     service.applyDialogOpen.set(true);
     service.applying.set(true);
@@ -696,9 +735,9 @@ describe('WorkflowService analysis filters', () => {
     expect(service.applyDialogOpen()).toBe(true);
     expect(service.canCloseApplyDialog()).toBe(false);
 
-    service.actionExecutionStatus.set('refreshing');
+    service.actionExecutionStatus.set('completed');
 
-    expect(service.actionExecutionStatusLabel()).toBe('正在更新');
+    expect(service.actionExecutionStatusLabel()).toBe('已完成');
     expect(service.canCloseApplyDialog()).toBe(true);
 
     service.closeApplyDialog();
