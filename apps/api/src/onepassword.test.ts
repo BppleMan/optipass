@@ -202,12 +202,13 @@ describe("OnePasswordService", () => {
 
   it("reports discovered vault item counts before item details are read", async () => {
     const itemIds = ["item-1", "item-2"];
+    const list = vi.fn(() => itemIds.map((id) => ({ id })));
     sdkMock.createClient.mockResolvedValue({
       vaults: {
         list: vi.fn(() => [{ id: "vault-1", title: "Personal" }])
       },
       items: {
-        list: vi.fn(() => itemIds.map((id) => ({ id }))),
+        list,
         getAll: vi.fn(async (_vaultId: string, batch: string[]) => ({
           individualResponses: batch.map((id) => ({
             content: loginItem(id)
@@ -227,6 +228,7 @@ describe("OnePasswordService", () => {
 
     expect(discovered?.progress.totalItems).toBe(2);
     expect(discovered?.progress.scannedItems).toBe(0);
+    expect(list).toHaveBeenCalledWith("vault-1");
     expect(discovered?.progress.vaults[0]).toEqual(
       expect.objectContaining({
         id: "vault-1",
@@ -239,7 +241,7 @@ describe("OnePasswordService", () => {
     );
   });
 
-  it("reads vaults concurrently with a bounded worker pool", async () => {
+  it("reads vaults serially", async () => {
     const vaults = Array.from({ length: 4 }, (_, index) => ({
       id: `vault-${index}`,
       title: `Vault ${index}`
@@ -279,8 +281,7 @@ describe("OnePasswordService", () => {
 
     expect(scan.items).toHaveLength(4);
     expect(getAll).toHaveBeenCalledTimes(4);
-    expect(maxInFlightGetAll).toBeGreaterThan(1);
-    expect(maxInFlightGetAll).toBeLessThanOrEqual(3);
+    expect(maxInFlightGetAll).toBe(1);
   });
 
   it("reads Desktop-auth vaults serially to avoid IPC contention", async () => {
@@ -326,7 +327,7 @@ describe("OnePasswordService", () => {
     expect(maxInFlightGetAll).toBe(1);
   });
 
-  it("falls back to single item reads when batch retrieval fails", async () => {
+  it("fails the scan without single-item retries when a batch retrieval fails", async () => {
     const itemIds = ["item-ok", "item-bad", "item-later"];
     const getAll = vi.fn(async () => {
       throw new Error("Unexpected error when retrieving response contents");
@@ -348,21 +349,14 @@ describe("OnePasswordService", () => {
       }
     });
 
-    const events: ScanProgressEvent[] = [];
     const service = new OnePasswordService();
-    const scan = await service.scan({
-      serviceAccountToken: "ops-test",
-      onProgress: (event) => events.push(event)
-    });
+    await expect(service.scan({ serviceAccountToken: "ops-test" })).rejects.toThrow("Unexpected error when retrieving response contents");
 
-    expect(scan.items.map((item) => item.onePasswordItemId)).toEqual(["item-ok", "item-later"]);
     expect(getAll).toHaveBeenCalledTimes(1);
-    expect(get).toHaveBeenCalledTimes(3);
-    expect(events.some((event) => event.progress.message?.includes("跳过 Personal 中一个无法读取的项目"))).toBe(true);
-    expect(events.at(-1)?.progress.message).toContain("跳过 1 个无法读取的项目");
+    expect(get).not.toHaveBeenCalled();
   });
 
-  it("retrieves missing batch responses one item at a time", async () => {
+  it("reports missing batch responses without single-item retries", async () => {
     const itemIds = ["item-1", "item-2"];
     const getAll = vi.fn(async () => ({
       individualResponses: [
@@ -386,8 +380,8 @@ describe("OnePasswordService", () => {
     const service = new OnePasswordService();
     const scan = await service.scan({ serviceAccountToken: "ops-test" });
 
-    expect(scan.items.map((item) => item.onePasswordItemId)).toEqual(itemIds);
-    expect(get).toHaveBeenCalledWith("vault-1", "item-2");
+    expect(scan.items.map((item) => item.onePasswordItemId)).toEqual(["item-1"]);
+    expect(get).not.toHaveBeenCalled();
   });
 
   it("opens the 1Password desktop app before DesktopAuth scans", async () => {
@@ -418,7 +412,7 @@ describe("OnePasswordService", () => {
     expect(events.some((event) => event.progress.message === "正在等待 1Password 授权。")).toBe(true);
   });
 
-  it("continues scanning other vaults when one vault item list fails", async () => {
+  it("fails before detail scanning when a vault item list cannot be read", async () => {
     const list = vi.fn(async (vaultId: string) => {
       if (vaultId === "vault-broken") {
         throw new Error("Unexpected error when retrieving response contents");
@@ -443,17 +437,11 @@ describe("OnePasswordService", () => {
       }
     });
 
-    const events: ScanProgressEvent[] = [];
     const service = new OnePasswordService();
-    const scan = await service.scan({
-      serviceAccountToken: "ops-test",
-      onProgress: (event) => events.push(event)
-    });
+    await expect(service.scan({ serviceAccountToken: "ops-test" })).rejects.toThrow("Unexpected error when retrieving response contents");
 
-    expect(scan.vaults.map((vault) => vault.name)).toEqual(["Broken", "Personal"]);
-    expect(scan.items.map((item) => item.onePasswordItemId)).toEqual(["item-ok"]);
-    expect(events.some((event) => event.progress.message?.includes("无法读取 Broken 的项目列表"))).toBe(true);
-    expect(events.at(-1)?.progress.message).toContain("跳过 1 个无法读取项目列表的保险库");
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(getAll).not.toHaveBeenCalled();
   });
 
   it("reports a focused error when no vault item lists can be read", async () => {
@@ -473,7 +461,7 @@ describe("OnePasswordService", () => {
 
     const service = new OnePasswordService();
 
-    await expect(service.scan({ serviceAccountToken: "ops-test" })).rejects.toThrow("无法读取任何项目列表");
+    await expect(service.scan({ serviceAccountToken: "ops-test" })).rejects.toThrow("Unexpected error when retrieving response contents");
   });
 
   it("releases the cached SDK client when clearing local scan state", async () => {
@@ -493,7 +481,7 @@ describe("OnePasswordService", () => {
     expect(sdkMock.createClient).toHaveBeenCalledTimes(2);
   });
 
-  it("rebuilds the SDK client once when the desktop client id expires", async () => {
+  it("does not restart the whole scan when the desktop client id expires", async () => {
     sdkMock.createClient
       .mockResolvedValueOnce({
         vaults: {
@@ -509,12 +497,9 @@ describe("OnePasswordService", () => {
       .mockResolvedValueOnce(createMinimalClient("fresh-vault"));
 
     const service = new OnePasswordService();
-    const scan = await service.scan({ accountName: "example-account" });
+    await expect(service.scan({ accountName: "example-account" })).rejects.toThrow("invalid client id");
 
-    expect(sdkMock.createClient).toHaveBeenCalledTimes(2);
-    expect(scan.scanId).toBeTruthy();
-    expect(scan.vaults).toEqual([{ id: "fresh-vault", name: "fresh-vault" }]);
-    expect(scan.items).toHaveLength(1);
+    expect(sdkMock.createClient).toHaveBeenCalledTimes(1);
   });
 });
 

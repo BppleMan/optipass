@@ -23,7 +23,6 @@ type RawItem = Item;
 const maxGetAllBatchSize = 50;
 const sdkSlowLogMs = readPositiveInteger(process.env.OP_SDK_SLOW_LOG_MS, 15_000);
 const execFileAsync = promisify(execFile);
-const maxConcurrentVaultScans = 3;
 
 interface CachedRawItem {
   item: RawItem;
@@ -45,33 +44,6 @@ export class OnePasswordService {
 
   async scan(options: ScanOptions): Promise<ScanSnapshot> {
     const scanId = options.scanId ?? randomUUID();
-    try {
-      return await this.scanOnce({ ...options, scanId });
-    } catch (error) {
-      if (!isRecoverableClientError(error)) {
-        throw error;
-      }
-
-      this.clearCache();
-      options.onProgress?.({
-        type: "progress",
-        progress: {
-          scanId,
-          phase: "scanning",
-          totalVaults: 0,
-          scannedVaults: 0,
-          totalItems: 0,
-          scannedItems: 0,
-          vaults: [],
-          message: "1Password 授权会话已失效，正在重新建立连接。"
-        }
-      });
-      return this.scanOnce({ ...options, scanId });
-    }
-  }
-
-  private async scanOnce(options: ScanOptions & { scanId: string }): Promise<ScanSnapshot> {
-    const scanId = options.scanId;
     const scannedAt = new Date().toISOString();
     let vaults: VaultSummary[] = [];
     const summaries: ItemSummary[] = [];
@@ -102,48 +74,41 @@ export class OnePasswordService {
     emit("started", "正在连接 1Password Desktop App。");
     const client = await this.getClient(options, (message) => emit("progress", message));
     emit("progress", "正在读取保险库列表。");
-
-    const vaultOverviews = await withSdkTrace(client.vaults.list({ decryptDetails: true }), "读取保险库列表");
-    vaults = await collectAsync(vaultOverviews, (vault) => ({
+    vaults = await collectAsync(await client.vaults.list({ decryptDetails: true }), (vault) => ({
       id: String(readAny(vault, "id") ?? ""),
       name: String(readAny(vault, "title", "name") ?? "Untitled vault")
     }));
 
     const itemIdsByVault = new Map<string, string[]>();
-    const scanVaults = vaults.filter((vault) => vault.id);
     this.rawItems.clear();
-    let skippedItems = 0;
-    let skippedVaultItemLists = 0;
 
-    const vaultConcurrency = options.serviceAccountToken ? maxConcurrentVaultScans : 1;
+    for (const vault of vaults) {
+      if (!vault.id) {
+        continue;
+      }
 
-    await mapConcurrent(scanVaults, vaultConcurrency, async (vault) => {
-      emit("progress", `正在读取 ${vault.name} 的项目列表。`);
-      const itemIds = await this.readItemIds(client, vault, (message) => {
-        skippedVaultItemLists += 1;
-        emit("progress", message);
-      });
+      const overviews = await client.items.list(vault.id);
+      const itemIds = overviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean);
       itemIdsByVault.set(vault.id, itemIds);
       discoveredItemCounts.set(vault.id, itemIds.length);
       totalItems += itemIds.length;
       emit("progress", `已发现 ${vault.name} 中的 ${itemIds.length} 个项目。`);
-    });
-
-    if (skippedVaultItemLists > 0 && totalItems === 0) {
-      throw new Error(`已发现 ${vaults.length} 个保险库，但无法读取任何项目列表。请确认 1Password Desktop App 已解锁并允许 Optipass 读取数据。`);
     }
 
-    await mapConcurrent(scanVaults, vaultConcurrency, async (vault) => {
+    for (const vault of vaults) {
       const itemIds = itemIdsByVault.get(vault.id) ?? [];
+      if (!vault.id) {
+        continue;
+      }
 
-      const batches = chunks(itemIds, maxGetAllBatchSize);
-      for (const [batchIndex, batch] of batches.entries()) {
-        emit("progress", `正在读取 ${vault.name} 的项目详情（${batchIndex + 1}/${batches.length}）。`);
-        const items = await this.readItemsBatch(client, vault, batch, (message) => {
-          skippedItems += 1;
-          emit("progress", message);
-        });
-        for (const item of items) {
+      for (const batch of chunks(itemIds, maxGetAllBatchSize)) {
+        const response = await client.items.getAll(vault.id, batch);
+        for (const itemResponse of response.individualResponses) {
+          if (!itemResponse.content) {
+            continue;
+          }
+
+          const item = itemResponse.content;
           const rawItemId = item.id;
           const appItemId = toAppItemId(vault.id, rawItemId);
           this.rawItems.set(appItemId, {
@@ -157,7 +122,7 @@ export class OnePasswordService {
       }
       scannedVaults += 1;
       emit("progress", `已读取 ${vault.name}。`);
-    });
+    }
 
     const scan = {
       scanId,
@@ -165,7 +130,7 @@ export class OnePasswordService {
       vaults,
       items: summaries
     };
-    emit("completed", completionMessage(skippedItems, skippedVaultItemLists), scan);
+    emit("completed", "扫描完成，等待手动分析。", scan);
     return scan;
   }
 
@@ -346,111 +311,11 @@ export class OnePasswordService {
     return this.client;
   }
 
-  private async readItemIds(
-    client: OnePasswordClient,
-    vault: VaultSummary,
-    onSkipped: (message: string) => void
-  ): Promise<string[]> {
-    try {
-      const overviews = await withSdkTrace(client.items.list(vault.id), `读取 ${vault.name} 的项目列表`);
-      return overviews.map((overview) => String(readAny(overview, "id") ?? "")).filter(Boolean);
-    } catch (error) {
-      onSkipped(`无法读取 ${vault.name} 的项目列表：${errorMessage(error)}`);
-      return [];
-    }
-  }
-
-  private async readItemsBatch(
-    client: OnePasswordClient,
-    vault: VaultSummary,
-    itemIds: string[],
-    onSkipped: (message: string) => void
-  ): Promise<RawItem[]> {
-    try {
-      const response = await withSdkTrace(
-        client.items.getAll(vault.id, itemIds),
-        `批量读取 ${vault.name} 的 ${itemIds.length} 个项目详情`
-      );
-      const items: RawItem[] = [];
-      for (const [index, itemId] of itemIds.entries()) {
-        const itemResponse = response.individualResponses[index];
-        if (itemResponse?.content) {
-          items.push(itemResponse.content);
-          continue;
-        }
-        const item = await this.readSingleItem(
-          client,
-          vault,
-          itemId,
-          itemResponse?.error ?? "批量响应缺少项目内容。",
-          onSkipped
-        );
-        if (item) {
-          items.push(item);
-        }
-      }
-      return items;
-    } catch (error) {
-      const items: RawItem[] = [];
-      for (const itemId of itemIds) {
-        const item = await this.readSingleItem(client, vault, itemId, error, onSkipped);
-        if (item) {
-          items.push(item);
-        }
-      }
-      return items;
-    }
-  }
-
-  private async readSingleItem(
-    client: OnePasswordClient,
-    vault: VaultSummary,
-    itemId: string | undefined,
-    batchError: unknown,
-    onSkipped: (message: string) => void
-  ): Promise<RawItem | undefined> {
-    if (!itemId) {
-      onSkipped(`跳过 ${vault.name} 中一个无法识别 ID 的项目：${errorMessage(batchError)}`);
-      return undefined;
-    }
-
-    try {
-      return await withSdkTrace(client.items.get(vault.id, itemId), `读取 ${vault.name} 项目 ${itemId}`);
-    } catch (error) {
-      onSkipped(`跳过 ${vault.name} 中一个无法读取的项目：${errorMessage(error) || errorMessage(batchError)}`);
-      return undefined;
-    }
-  }
-}
-
-function isRecoverableClientError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  const name = error instanceof Error ? error.name.toLowerCase() : "";
-  const text = `${name} ${message}`;
-  return (
-    text.includes("invalid client id") ||
-    text.includes("invalid_client_id") ||
-    (text.includes("desktop") && text.includes("session") && text.includes("expired")) ||
-    text.includes("ipc operation failed")
-  );
 }
 
 export const onePasswordLimits = {
-  maxGetAllBatchSize,
-  sdkSlowLogMs,
-  maxConcurrentVaultScans
+  maxGetAllBatchSize
 };
-
-function completionMessage(skippedItems: number, skippedVaultItemLists: number): string {
-  const skippedParts = [];
-  if (skippedVaultItemLists > 0) {
-    skippedParts.push(`${skippedVaultItemLists} 个无法读取项目列表的保险库`);
-  }
-  if (skippedItems > 0) {
-    skippedParts.push(`${skippedItems} 个无法读取的项目`);
-  }
-  return skippedParts.length > 0 ? `扫描完成，跳过 ${skippedParts.join("、")}。` : "扫描完成，等待手动分析。";
-}
 
 function summarizeVaultProgress(
   vaults: VaultSummary[],
@@ -816,23 +681,4 @@ function chunks<T>(items: T[], size: number): T[][] {
     out.push(items.slice(index, index + size));
   }
   return out;
-}
-
-async function mapConcurrent<T>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<void>
-): Promise<void> {
-  let nextIndex = 0;
-  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
-
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        await worker(items[index], index);
-      }
-    })
-  );
 }
