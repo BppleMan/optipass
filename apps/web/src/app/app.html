@@ -1,6 +1,7 @@
 <div class="op-shell flex">
   <op-header
     [accountChip]="wf.accountChip()"
+    [accountAuthorizationState]="wf.authState()"
     [dryRunSpeedMultiplier]="wf.dryRunSpeedMultiplier()"
     [dryRunSpeedDisabled]="wf.applying() || wf.groupApplying()"
     [mutationsEnabled]="wf.mutationsEnabled()"

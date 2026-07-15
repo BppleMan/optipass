@@ -41,4 +41,28 @@ describe("OpHeaderComponent", () => {
         expect(element.querySelector(".dry-run-speed-control")).toBeNull();
         expect(element.textContent).toContain("可写模式");
     });
+
+    it("uses account colors only after authorization succeeds", async () => {
+        fixture.componentRef.setInput("accountChip", "BppleMan");
+        await fixture.whenStable();
+
+        const account = (fixture.nativeElement as HTMLElement).querySelector(".account-chip")!;
+        expect(account.classList.contains("authorized")).toBe(false);
+        expect(account.getAttribute("title")).toBe("尚未授权的 1Password 账户");
+
+        fixture.componentRef.setInput("accountAuthorizationState", "authorizing");
+        await fixture.whenStable();
+        expect(account.classList.contains("authorizing")).toBe(true);
+        expect(account.getAttribute("title")).toBe("正在授权的 1Password 账户");
+
+        fixture.componentRef.setInput("accountAuthorizationState", "authorized");
+        await fixture.whenStable();
+        expect(account.classList.contains("authorized")).toBe(true);
+        expect(account.getAttribute("title")).toBe("已授权的 1Password 账户");
+
+        fixture.componentRef.setInput("accountAuthorizationState", "failed");
+        await fixture.whenStable();
+        expect(account.classList.contains("failed")).toBe(true);
+        expect(account.getAttribute("title")).toBe("授权失败的 1Password 账户");
+    });
 });
