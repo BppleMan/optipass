@@ -395,13 +395,11 @@
               </section>
             }
           </div>
-          @if (wf.actionExecutionStatus() === 'ready') {
-            <div class="modal-actions execution-controls">
+          <div class="modal-actions execution-controls">
+            @if (wf.actionExecutionStatus() === 'ready') {
               <op-button size="sm" variant="ghost" label="取消" (pressed)="wf.closeApplyDialog()"></op-button>
               <op-button size="sm" [label]="'开始执行 (' + wf.operations().length + ' 项操作)'" (pressed)="wf.startPreparedActionExecution()"></op-button>
-            </div>
-          } @else if (wf.applying()) {
-            <div class="modal-actions execution-controls">
+            } @else if (wf.applying()) {
               @if (wf.actionExecutionStatus() === 'paused') {
                 <op-button size="sm" variant="ghost" label="继续" (pressed)="wf.resumeActionExecution()"></op-button>
               } @else if (wf.actionExecutionStatus() === 'running' || wf.actionExecutionStatus() === 'pause-requested') {
@@ -416,12 +414,10 @@
               @if (wf.actionExecutionStatus() === 'running' || wf.actionExecutionStatus() === 'pause-requested' || wf.actionExecutionStatus() === 'paused') {
                 <op-button size="sm" label="停止" (pressed)="requestStopActionExecution()"></op-button>
               }
-            </div>
-          } @else {
-            <div class="modal-actions">
+            } @else {
               <op-button size="sm" variant="ghost" label="关闭" (pressed)="wf.closeApplyDialog()"></op-button>
-            </div>
-          }
+            }
+          </div>
         </div>
       </div>
     }
