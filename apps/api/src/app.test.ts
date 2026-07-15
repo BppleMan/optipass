@@ -525,7 +525,7 @@ describe("api app", () => {
     expect(JSON.stringify(body)).not.toContain("mock-analysis");
   });
 
-  it("searches category values and sensitive local fields without returning their values", async () => {
+  it("searches only requested item fields and requires every keyword on the same item", async () => {
     const start = await startScan(app, { mode: "mock" });
     await waitForScan(app, start.scanId);
 
@@ -533,29 +533,26 @@ describe("api app", () => {
       method: "POST",
       url: "/api/items/search",
       headers: { "x-session-token": token },
-      payload: { keywords: ["2026", "Personal", "github.com", "recovery", "vpn@example.com", "13800000000", "一次性密码"] }
+      payload: {
+        keywords: ["github", "alice@example.com"],
+        itemIds: ["vault-personal:github-1", "vault-work:github-2", "vault-personal:linear-1"]
+      }
     });
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.itemIds).toEqual(expect.arrayContaining([
+    expect(body).toEqual({ itemIds: [
       "vault-personal:github-1",
-      "vault-work:github-2",
-      "vault-work:note-1"
-    ]));
-    expect(body.suggestions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "year", label: "2026" }),
-      expect.objectContaining({ kind: "vault", label: "Personal" }),
-      expect.objectContaining({ kind: "credential", label: "一次性密码" }),
-      expect.objectContaining({ kind: "domain", label: "github.com" }),
-      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "title" }),
-      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "note" }),
-      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "email" }),
-      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "phone" })
-    ]));
-    expect(response.body).not.toContain("vpn recovery note");
-    expect(response.body).not.toContain("vpn@example.com");
-    expect(response.body).not.toContain("13800000000");
+      "vault-work:github-2"
+    ] });
+
+    const excludedFields = await app.inject({
+      method: "POST",
+      url: "/api/items/search",
+      headers: { "x-session-token": token },
+      payload: { keywords: ["2026"], itemIds: ["vault-personal:github-1"] }
+    });
+    expect(excludedFields.json()).toEqual({ itemIds: [] });
   });
 
   it("streams scan progress events with a completed snapshot", async () => {

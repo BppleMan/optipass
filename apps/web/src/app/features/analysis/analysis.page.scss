@@ -429,7 +429,7 @@
     
     .analysis-control-row {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
       flex-shrink: 0;
     }
@@ -437,13 +437,12 @@
         
     .filter-summary {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
       min-width: 0;
       box-sizing: border-box;
-      height: 34px;
       min-height: 34px;
-      padding: 2px 10px;
+      padding: 3px 10px;
       border: 1px solid #3a3a3a;
       border-radius: 11px;
       background: #292929;
@@ -453,6 +452,7 @@
     
     .filter-total {
       flex: 0 0 auto;
+      line-height: 26px;
       text-align: left;
       color: #b0bec5;
       font-size: 12.5px;
@@ -467,16 +467,11 @@
     .filter-chip-row {
       flex: 1 1 0;
       min-width: 0;
+      min-height: 26px;
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 6px;
-      overflow-x: auto;
-      overscroll-behavior-x: contain;
-      scrollbar-width: none;
-    }
-    
-    .filter-chip-row::-webkit-scrollbar {
-      display: none;
     }
     
     .filter-empty {

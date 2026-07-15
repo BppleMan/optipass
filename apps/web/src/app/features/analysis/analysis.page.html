@@ -60,7 +60,7 @@
           aria-controls="global-search-suggestions"
           [attr.aria-expanded]="wf.globalSearchAutocompleteOpen()"
           [attr.aria-activedescendant]="wf.globalSearchAutocompleteOpen() ? wf.activeGlobalSearchSuggestionId() : null"
-          placeholder="搜索年份、保险库、凭据、Domain 或凭据字段"
+          placeholder="搜索年份、保险库、Domain 或 item 字段"
           [ngModel]="wf.globalSearchQuery()"
           (focus)="wf.openGlobalSearchAutocomplete()"
           (keydown)="onGlobalSearchKeydown($event)"

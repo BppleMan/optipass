@@ -238,19 +238,6 @@ interface AnalysisResultResponse extends ScanResult {
 
 interface ItemSearchResponse {
   itemIds: string[];
-  suggestions: ItemSearchSuggestion[];
-}
-
-type ItemSearchSuggestionKind = "year" | "vault" | "credential" | "domain" | "field";
-type ItemSearchField = "title" | "username" | "url" | "phone" | "email" | "note";
-
-interface ItemSearchSuggestion {
-  id: string;
-  kind: ItemSearchSuggestionKind;
-  label: string;
-  field?: ItemSearchField;
-  itemIds: string[];
-  count: number;
 }
 
 export async function createApiServer(options: CreateApiServerOptions): Promise<FastifyInstance> {
@@ -396,7 +383,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (!latestScan) {
       throw new ClientInputError("还没有扫描结果，请先运行一次扫描。");
     }
-    return buildItemSearchResponse(latestScan.items, body.keywords);
+    const searchableItemIds = new Set(body.itemIds);
+    return buildItemSearchResponse(latestScan.items.filter((item) => searchableItemIds.has(item.id)), body.keywords);
   });
 
   server.get("/api/analysis", async (request) => {
@@ -1522,7 +1510,8 @@ const analyzeBodySchema = z.object({
 });
 
 const itemSearchBodySchema = z.object({
-  keywords: z.array(z.string().trim().min(1).max(120)).min(1).max(20)
+  keywords: z.array(z.string().trim().min(1).max(120)).min(1).max(20),
+  itemIds: z.array(z.string().min(1)).max(20_000),
 });
 
 const groupParamsSchema = z.object({
@@ -2408,122 +2397,11 @@ function errorMessage(error: unknown): string {
 
 function buildItemSearchResponse(items: ItemSummary[], keywords: string[]): ItemSearchResponse {
   const normalizedKeywords = Array.from(new Set(keywords.map(normalizeLooseText).filter(Boolean)));
-  const itemIds = items
-    .filter((item) => normalizedKeywords.some((keyword) => itemMatchesSearchKeyword(item, keyword)))
-    .map((item) => item.id);
-  const categorySuggestions = categorySearchSuggestions(items, normalizedKeywords);
-  const fieldSuggestions = fieldSearchSuggestions(items, normalizedKeywords);
   return {
-    itemIds,
-    suggestions: limitSearchSuggestions([...categorySuggestions, ...fieldSuggestions])
+    itemIds: items
+      .filter((item) => normalizedKeywords.every((keyword) => itemMatchesSearchKeyword(item, keyword)))
+      .map((item) => item.id),
   };
-}
-
-interface CategorySearchCandidate {
-  id: string;
-  kind: Exclude<ItemSearchSuggestionKind, "field">;
-  label: string;
-  aliases: Set<string>;
-  itemIds: Set<string>;
-}
-
-function categorySearchSuggestions(items: ItemSummary[], keywords: string[]): ItemSearchSuggestion[] {
-  const candidates = new Map<string, CategorySearchCandidate>();
-  for (const item of items) {
-    const year = item.updatedAt ? String(new Date(item.updatedAt).getUTCFullYear()) : "未记录";
-    addCategorySearchCandidate(candidates, `year:${year}`, "year", year, [year], item.id);
-    addCategorySearchCandidate(candidates, `vault:${item.vaultId}`, "vault", item.vaultName, [item.vaultName, item.vaultId], item.id);
-    for (const credential of credentialSearchOptions(item)) {
-      addCategorySearchCandidate(candidates, `credential:${credential.id}`, "credential", credential.label, credential.aliases, item.id);
-    }
-    for (const domain of item.urls.map(normalizeUrlHost).filter((value): value is string => Boolean(value))) {
-      addCategorySearchCandidate(candidates, `domain:${domain}`, "domain", domain, [domain], item.id);
-    }
-  }
-
-  return Array.from(candidates.values())
-    .filter((candidate) => Array.from(candidate.aliases).some((alias) => matchesAnyKeyword(alias, keywords)))
-    .map((candidate) => ({
-      id: candidate.id,
-      kind: candidate.kind,
-      label: candidate.label,
-      itemIds: Array.from(candidate.itemIds),
-      count: candidate.itemIds.size
-    }));
-}
-
-function addCategorySearchCandidate(
-  candidates: Map<string, CategorySearchCandidate>,
-  id: string,
-  kind: CategorySearchCandidate["kind"],
-  label: string,
-  aliases: string[],
-  itemId: string
-): void {
-  const current = candidates.get(id) ?? { id, kind, label, aliases: new Set<string>(), itemIds: new Set<string>() };
-  aliases.forEach((alias) => current.aliases.add(alias));
-  current.itemIds.add(itemId);
-  candidates.set(id, current);
-}
-
-function fieldSearchSuggestions(items: ItemSummary[], keywords: string[]): ItemSearchSuggestion[] {
-  return items.flatMap((item) => matchedItemFields(item, keywords).map((field) => ({
-    id: `field:${field}:${item.id}`,
-    kind: "field" as const,
-    label: item.title,
-    field,
-    itemIds: [item.id],
-    count: 1
-  })));
-}
-
-function matchedItemFields(item: ItemSummary, keywords: string[]): ItemSearchField[] {
-  const matched = new Set<ItemSearchField>();
-  if (matchesAnyKeyword(item.title, keywords)) {
-    matched.add("title");
-  }
-  if (item.usernames.some((value) => matchesAnyKeyword(value, keywords))) {
-    matched.add("username");
-  }
-  if (item.urls.some((value) => matchesAnyKeyword(value, keywords))) {
-    matched.add("url");
-  }
-  if (item.comparableFields.some((field) => field.kind === "phone" && field.normalizedValue && matchesAnyKeyword(field.normalizedValue, keywords))) {
-    matched.add("phone");
-  }
-  if (item.comparableFields.some((field) => field.kind === "email" && field.normalizedValue && matchesAnyKeyword(field.normalizedValue, keywords))) {
-    matched.add("email");
-  }
-  const noteValues = [
-    item.analysis?.notesText ?? "",
-    ...item.comparableFields
-      .filter((field) => isNoteField(field.label))
-      .flatMap((field) => field.normalizedValue ? [field.normalizedValue] : [])
-  ];
-  if (noteValues.some((value) => matchesAnyKeyword(value, keywords))) {
-    matched.add("note");
-  }
-  return Array.from(matched);
-}
-
-function limitSearchSuggestions(suggestions: ItemSearchSuggestion[]): ItemSearchSuggestion[] {
-  const limits = new Map<ItemSearchSuggestionKind, number>();
-  return suggestions
-    .sort((left, right) => searchSuggestionOrder(left.kind) - searchSuggestionOrder(right.kind) || right.count - left.count || left.label.localeCompare(right.label))
-    .filter((suggestion) => {
-      const count = limits.get(suggestion.kind) ?? 0;
-      limits.set(suggestion.kind, count + 1);
-      return count < 8;
-    });
-}
-
-function searchSuggestionOrder(kind: ItemSearchSuggestionKind): number {
-  return ["year", "vault", "credential", "domain", "field"].indexOf(kind);
-}
-
-function matchesAnyKeyword(value: string, keywords: string[]): boolean {
-  const normalized = normalizeLooseText(value);
-  return keywords.some((keyword) => normalized.includes(keyword));
 }
 
 function itemMatchesSearchKeyword(item: ItemSummary, keyword: string): boolean {
@@ -2532,34 +2410,13 @@ function itemMatchesSearchKeyword(item: ItemSummary, keyword: string): boolean {
 
 function searchValuesForItem(item: ItemSummary): string[] {
   return [
-    item.updatedAt ? String(new Date(item.updatedAt).getUTCFullYear()) : "未记录",
-    item.vaultName,
-    ...credentialSearchLabels(item),
-    ...item.urls.flatMap((url) => [url, normalizeUrlHost(url) ?? ""]),
     item.title,
     ...item.usernames,
+    ...item.urls,
     ...item.comparableFields
-      .filter((field) => field.kind === "email" || field.kind === "phone" || isNoteField(field.label))
+      .filter((field) => field.kind === "email")
       .flatMap((field) => field.normalizedValue ? [field.normalizedValue] : []),
-    item.analysis?.notesText ?? ""
   ];
-}
-
-function credentialSearchLabels(item: ItemSummary): string[] {
-  return credentialSearchOptions(item).flatMap((credential) => credential.aliases);
-}
-
-function credentialSearchOptions(item: ItemSummary): Array<{ id: string; label: string; aliases: string[] }> {
-  return [
-    ...(item.hasPassword ? [{ id: "password", label: "密码", aliases: ["密码", "password"] }] : []),
-    ...(item.hasTotp ? [{ id: "totp", label: "一次性密码", aliases: ["一次性密码", "totp", "one-time password"] }] : []),
-    ...(item.hasPasskey ? [{ id: "passkey", label: "Passkey", aliases: ["Passkey", "passkey"] }] : [])
-  ];
-}
-
-function isNoteField(label: string): boolean {
-  const normalized = normalizeLooseText(label);
-  return normalized.includes("note") || normalized.includes("备注");
 }
 
 function redactScanSnapshotForClient(scan: ScanSnapshot): ScanSnapshot {

@@ -24,12 +24,13 @@ trim(value).toLowerCase()
 - username 可以与另一个 item 的 email 字段交叉匹配。
 - 不执行模糊匹配、空白折叠或其他字符串改写。
 
-title 使用同样的规范化方式单独比较。title 相同可以独立满足 identity 条件，不要求 item 缺少 username，也不要求 item 包含 Passkey。
+title 使用同样的规范化方式单独比较。只有两个 item 都没有任何规范化后的 username/email identity 时，title 相同才能满足 identity 条件；只要任一 item 存在显式 identity，就不能通过 title 建立相似关系。是否包含 Passkey 不影响该规则。
 
 因此：
 
 ```text
-identityMatch = explicitIdentityIntersection || normalizedTitleEqual
+identityMatch = explicitIdentityIntersection
+  || (bothExplicitIdentitySetsEmpty && normalizedTitleEqual)
 ```
 
 ### URL 相似
@@ -68,7 +69,7 @@ similar relation = edge
 connected component = similarity group
 ```
 
-传递关系允许缺少显式 identity 的 item 通过 title 连接到完整账号。例如 A 与 B 的 title 和 URL 相同，B 与 C 的 username/email 和 URL 相同，则 A、B、C 属于同一组。
+传递关系仍适用于合法相似边，但缺少显式 identity 的 item 不能仅凭 title 连接到存在 identity 的账号组。
 
 最终分组满足：
 

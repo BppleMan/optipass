@@ -31,7 +31,7 @@ describe("findSimilarityGroups", () => {
     });
   });
 
-  it("uses title as an identity regardless of usernames, category, or credentials", () => {
+  it("uses title as an identity only when both items have no explicit identity", () => {
     const groups = findSimilarityGroups([
       item({
         id: "private:passkey",
@@ -45,13 +45,23 @@ describe("findSimilarityGroups", () => {
         title: "github",
         category: "api-credential",
         urls: ["https://github.com/login/"],
-        usernames: ["another-account"],
+        usernames: [],
         hasPassword: true,
       }),
     ]);
 
     expect(groups).toHaveLength(1);
     expect(groups[0].reasons.map((reason) => reason.rule)).toEqual(["title-url"]);
+  });
+
+  it("does not use matching titles when either item has an explicit identity", () => {
+    const groups = findSimilarityGroups([
+      item({ id: "no-identity", title: "Apple", urls: ["https://account.apple.com"], usernames: [] }),
+      item({ id: "alice", title: "apple", urls: ["https://account.apple.com/"], usernames: ["alice@example.com"] }),
+      item({ id: "bob", title: "APPLE", urls: ["https://account.apple.com"], usernames: ["bob@example.com"] }),
+    ]);
+
+    expect(groups).toHaveLength(0);
   });
 
   it("matches URL scheme, hostname, effective port, and path while ignoring query and hash", () => {
@@ -129,14 +139,14 @@ describe("findSimilarityGroups", () => {
 
   it("uses connected components to combine transitive similarity relationships", () => {
     const groups = findSimilarityGroups([
-      item({ id: "a", title: "GitHub", urls: ["https://github.com/login"], usernames: [] }),
-      item({ id: "b", title: "github", urls: ["https://github.com/login/"], usernames: ["alice"] }),
-      item({ id: "c", title: "Alice account", urls: ["https://github.com/login?source=import"], usernames: ["ALICE"] }),
+      item({ id: "a", title: "A", urls: ["https://github.com/login"], usernames: ["alice"] }),
+      item({ id: "b", title: "B", urls: ["https://github.com/login/"], usernames: ["alice", "shared"] }),
+      item({ id: "c", title: "C", urls: ["https://github.com/login?source=import"], usernames: ["shared"] }),
     ]);
 
     expect(groups).toHaveLength(1);
     expect(groups[0].itemIds).toHaveLength(3);
-    expect(groups[0].reasons.map((reason) => reason.rule)).toEqual(expect.arrayContaining(["title-url", "account-identity-url"]));
+    expect(groups[0].reasons.map((reason) => reason.rule)).toEqual(["account-identity-url", "account-identity-url"]);
   });
 
   it("does not group without both identity and URL evidence", () => {

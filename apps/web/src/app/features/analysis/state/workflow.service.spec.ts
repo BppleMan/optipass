@@ -110,130 +110,46 @@ describe('WorkflowService analysis filters', () => {
   });
 
   it('filters complete groups by item ids returned from global search', async () => {
-    const suggestion = {
-      id: 'field:title:private:github-old',
-      kind: 'field' as const,
-      label: 'GitHub old',
-      field: 'title' as const,
-      itemIds: ['private:github-old'],
-      count: 1
-    };
-    const searchItems = vi.fn(async () => ({ itemIds: ['private:github-old'], suggestions: [suggestion] }));
+    const searchItems = vi.fn(async () => ({ itemIds: ['private:github-old'] }));
     const service = createService({ searchItems });
     service.scanResult.set(scanResult());
 
     await service.updateGlobalSearchQuery('github 2025');
 
-    expect(searchItems).toHaveBeenCalledWith(['github', '2025']);
+    expect(searchItems).toHaveBeenCalledWith(['github', '2025'], [
+      'icloud:github-new',
+      'private:github-old',
+      'private:apple-new',
+      'chrome:apple-old'
+    ]);
     expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
     expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['搜索：github 2025']);
-    expect(service.globalSearchSuggestionGroups()).toEqual([{
-      kind: 'field',
-      label: '字段匹配项',
-      allSelected: false,
-      someSelected: false,
-      suggestions: [{ ...suggestion, index: 0, selected: false, detail: '标题匹配' }]
-    }]);
-
-    service.selectGlobalSearchSuggestion(suggestion);
-    expect(service.globalSearchAutocompleteOpen()).toBe(true);
-    expect(service.selectedGlobalSearchSuggestionCount()).toBe(1);
-    expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['字段匹配项：GitHub old']);
-
-    service.toggleAnalysisFilter('vaults', 'private', true);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
 
     service.removeAnalysisFilter('search', 'github 2025');
     expect(service.globalSearchQuery()).toBe('');
     expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
   });
 
-  it('supports single, multiple, group, and global autocomplete selection', async () => {
-    const githubSuggestion = {
-      id: 'domain:github.com',
-      kind: 'domain' as const,
-      label: 'github.com',
-      itemIds: ['private:github-old'],
-      count: 1
-    };
-    const appleSuggestion = {
-      id: 'domain:apple.com',
-      kind: 'domain' as const,
-      label: 'apple.com',
-      itemIds: ['private:apple-new'],
-      count: 1
-    };
-    const titleSuggestion = {
-      id: 'field:title:icloud:github-new',
-      kind: 'field' as const,
-      label: 'GitHub',
-      field: 'title' as const,
-      itemIds: ['icloud:github-new'],
-      count: 1
-    };
-    const suggestions = [githubSuggestion, appleSuggestion, titleSuggestion];
+  it('searches sidebar options, shares their state, and unions structured and field matches', async () => {
     const service = createService({
-      searchItems: vi.fn(async () => ({
-        itemIds: ['private:github-old', 'private:apple-new', 'icloud:github-new'],
-        suggestions
-      }))
+      searchItems: vi.fn(async () => ({ itemIds: ['private:apple-new'] }))
     });
     service.scanResult.set(scanResult());
 
-    await service.updateGlobalSearchQuery('com');
-    service.selectGlobalSearchSuggestion(githubSuggestion);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
+    await service.updateGlobalSearchQuery('2025 private github');
+    const suggestions = service.globalSearchSuggestionGroups().flatMap((group) => group.suggestions);
+    expect(suggestions.map((suggestion) => [suggestion.kind, suggestion.id])).toEqual([
+      ['year', '2025'],
+      ['vault', 'private'],
+      ['domain', 'github.com']
+    ]);
 
-    service.selectGlobalSearchSuggestion(appleSuggestion);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
-    expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['已选 2 个补全项']);
+    suggestions.forEach((suggestion) => service.selectGlobalSearchSuggestion(suggestion));
+    expect(service.analysisFilters()).toMatchObject({ years: ['2025'], vaultIds: ['private'], domains: ['github.com'] });
+    expect(service.visibleGroups().map((group) => group.id)).toEqual(['apple-group']);
 
-    service.selectGlobalSearchSuggestion(titleSuggestion);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
-    service.selectGlobalSearchSuggestion(titleSuggestion);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
-
-    const domainGroup = service.globalSearchSuggestionGroups().find((group) => group.kind === 'domain')!;
-    expect(domainGroup.allSelected).toBe(true);
-    service.toggleGlobalSearchSuggestionGroup(domainGroup);
-    expect(service.selectedGlobalSearchSuggestionCount()).toBe(0);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
-
-    service.toggleAllGlobalSearchSuggestions();
-    expect(service.selectedGlobalSearchSuggestionCount()).toBe(3);
-    expect(service.allGlobalSearchSuggestionsSelected()).toBe(true);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
-    service.toggleAllGlobalSearchSuggestions();
-    expect(service.selectedGlobalSearchSuggestionCount()).toBe(0);
-  });
-
-  it("only exposes autocomplete suggestions that belong to similarity groups", async () => {
-    const githubSuggestion = {
-      id: "field:title:private:github-old",
-      kind: "field" as const,
-      label: "GitHub old",
-      field: "title" as const,
-      itemIds: ["private:github-old"],
-      count: 1,
-    };
-    const service = createService({
-      searchItems: vi.fn(async () => ({
-        itemIds: ["private:github-old"],
-        suggestions: [githubSuggestion],
-      })),
-    });
-    service.scanResult.set(scanResult());
-
-    await service.updateGlobalSearchQuery("old");
-
-    const suggestionGroups = service.globalSearchSuggestionGroups();
-    expect(suggestionGroups).toHaveLength(1);
-    expect(suggestionGroups[0].suggestions.map((suggestion) => suggestion.id)).toEqual([githubSuggestion.id]);
-
-    service.toggleAllGlobalSearchSuggestions();
-
-    expect(service.selectedGlobalSearchSuggestionCount()).toBe(1);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(["github-group"]);
+    await service.updateGlobalSearchQuery('apple');
+    expect(service.analysisFilters()).toMatchObject({ years: ['2025'], vaultIds: ['private'], domains: ['github.com'] });
   });
 
   it('exposes removable filter chips', () => {
@@ -850,14 +766,7 @@ function createService(overrides: {
   execute?: (decision: GroupDecision) => Promise<ExecuteResponse>;
   skipGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
   restoreSkippedGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
-  searchItems?: (keywords: string[]) => Promise<{ itemIds: string[]; suggestions: Array<{
-    id: string;
-    kind: 'year' | 'vault' | 'credential' | 'domain' | 'field';
-    label: string;
-    field?: 'title' | 'username' | 'url' | 'phone' | 'email' | 'note';
-    itemIds: string[];
-    count: number;
-  }> }>;
+  searchItems?: (keywords: string[], itemIds: string[]) => Promise<{ itemIds: string[] }>;
   loadAnalysis?: () => Promise<ReturnType<typeof scanResult> & { skippedGroupIds: string[] }>;
   startActionExecution?: (draft: ActionDraft) => Promise<unknown>;
   stopActionExecution?: (executionId: string) => Promise<unknown>;
@@ -1022,7 +931,7 @@ function createService(overrides: {
         restorableSkippedGroupCount: 0,
         scan: { ...scanResult(), scanId, skippedGroupIds: [] }
       })),
-      searchItems: overrides.searchItems ?? vi.fn(async () => ({ itemIds: [], suggestions: [] }))
+      searchItems: overrides.searchItems ?? vi.fn(async () => ({ itemIds: [] }))
     } as never,
     { navigateByUrl: overrides.navigateByUrl ?? vi.fn() } as never
   );

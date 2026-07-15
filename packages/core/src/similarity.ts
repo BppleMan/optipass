@@ -110,7 +110,7 @@ function similarityReasons(
       itemIds,
     });
   }
-  if (left.title && left.title === right.title) {
+  if (left.accountIdentities.size === 0 && right.accountIdentities.size === 0 && left.title && left.title === right.title) {
     reasons.push({
       rule: "title-url",
       label: "标题相同且 URL 相似",
