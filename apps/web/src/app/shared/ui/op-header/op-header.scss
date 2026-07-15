@@ -19,6 +19,7 @@
     .brand-lockup,
     .brand-wordmark,
     .header-context,
+    .execution-context,
     .dry-run-speed-control,
     .dry-run-speed-segments,
     .account-chip,
@@ -63,22 +64,25 @@
     }
 
     .header-context {
-        width: 92px;
+        width: clamp(174px, 25vw, 210px);
         flex: 0 0 auto;
         flex-direction: column;
         align-items: stretch;
-        gap: 3px;
+        gap: 4px;
+        padding: 5px 7px;
+        border: 1px solid #343840;
+        border-radius: 11px;
+        background: #222326;
     }
     
     .account-chip {
         --account-color: #A7AFBA;
         --account-glow: transparent;
-        width: 100%;
-        min-height: 14px;
+        height: 17px;
         justify-content: flex-start;
         gap: 7px;
         color: var(--account-color);
-        font-size: 12px;
+        font-size: 11.5px;
         white-space: nowrap;
     }
 
@@ -108,25 +112,27 @@
         text-overflow: ellipsis;
         color: inherit;
         font-weight: 650;
-        text-align: justify;
-        text-align-last: justify;
-        text-justify: inter-character;
     }
 
     .account-chip span {
-        width: 7px;
-        height: 7px;
-        flex: 0 0 auto;
+        width: 6px;
+        height: 6px;
         border-radius: 999px;
         background: var(--account-color);
         box-shadow: 0 0 12px var(--account-glow);
     }
     
+    .execution-context {
+        justify-content: space-between;
+        gap: 6px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
     .mutation-switch {
-        width: 100%;
-        height: 18px;
+        height: 16px;
         justify-content: flex-start;
-        gap: 7px;
+        gap: 5px;
         padding: 0;
         border: 0;
         background: transparent;
@@ -135,17 +141,13 @@
     }
 
     .mutation-switch strong {
-        min-width: 0;
-        flex: 1 1 auto;
-        text-align: justify;
-        text-align-last: justify;
-        text-justify: inter-character;
+        font-size: 10.5px;
     }
     
     .mutation-switch-track {
         position: relative;
-        width: 34px;
-        height: 18px;
+        width: 28px;
+        height: 16px;
         border: 1px solid rgba(255, 203, 107, 0.24);
         border-radius: 999px;
         background: rgba(255, 203, 107, 0.12);
@@ -156,8 +158,8 @@
         position: absolute;
         top: 3px;
         left: 3px;
-        width: 10px;
-        height: 10px;
+        width: 8px;
+        height: 8px;
         border-radius: 999px;
         background: #FFCB6B;
         box-shadow: 0 0 10px rgba(255, 203, 107, 0.28);
@@ -174,7 +176,7 @@
     }
     
     .mutation-switch.enabled .mutation-switch-track i {
-        transform: translateX(16px);
+        transform: translateX(12px);
         background: #C3E88D;
         box-shadow: 0 0 12px rgba(195, 232, 141, 0.42);
     }
@@ -188,10 +190,11 @@
     }
 
     .dry-run-speed-control {
-        width: 100%;
+        width: 78px;
+        flex: 0 0 auto;
         color: #78909C;
-        font-size: 10.5px;
-        line-height: 18px;
+        font-size: 10px;
+        line-height: 16px;
         white-space: nowrap;
     }
 
@@ -206,7 +209,7 @@
     .dry-run-speed-segments button {
         min-width: 0;
         flex: 1 1 0;
-        height: 18px;
+        height: 16px;
         padding: 0;
         border: 0;
         border-left: 1px solid #3A3A3A;
@@ -214,7 +217,7 @@
         color: #90A4AE;
         font: inherit;
         font-weight: 700;
-        line-height: 16px;
+        line-height: 14px;
     }
 
     .dry-run-speed-segments button:first-child {

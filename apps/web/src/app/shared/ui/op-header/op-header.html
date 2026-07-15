@@ -21,34 +21,36 @@
                 <strong>{{ accountChip() }}</strong>
             }
         </div>
-        <button
-            type="button"
-            class="mutation-switch"
-            [class.enabled]="mutationsEnabled()"
-            [attr.aria-pressed]="mutationsEnabled()"
-            [disabled]="mutationToggleDisabled()"
-            [attr.title]="mutationsEnabled() ? '可写模式：应用计划会写入 1Password' : '试写模式：应用计划只执行 dry-run'"
-            (click)="toggleMutations()"
-        >
-            <span class="mutation-switch-track" aria-hidden="true">
-                <i></i>
-            </span>
-            <strong>{{ mutationsEnabled() ? "可写模式" : "试写模式" }}</strong>
-        </button>
-        @if (!mutationsEnabled()) {
-            <div class="dry-run-speed-control">
-                <div class="dry-run-speed-segments" role="group" aria-label="试写执行速度">
-                    @for (multiplier of dryRunSpeedOptions; track multiplier) {
-                        <button
-                            type="button"
-                            [class.active]="dryRunSpeedMultiplier() === multiplier"
-                            [attr.aria-pressed]="dryRunSpeedMultiplier() === multiplier"
-                            [disabled]="dryRunSpeedDisabled()"
-                            (click)="selectDryRunSpeed(multiplier)"
-                        >{{ multiplier }}x</button>
-                    }
+        <div class="execution-context">
+            <button
+                type="button"
+                class="mutation-switch"
+                [class.enabled]="mutationsEnabled()"
+                [attr.aria-pressed]="mutationsEnabled()"
+                [disabled]="mutationToggleDisabled()"
+                [attr.title]="mutationsEnabled() ? '可写模式：应用计划会写入 1Password' : '试写模式：应用计划只执行 dry-run'"
+                (click)="toggleMutations()"
+            >
+                <span class="mutation-switch-track" aria-hidden="true">
+                    <i></i>
+                </span>
+                <strong>{{ mutationsEnabled() ? "可写模式" : "试写模式" }}</strong>
+            </button>
+            @if (!mutationsEnabled()) {
+                <div class="dry-run-speed-control">
+                    <div class="dry-run-speed-segments" role="group" aria-label="试写执行速度">
+                        @for (multiplier of dryRunSpeedOptions; track multiplier) {
+                            <button
+                                type="button"
+                                [class.active]="dryRunSpeedMultiplier() === multiplier"
+                                [attr.aria-pressed]="dryRunSpeedMultiplier() === multiplier"
+                                [disabled]="dryRunSpeedDisabled()"
+                                (click)="selectDryRunSpeed(multiplier)"
+                            >{{ multiplier }}x</button>
+                        }
+                    </div>
                 </div>
-            </div>
-        }
+            }
+        </div>
     </div>
 </header>
