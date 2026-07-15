@@ -207,6 +207,45 @@ describe('WorkflowService analysis filters', () => {
     expect(service.selectedGlobalSearchSuggestionCount()).toBe(0);
   });
 
+  it("only exposes autocomplete suggestions that can match the active duplicate kind", async () => {
+    const githubSuggestion = {
+      id: "field:title:private:github-old",
+      kind: "field" as const,
+      label: "GitHub old",
+      field: "title" as const,
+      itemIds: ["private:github-old"],
+      count: 1,
+    };
+    const appleSuggestion = {
+      id: "field:title:private:apple-new",
+      kind: "field" as const,
+      label: "Apple",
+      field: "title" as const,
+      itemIds: ["private:apple-new"],
+      count: 1,
+    };
+    const service = createService({
+      searchItems: vi.fn(async () => ({
+        itemIds: ["private:github-old", "private:apple-new"],
+        suggestions: [githubSuggestion, appleSuggestion],
+      })),
+    });
+    const result = scanResult();
+    result.groups[1].candidateClass = "exact-duplicate";
+    service.scanResult.set(result);
+
+    await service.updateGlobalSearchQuery("old");
+
+    const suggestionGroups = service.globalSearchSuggestionGroups();
+    expect(suggestionGroups).toHaveLength(1);
+    expect(suggestionGroups[0].suggestions.map((suggestion) => suggestion.id)).toEqual([githubSuggestion.id]);
+
+    service.toggleAllGlobalSearchSuggestions();
+
+    expect(service.selectedGlobalSearchSuggestionCount()).toBe(1);
+    expect(service.visibleGroups().map((group) => group.id)).toEqual(["github-group"]);
+  });
+
   it('exposes removable chips and clears filters on kind changes', () => {
     const service = createService();
     service.scanResult.set(scanResult());

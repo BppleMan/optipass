@@ -267,13 +267,13 @@ export class WorkflowService {
   readonly analysisFilterSections = computed<AnalysisFilterSectionView[]>(() => this.buildAnalysisFilterSections());
   readonly analysisFilterSummary = computed<AnalysisFilterSummaryView>(() => this.buildAnalysisFilterSummary());
   readonly globalSearchSuggestionGroups = computed<GlobalSearchSuggestionGroupView[]>(() => this.buildGlobalSearchSuggestionGroups());
-  readonly selectedGlobalSearchSuggestionCount = computed(() => this.selectedGlobalSearchSuggestionIds().length);
-  readonly allGlobalSearchSuggestionsSelected = computed(() => {
-    const suggestions = this.globalSearchSuggestions();
-    return suggestions.length > 0 && this.selectedGlobalSearchSuggestionIds().length === suggestions.length;
+  public readonly selectedGlobalSearchSuggestionCount = computed(() => this.selectedGlobalSearchSuggestions().length);
+  public readonly allGlobalSearchSuggestionsSelected = computed(() => {
+    const suggestions = this.scopedGlobalSearchSuggestions();
+    return suggestions.length > 0 && this.selectedGlobalSearchSuggestions().length === suggestions.length;
   });
-  readonly activeGlobalSearchSuggestionId = computed(() => {
-    const id = this.globalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()]?.id;
+  public readonly activeGlobalSearchSuggestionId = computed(() => {
+    const id = this.scopedGlobalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()]?.id;
     return id ? `global-search-suggestion-${id}` : undefined;
   });
   readonly decisionStats = computed<DecisionStatsView>(() => this.buildDecisionStats());
@@ -638,7 +638,7 @@ export class WorkflowService {
     this.filterSectionsOpen.set({ ...open, [sectionId]: !open[sectionId] });
   }
 
-  async updateGlobalSearchQuery(value: string): Promise<void> {
+  public async updateGlobalSearchQuery(value: string): Promise<void> {
     this.globalSearchQuery.set(value);
     this.selectedGlobalSearchSuggestionIds.set([]);
     const keywords = searchKeywords(value);
@@ -662,7 +662,7 @@ export class WorkflowService {
         this.globalSearchItemIds.set(response.itemIds);
         this.globalSearchSuggestions.set(response.suggestions);
         this.activeGlobalSearchSuggestionIndex.set(0);
-        this.globalSearchAutocompleteOpen.set(response.suggestions.length > 0);
+        this.globalSearchAutocompleteOpen.set(this.scopedGlobalSearchSuggestions().length > 0);
       }
     } catch (error) {
       if (requestId === this.globalSearchRequestId) {
@@ -675,8 +675,8 @@ export class WorkflowService {
     }
   }
 
-  openGlobalSearchAutocomplete(): void {
-    if (this.globalSearchQuery().trim() && this.globalSearchSuggestions().length > 0) {
+  public openGlobalSearchAutocomplete(): void {
+    if (this.globalSearchQuery().trim() && this.scopedGlobalSearchSuggestions().length > 0) {
       this.globalSearchAutocompleteOpen.set(true);
     }
   }
@@ -685,8 +685,8 @@ export class WorkflowService {
     this.globalSearchAutocompleteOpen.set(false);
   }
 
-  moveGlobalSearchSuggestion(direction: 1 | -1): void {
-    const suggestions = this.globalSearchSuggestions();
+  public moveGlobalSearchSuggestion(direction: 1 | -1): void {
+    const suggestions = this.scopedGlobalSearchSuggestions();
     if (suggestions.length === 0) {
       return;
     }
@@ -699,8 +699,8 @@ export class WorkflowService {
     this.activeGlobalSearchSuggestionIndex.set(index);
   }
 
-  selectActiveGlobalSearchSuggestion(): void {
-    const suggestion = this.globalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()];
+  public selectActiveGlobalSearchSuggestion(): void {
+    const suggestion = this.scopedGlobalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()];
     if (suggestion) {
       this.selectGlobalSearchSuggestion(suggestion);
     }
@@ -728,10 +728,10 @@ export class WorkflowService {
     this.applyGlobalSearchSuggestionSelection([...selectedIds]);
   }
 
-  toggleAllGlobalSearchSuggestions(): void {
+  public toggleAllGlobalSearchSuggestions(): void {
     const selectedIds = this.allGlobalSearchSuggestionsSelected()
       ? []
-      : this.globalSearchSuggestions().map((suggestion) => suggestion.id);
+      : this.scopedGlobalSearchSuggestions().map((suggestion) => suggestion.id);
     this.applyGlobalSearchSuggestionSelection(selectedIds);
   }
 
@@ -1374,7 +1374,7 @@ export class WorkflowService {
   }
 
   private buildGlobalSearchSuggestionGroups(): GlobalSearchSuggestionGroupView[] {
-    const suggestions = this.globalSearchSuggestions();
+    const suggestions = this.scopedGlobalSearchSuggestions();
     const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
     return (Object.keys(globalSearchSuggestionKindLabels) as ItemSearchSuggestionKind[])
       .map((kind) => {
@@ -1402,11 +1402,12 @@ export class WorkflowService {
 
   private selectedGlobalSearchSuggestions(): ItemSearchSuggestion[] {
     const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
-    return this.globalSearchSuggestions().filter((suggestion) => selectedIds.has(suggestion.id));
+    return this.scopedGlobalSearchSuggestions().filter((suggestion) => selectedIds.has(suggestion.id));
   }
 
   private applyGlobalSearchSuggestionSelection(selectedIds: string[]): void {
-    const availableIds = new Set(this.globalSearchSuggestions().map((suggestion) => suggestion.id));
+    const suggestions = this.scopedGlobalSearchSuggestions();
+    const availableIds = new Set(suggestions.map((suggestion) => suggestion.id));
     const normalizedIds = selectedIds.filter((id) => availableIds.has(id));
     this.selectedGlobalSearchSuggestionIds.set(normalizedIds);
     if (normalizedIds.length === 0) {
@@ -1414,11 +1415,25 @@ export class WorkflowService {
       return;
     }
     const itemIds = new Set(
-      this.globalSearchSuggestions()
+      suggestions
         .filter((suggestion) => normalizedIds.includes(suggestion.id))
         .flatMap((suggestion) => suggestion.itemIds),
     );
     this.globalSearchItemIds.set([...itemIds]);
+  }
+
+  private scopedGlobalSearchSuggestions(): ItemSearchSuggestion[] {
+    const activeItemIds = new Set(this.activeKindGroups().flatMap((group) => group.items.map((item) => item.id)));
+    return this.globalSearchSuggestions()
+      .map((suggestion) => {
+        const itemIds = suggestion.itemIds.filter((itemId) => activeItemIds.has(itemId));
+        return {
+          ...suggestion,
+          itemIds,
+          count: itemIds.length,
+        };
+      })
+      .filter((suggestion) => suggestion.itemIds.length > 0);
   }
 
   private toGroupView(group: DuplicateGroup, itemById: Map<string, ItemSummary>, vaults: VaultSummary[]): DuplicateGroupView {
