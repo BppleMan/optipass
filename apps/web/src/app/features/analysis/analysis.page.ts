@@ -1,13 +1,13 @@
 import { afterNextRender, AfterViewChecked, ChangeDetectionStrategy, Component, ElementRef, Injector, OnInit, ViewChild } from "@angular/core";
 import { FormsModule } from "@angular/forms";
-import type { DuplicateGroupView, DuplicateItemView, DuplicateKind, RemoveAction } from "../../core/models/workflow.models";
+import type { DuplicateGroupView, DuplicateItemView, RemoveAction } from "../../core/models/workflow.models";
 import { ItemTypeIconComponent } from "../../shared/ui/item-type-icon/item-type-icon";
 import { resolveItemTypeIcon } from "../../shared/library/icon-library";
 import { OpButtonComponent } from "../../shared/ui/op-button/op-button";
 import { OpProgressComponent } from "../../shared/ui/op-progress/op-progress";
 import { SegmentedControlComponent, type SegmentedControlItem } from "../../shared/ui/segmented-control/segmented-control";
-import { OpTabsComponent } from "../../shared/ui/op-tabs/op-tabs";
 import { VaultIconComponent } from "../../shared/ui/vault-icon/vault-icon";
+import { AnalysisEmptyStateComponent } from "./components/analysis-empty-state/analysis-empty-state";
 import { AnalysisItemMatrix } from "./components/analysis-item-matrix/analysis-item-matrix";
 import { WorkflowService } from "./state/workflow.service";
 
@@ -17,7 +17,7 @@ type GroupRemovalMode = RemoveAction | 'manual';
   selector: "op-analysis-page",
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [AnalysisItemMatrix, FormsModule, ItemTypeIconComponent, OpButtonComponent, OpProgressComponent, SegmentedControlComponent, OpTabsComponent, VaultIconComponent],
+  imports: [AnalysisEmptyStateComponent, AnalysisItemMatrix, FormsModule, ItemTypeIconComponent, OpButtonComponent, OpProgressComponent, SegmentedControlComponent, VaultIconComponent],
   templateUrl: "./analysis.page.html",
   styleUrls: [
     "./analysis.page.scss",
@@ -71,10 +71,6 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
       return;
     }
     queueMicrotask(() => this.scrollApplyProgressToOperation(followedOperation.id));
-  }
-
-  setKind(kind: string): void {
-    this.wf.setActiveKind(kind as DuplicateKind);
   }
 
   public onGlobalSearchKeydown(event: KeyboardEvent): void {

@@ -9,10 +9,6 @@ import {
   ScanResult
 } from "./model.js";
 
-interface ExecutionPlanOptions {
-  requireKeep?: boolean;
-}
-
 export function validateDecisionItemSet(decisions: ActionDraftGroup, expectedItemIds: string[]): string[] {
   const blockers: string[] = [];
   const actualItemIds = decisions.items.map((decision) => decision.itemId);
@@ -36,16 +32,13 @@ export function validateDecisionItemSet(decisions: ActionDraftGroup, expectedIte
 export function createExecutionPlan(
   groupId: string,
   decisions: ActionDraftGroup,
-  items: ItemSummary[],
-  options: ExecutionPlanOptions = {}
+  items: ItemSummary[]
 ): ActionPlanGroup {
   const itemById = new Map(items.map((item) => [item.id, item]));
   const warnings: string[] = [];
   const blockers: string[] = [];
   const keepDecisions = decisions.items.filter((decision) => decision.keep);
-  const requireKeep = options.requireKeep ?? true;
-
-  if (requireKeep && keepDecisions.length === 0) {
+  if (keepDecisions.length === 0) {
     blockers.push("该组没有选择任何保留项。请至少保留一个 item。");
   }
 
@@ -122,9 +115,7 @@ export function createActionPlan(draft: ActionDraft, scan: ScanResult, writeEnab
       throw new Error(`ActionDraft 包含未知重复组：${draftGroup.groupId}`);
     }
     const consistencyBlockers = validateDecisionItemSet(draftGroup, group.itemIds);
-    const plan = createActionPlanGroup(draftGroup.groupId, draftGroup, scan.items, {
-      requireKeep: group.candidateClass !== "delete-suggestion"
-    });
+    const plan = createActionPlanGroup(draftGroup.groupId, draftGroup, scan.items);
     return {
       ...plan,
       blockers: Array.from(new Set([...plan.blockers, ...consistencyBlockers]))

@@ -1,8 +1,7 @@
-import type { ActionDraftItem, ActionPlanGroup, DuplicateCandidateClass, ItemSummary } from '@optimize-password/core';
+import type { ActionDraftItem, ActionPlanGroup, ItemSummary } from '@optimize-password/core';
 
 export type AppStep = 'scan' | 'analysis' | 'applying' | 'summary';
 export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
-export type DuplicateKind = 'similar' | 'identical' | 'incomplete';
 export type AnalysisFilterSectionId = 'years' | 'vaults' | 'domains' | 'credentials';
 export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential' | 'search';
 export type FilterCredentialKind = 'password' | 'totp' | 'passkey';
@@ -38,11 +37,6 @@ export interface TabView {
   count?: number;
   color: string;
   bg: string;
-}
-
-export interface KindTabView extends TabView {
-  kind: DuplicateKind;
-  count: number;
 }
 
 export interface CredentialChipView {
@@ -125,10 +119,6 @@ export interface DuplicateItemView {
 
 export interface DuplicateGroupView {
   id: string;
-  kind: DuplicateKind;
-  kindLabel: string;
-  badgeBg: string;
-  badgeColor: string;
   site: string;
   username: string;
   count: number;
@@ -155,10 +145,6 @@ export interface DecisionStatsView {
 
 export interface PreviewGroupView {
   id: string;
-  kind: DuplicateKind;
-  kindLabel: string;
-  badgeBg: string;
-  badgeColor: string;
   username: string;
   site: string;
   skipped: boolean;
@@ -223,19 +209,6 @@ export interface ApplyOperationGroupView {
   total: number;
   error?: string;
   operations: ApplyOperationRowView[];
-}
-
-export function kindFromCandidateClass(candidateClass: DuplicateCandidateClass): DuplicateKind {
-  switch (candidateClass) {
-    case 'exact-duplicate':
-      return 'identical';
-    case 'delete-suggestion':
-      return 'incomplete';
-    case 'misc-title':
-      return 'incomplete';
-    case 'similar-login':
-      return 'similar';
-  }
 }
 
 export function removeActionFromDecision(decision: ActionDraftItem): RemoveAction {

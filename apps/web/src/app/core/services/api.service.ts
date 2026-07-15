@@ -195,19 +195,6 @@ export interface AnalysisResultResponse extends ScanResult {
 
 export interface ItemSearchResponse {
   itemIds: string[];
-  suggestions: ItemSearchSuggestion[];
-}
-
-export type ItemSearchSuggestionKind = "year" | "vault" | "credential" | "domain" | "field";
-export type ItemSearchField = "title" | "username" | "url" | "phone" | "email" | "note";
-
-export interface ItemSearchSuggestion {
-  id: string;
-  kind: ItemSearchSuggestionKind;
-  label: string;
-  field?: ItemSearchField;
-  itemIds: string[];
-  count: number;
 }
 
 export interface SkipGroupResponse {
@@ -273,9 +260,9 @@ export class ApiService {
     ));
   }
 
-  async searchItems(keywords: string[]): Promise<ItemSearchResponse> {
+  async searchItems(keywords: string[], itemIds: string[]): Promise<ItemSearchResponse> {
     return this.request(firstValueFrom(
-      this.http.post<ItemSearchResponse>(this.apiUrl("/api/items/search"), { keywords }, { headers: this.headers() })
+      this.http.post<ItemSearchResponse>(this.apiUrl("/api/items/search"), { keywords, itemIds }, { headers: this.headers() })
     ));
   }
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { findDuplicateGroups, ItemSummary, ScanResult, VaultSummary } from "@optimize-password/core";
+import { findSimilarityGroups, ItemSummary, ScanResult, VaultSummary } from "@optimize-password/core";
 
 const vaults: VaultSummary[] = [
   { id: "vault-personal", name: "Personal" },
@@ -31,12 +31,7 @@ const items: ItemSummary[] = [
       { label: "password", kind: "secret", normalizedValueHash: "mock-github-work-secret" }
     ],
     analysis: {
-      notesText: "GitHub work account",
-      notesValueHash: "mock-analysis-github-notes",
-      exactUrlKeys: ["https://github.com/login"],
-      similarUrlKeys: ["https://github.com/login"],
-      identityValues: ["alice@example.com"],
-      fieldSignatures: ["mock-analysis-github-username", "mock-analysis-github-password"]
+      notesText: "GitHub work account"
     }
   },
   {
@@ -48,7 +43,7 @@ const items: ItemSummary[] = [
     category: "login",
     createdAt: "2024-05-01T12:00:00.000Z",
     updatedAt: "2026-05-15T12:00:00.000Z",
-    urls: ["github.com/login"],
+    urls: ["https://github.com/login/"],
     usernames: ["alice@example.com"],
     tags: ["imported", "work"],
     fieldCount: 3,
@@ -140,7 +135,7 @@ const items: ItemSummary[] = [
     category: "login",
     createdAt: "2024-03-01T12:00:00.000Z",
     updatedAt: "2025-10-12T12:00:00.000Z",
-    urls: ["linear.app/login"],
+    urls: ["https://linear.app/login/"],
     usernames: ["alice@example.com"],
     tags: ["imported"],
     fieldCount: 3,
@@ -178,12 +173,7 @@ const items: ItemSummary[] = [
       { label: "support phone", kind: "phone", normalizedValue: "13800000000" }
     ],
     analysis: {
-      notesText: "vpn recovery note",
-      notesValueHash: "mock-analysis-vpn-notes",
-      exactUrlKeys: [],
-      similarUrlKeys: [],
-      identityValues: [],
-      fieldSignatures: ["mock-analysis-vpn-note"]
+      notesText: "vpn recovery note"
     }
   }
 ];
@@ -195,6 +185,6 @@ export function createMockScanResult(): ScanResult {
     analyzedAt: new Date().toISOString(),
     vaults,
     items,
-    groups: findDuplicateGroups(items)
+    groups: findSimilarityGroups(items)
   };
 }

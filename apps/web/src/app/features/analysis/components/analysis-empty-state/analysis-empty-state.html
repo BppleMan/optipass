@@ -1,0 +1,49 @@
+<div class="analysis-empty-state">
+    <div class="analysis-empty-card">
+        <div class="analysis-empty-visual" aria-hidden="true">
+            <span class="analysis-empty-orbit analysis-empty-orbit-large"></span>
+            <span class="analysis-empty-orbit analysis-empty-orbit-small"></span>
+            <span class="analysis-empty-spark analysis-empty-spark-top"></span>
+            <span class="analysis-empty-spark analysis-empty-spark-right"></span>
+            <div class="analysis-empty-icon">
+                <svg viewBox="0 0 48 48" role="presentation">
+                    <rect x="10" y="8" width="28" height="32" rx="5" fill="none" stroke="currentColor" stroke-width="2"></rect>
+                    <path d="M16 17h16M16 24h10M16 31h7" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2"></path>
+                    <circle cx="32" cy="31" r="3" fill="currentColor"></circle>
+                </svg>
+            </div>
+        </div>
+        <div class="analysis-empty-copy">
+            <span class="analysis-empty-kicker">分析工作区</span>
+            <h1>先完成一次扫描</h1>
+            <p>扫描完成后，重复项、筛选条件和执行计划会在这里展开。</p>
+            <div class="analysis-empty-flow" aria-label="分析流程">
+                <div class="analysis-flow-step is-current">
+                    <span>01</span>
+                    <div>
+                        <strong>扫描</strong>
+                        <small>读取保险库</small>
+                    </div>
+                </div>
+                <i aria-hidden="true"></i>
+                <div class="analysis-flow-step">
+                    <span>02</span>
+                    <div>
+                        <strong>分析</strong>
+                        <small>识别重复项</small>
+                    </div>
+                </div>
+                <i aria-hidden="true"></i>
+                <div class="analysis-flow-step">
+                    <span>03</span>
+                    <div>
+                        <strong>处理</strong>
+                        <small>应用执行计划</small>
+                    </div>
+                </div>
+            </div>
+            <op-button size="sm" label="返回扫描" (pressed)="back.emit()"></op-button>
+            <small class="analysis-empty-hint">扫描只在本机读取数据，不会离开你的设备。</small>
+        </div>
+    </div>
+</div>

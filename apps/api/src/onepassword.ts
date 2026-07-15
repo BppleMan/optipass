@@ -7,8 +7,6 @@ import {
   ComparableField,
   ItemCategory,
   ItemSummary,
-  normalizeDuplicateFullUrl,
-  normalizeSimilarUrl,
   RevealedCredentialField,
   ScanProgressEvent,
   ScanSnapshot,
@@ -352,13 +350,6 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     .filter(Boolean);
 
   const comparableFields = fields.flatMap((field) => toComparableField(field));
-  const analysisIdentityValues = uniqueSorted([
-    ...usernames,
-    ...comparableFields
-      .filter((field) => field.kind === "username" || field.kind === "email" || field.kind === "phone")
-      .map((field) => field.normalizedValue ?? "")
-  ].filter((value) => value.length > 0));
-
   return {
     id: appItemId,
     onePasswordItemId: rawItemId,
@@ -379,42 +370,9 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     hasNotes: notes.trim().length > 0,
     comparableFields,
     analysis: {
-      notesText: notes,
-      notesValueHash: hashRawValue(notes),
-      exactUrlKeys: uniqueSorted(urls.map((url) => normalizeDuplicateFullUrl(url)).filter((url): url is string => Boolean(url))),
-      similarUrlKeys: uniqueSorted(urls.map((url) => normalizeSimilarUrl(url)).filter((url): url is string => Boolean(url))),
-      identityValues: analysisIdentityValues,
-      fieldSignatures: fields.map((field) => exactFieldSignature(field)).sort()
+      notesText: notes
     }
   };
-}
-
-function exactFieldSignature(field: ItemField): string {
-  const label = String(readAny(field, "title", "label", "id") ?? "field");
-  const value = String(readAny(field, "value") ?? "");
-  return JSON.stringify({
-    label,
-    fieldType: fieldType(field),
-    credentialKind: exactFieldCredentialKind(field),
-    valueHash: hashRawValue(value)
-  });
-}
-
-function exactFieldCredentialKind(field: ItemField): string {
-  const type = fieldType(field);
-  if (isSignInWithField(field)) {
-    return "passkey";
-  }
-  if (type.includes("totp")) {
-    return "totp";
-  }
-  if (isPasswordField(field)) {
-    return "password";
-  }
-  if (type.includes("concealed") || type.includes("secret")) {
-    return "secret";
-  }
-  return "non-credential";
 }
 
 function toComparableField(field: ItemField): ComparableField[] {
@@ -565,9 +523,6 @@ function hashValue(value: string): string {
   return createHash("sha256").update(value.normalize("NFKC")).digest("base64url");
 }
 
-function hashRawValue(value: string): string {
-  return createHash("sha256").update(value).digest("base64url");
-}
 
 function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort();

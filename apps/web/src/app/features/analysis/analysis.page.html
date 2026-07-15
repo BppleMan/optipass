@@ -7,11 +7,7 @@
       <div class="analysis-progress"><op-progress [value]="wf.analysisPct()" color="#82aaff"></op-progress></div>
     </div>
   } @else if (!wf.scanResult()) {
-    <div class="analysis-running">
-      <h2>尚未生成分析结果</h2>
-      <p>请先完成扫描，再从扫描页进入分析。</p>
-      <op-button size="sm" variant="ghost" label="← 返回扫描" (pressed)="wf.backToScan()"></op-button>
-    </div>
+    <op-analysis-empty-state (back)="wf.backToScan()"></op-analysis-empty-state>
   } @else {
     <div class="action-bar">
       <div class="action-left">
@@ -64,7 +60,7 @@
           aria-controls="global-search-suggestions"
           [attr.aria-expanded]="wf.globalSearchAutocompleteOpen()"
           [attr.aria-activedescendant]="wf.globalSearchAutocompleteOpen() ? wf.activeGlobalSearchSuggestionId() : null"
-          placeholder="搜索年份、保险库、凭据、Domain 或凭据字段"
+          placeholder="搜索年份、保险库、Domain 或 item 字段"
           [ngModel]="wf.globalSearchQuery()"
           (focus)="wf.openGlobalSearchAutocomplete()"
           (keydown)="onGlobalSearchKeydown($event)"
@@ -225,14 +221,6 @@
       </aside>
 
       <div class="scroll-list-panel">
-        <div class="main-view-head">
-          <op-tabs
-            ariaLabel="重复类型"
-            [tabs]="wf.kindTabs()"
-            [active]="wf.activeKind()"
-            (activeChange)="setKind($event)"
-          ></op-tabs>
-        </div>
         <div class="group-list">
           @for (group of wf.visibleGroups(); track group.id) {
             <div

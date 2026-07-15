@@ -24,11 +24,6 @@ export function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | 
 
 export function analysis(overrides: Partial<ItemAnalysisMaterial> = {}): ItemAnalysisMaterial {
   return {
-    notesValueHash: "notes:",
-    exactUrlKeys: [],
-    similarUrlKeys: [],
-    identityValues: [],
-    fieldSignatures: [],
     ...overrides
   };
 }

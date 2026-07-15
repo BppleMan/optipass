@@ -25,7 +25,6 @@
     
     .action-bar,
     .analysis-control-row,
-    .main-view-head,
     .filter-summary {
         display: flex;
         align-items: center;
@@ -45,8 +44,7 @@
         padding: 6px 10px;
     }
     
-    .analysis-control-row,
-    .main-view-head {
+    .analysis-control-row {
         gap: 10px;
         flex: 0 0 auto;
     }
@@ -326,7 +324,12 @@
     }
     
     .analysis-running {
-      margin-top: 12vh;
+      width: min(620px, 100%);
+      margin: auto;
+      padding: 32px;
+      border: 1px solid #3A4A5A;
+      border-radius: 18px;
+      background: linear-gradient(145deg, #292929 0%, #252A30 100%);
       text-align: center;
     }
     
@@ -334,7 +337,7 @@
       margin: 0 0 8px;
       font-size: 19px;
     }
-    
+
     .spinner {
       width: 44px;
       height: 44px;
@@ -426,7 +429,7 @@
     
     .analysis-control-row {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
       flex-shrink: 0;
     }
@@ -434,13 +437,12 @@
         
     .filter-summary {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
       min-width: 0;
       box-sizing: border-box;
-      height: 34px;
       min-height: 34px;
-      padding: 2px 10px;
+      padding: 3px 10px;
       border: 1px solid #3a3a3a;
       border-radius: 11px;
       background: #292929;
@@ -448,22 +450,9 @@
       flex-shrink: 0;
     }
     
-    .main-view-head {
-      flex: 0 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      min-height: 34px;
-      padding: 0;
-    }
-    
-    .main-view-head .op-tabs {
-      align-self: center;
-    }
-    
     .filter-total {
       flex: 0 0 auto;
+      line-height: 26px;
       text-align: left;
       color: #b0bec5;
       font-size: 12.5px;
@@ -478,16 +467,11 @@
     .filter-chip-row {
       flex: 1 1 0;
       min-width: 0;
+      min-height: 26px;
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 6px;
-      overflow-x: auto;
-      overscroll-behavior-x: contain;
-      scrollbar-width: none;
-    }
-    
-    .filter-chip-row::-webkit-scrollbar {
-      display: none;
     }
     
     .filter-empty {
@@ -545,6 +529,7 @@
         min-width: 140px;
         max-width: 160px;
       }
+
     }
     
 }
