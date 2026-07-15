@@ -61,6 +61,15 @@
         color: #F07178;
     }
 
+    .execution-batch-error {
+        margin-top: 10px !important;
+        border: 1px solid rgba(240, 113, 120, 0.38);
+        border-radius: 8px;
+        padding: 8px 10px;
+        background: rgba(240, 113, 120, 0.08);
+        color: #FF9CAC !important;
+    }
+
     .execution-group-list {
         min-height: 0;
         display: flex;

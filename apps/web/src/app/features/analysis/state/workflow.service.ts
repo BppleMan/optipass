@@ -1023,8 +1023,11 @@ export class WorkflowService {
     this.operations.set(operations);
     this.operationGroupErrors.set({});
     const draft = this.actionDraftForGroups(groups);
+    this.error.set(undefined);
     this.applying.set(true);
     this.applyDialogOpen.set(true);
+    this.actionExecutionId.set(undefined);
+    this.actionExecutionStatus.set(undefined);
     this.actionExecutionRefreshProgress.set(undefined);
     try {
       const hasDelete = draft.groups.some((group) => group.items.some((item) => !item.keep && item.deleteMode === 'delete'));
@@ -1037,12 +1040,18 @@ export class WorkflowService {
       this.actionExecutionWriteEnabled.set(execution.writeEnabled);
       await this.api.streamActionExecutionEvents(execution.executionId, execution.eventsToken, (event) => this.applyActionExecutionEvent(event));
     } catch (error) {
-      this.error.set(messageFor(error));
+      const executionError = messageFor(error);
+      this.error.set(executionError);
       this.skipPendingOperations('执行未完成。');
       this.actionExecutionStatus.set('failed');
+      if (isStaleAnalysisError(executionError)) {
+        await this.recoverStaleAnalysis(executionError);
+      }
     } finally {
       this.applying.set(false);
-      this.status.set(this.actionExecutionWriteEnabled() ? this.summaryLine() : `试写完成，${this.summaryLine()}`);
+      this.status.set(this.actionExecutionStatus() === 'failed'
+        ? this.error() ?? '执行失败。'
+        : this.actionExecutionWriteEnabled() ? this.summaryLine() : `试写完成，${this.summaryLine()}`);
     }
   }
 
@@ -1231,6 +1240,34 @@ export class WorkflowService {
       }
     }
     return decisions;
+  }
+
+  private async recoverStaleAnalysis(originalError: string): Promise<void> {
+    try {
+      const previousDecisions = this.decisions();
+      const result = await this.api.loadAnalysis();
+      const defaults = this.defaultDecisions(result);
+      const vaultIds = new Set(result.vaults.map((vault) => vault.id));
+      const decisions = Object.fromEntries(Object.entries(defaults).map(([itemId, fallback]) => {
+        const previous = previousDecisions[itemId];
+        if (!previous) {
+          return [itemId, fallback];
+        }
+        return [itemId, {
+          ...previous,
+          itemId,
+          targetVaultId: previous.targetVaultId && vaultIds.has(previous.targetVaultId)
+            ? previous.targetVaultId
+            : fallback.targetVaultId,
+          removeTags: [...(previous.removeTags ?? [])]
+        } satisfies ActionDraftItem];
+      }));
+      this.replaceAnalysisResult(result);
+      this.decisions.set(decisions);
+      this.error.set('执行未开始：分析结果已自动同步，未执行 item 的处置意图已保留。请重新点击应用计划。');
+    } catch (recoveryError) {
+      this.error.set(`${originalError}\n自动同步失败：${messageFor(recoveryError)}`);
+    }
   }
 
   private buildScanRows(): ScanVaultRow[] {
@@ -1681,12 +1718,14 @@ export class WorkflowService {
       this.replaceAnalysisResult(event.response.scan);
       this.decisions.set(Object.fromEntries(event.response.draft.groups.flatMap((group) => group.items).map((item) => [item.itemId, item])));
     }
-    if ((event.type === 'stopped' || event.type === 'failed') && event.response) {
+    if (event.type === 'stopped' || event.type === 'failed') {
       this.skipPendingOperations(event.type === 'stopped' ? '执行已停止。' : '执行失败，未继续处理。');
     }
-    if (event.type === 'failed' && event.groupId) {
-      this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? '执行失败。' });
-      this.skipPendingOperations('执行失败，未继续处理。');
+    if (event.type === 'failed') {
+      this.error.set(event.error ?? '执行失败。');
+      if (event.groupId) {
+        this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? '执行失败。' });
+      }
     }
   }
 
@@ -2400,6 +2439,10 @@ function searchKeywords(value: string): string[] {
 
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isStaleAnalysisError(message: string): boolean {
+  return message.includes('分析结果已过期');
 }
 
 function executionInvalidatedMessage(response: ExecuteResponse): string {

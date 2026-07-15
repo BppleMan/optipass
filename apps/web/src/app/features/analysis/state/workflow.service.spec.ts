@@ -592,6 +592,32 @@ describe('WorkflowService analysis filters', () => {
 
     expect(service.applyDialogOpen()).toBe(true);
   });
+
+  it('recovers a stale analysis before allowing the plan to be restarted', async () => {
+    const refreshed = { ...scanResult(), scanId: 'scan-refreshed', skippedGroupIds: [] };
+    const service = createService({
+      loadAnalysis: vi.fn(async () => refreshed),
+      startActionExecution: vi.fn(async () => {
+        throw new Error('当前分析结果已过期，请重新扫描并重新分析后再继续。');
+      })
+    });
+    service.scanResult.set(scanResult());
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive', removeTags: ['CSV Import'] },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'delete', removeTags: [] },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive', removeTags: [] },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive', removeTags: [] }
+    });
+
+    await service.applyPlan();
+
+    expect(service.scanResult()?.scanId).toBe('scan-refreshed');
+    expect(service.decisions()['icloud:github-new']).toMatchObject({ keep: true, removeTags: ['CSV Import'] });
+    expect(service.decisions()['private:github-old']).toMatchObject({ keep: false, deleteMode: 'delete' });
+    expect(service.error()).toContain('分析结果已自动同步');
+    expect(service.status()).toContain('请重新点击应用计划');
+    expect(service.actionExecutionStatus()).toBe('failed');
+  });
 });
 
 function createService(overrides: {
@@ -609,6 +635,8 @@ function createService(overrides: {
     itemIds: string[];
     count: number;
   }> }>;
+  loadAnalysis?: () => Promise<ReturnType<typeof scanResult> & { skippedGroupIds: string[] }>;
+  startActionExecution?: (draft: ActionDraft) => Promise<unknown>;
   streamActionExecutionEvents?: (
     executionId: string,
     eventsToken: string,
@@ -631,6 +659,7 @@ function createService(overrides: {
     {
       session: signal({ token: 'test-session', enableMutations: overrides.enableMutations ?? true }),
       clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true })),
+      loadAnalysis: overrides.loadAnalysis ?? vi.fn(async () => ({ ...scanResult(), skippedGroupIds: [] })),
       createPlan: overrides.createPlan ?? vi.fn(async (decision: GroupDecision) => createExecutionPlan(decision.groupId, decision, scanResult().items)),
       execute,
       startExecution: vi.fn(async (decision: GroupDecision) => {
@@ -642,7 +671,7 @@ function createService(overrides: {
           totalOperations: decision.items.filter((item) => !item.keep).length
         };
       }),
-      startActionExecution: vi.fn(async (draft: ActionDraft) => {
+      startActionExecution: overrides.startActionExecution ?? vi.fn(async (draft: ActionDraft) => {
         pendingDraft = draft;
         return {
           executionId: 'action-execution-test',

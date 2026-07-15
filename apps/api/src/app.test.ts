@@ -126,6 +126,15 @@ function decisionForGroup(scan: ScanResult, group: ScanResult["groups"][number])
   };
 }
 
+function sseEvent(body: string, type: string): unknown {
+  const block = body.split("\n\n").find((candidate) => candidate.includes(`event: ${type}\n`));
+  const data = block?.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+  if (!data) {
+    throw new Error(`找不到 SSE 事件：${type}`);
+  }
+  return JSON.parse(data);
+}
+
 function mockArchiveGroupVerification(service: PasswordService, scan: ScanResult, group: ScanResult["groups"][number]): void {
   const groupItems = group.itemIds.map((itemId) => scan.items.find((item) => item.id === itemId)!);
   const keepItem = groupItems[0];
@@ -229,6 +238,20 @@ describe("api app", () => {
       keep: item.keep,
       deleteMode: item.deleteMode
     })))).toEqual(draft.groups.map((group) => group.items));
+
+    const refreshed = sseEvent(events.body, "refreshed") as { response: { draft: Record<string, unknown> } };
+    const restarted = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: refreshed.response.draft }
+    });
+    expect(restarted.statusCode).toBe(200);
+    const restartedEvents = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${restarted.json().executionId}/events?eventsToken=${restarted.json().eventsToken}`
+    });
+    expect(restartedEvents.body).toContain("event: completed");
   });
 
   it("pauses after the running action, resumes the same execution, and can stop it", async () => {

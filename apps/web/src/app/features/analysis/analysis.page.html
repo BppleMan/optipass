@@ -386,6 +386,9 @@
             <em [attr.data-status]="wf.actionExecutionStatus()">{{ wf.actionExecutionStatusLabel() }}</em>
             <strong>{{ wf.applyPct() }}%</strong>
           </div>
+          @if (wf.actionExecutionStatus() === 'failed' && wf.error()) {
+            <p class="execution-batch-error" role="alert">{{ wf.error() }}</p>
+          }
           <op-progress [value]="wf.applyPct()" color="#F07178"></op-progress>
           <div #applyOperationList class="execution-group-list" (scroll)="onApplyOperationListScroll()">
             @for (group of wf.operationGroups(); track group.id) {
