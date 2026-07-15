@@ -9,6 +9,7 @@ import { WorkflowService } from './features/analysis/state/workflow.service';
 describe('App', () => {
   const workflow = {
     accountChip: signal(''),
+    dryRunSpeedMultiplier: signal(1),
     mutationsEnabled: signal(false),
     mutationToggleBusy: signal(false),
     applying: signal(false),

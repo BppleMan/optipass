@@ -26,7 +26,6 @@
         [disabled]="scanControlsDisabled()"
       >
       <op-button type="submit" size="sm" [label]="scanButtonLabel()" [disabled]="scanControlsDisabled()"></op-button>
-      <op-button size="sm" variant="ghost" label="重新扫描" [disabled]="rescanDisabled()" (pressed)="wf.rescan()"></op-button>
       <op-button size="sm" label="开始分析 →" [disabled]="!wf.scanDone()" (pressed)="wf.startAnalysis()"></op-button>
     </form>
   </div>
@@ -57,6 +56,10 @@
                 @case ('done') {
                   <circle cx="12" cy="12" r="7.5" />
                   <path d="M8.5 12.2 L11 14.7 L15.8 9.7" />
+                }
+                @case ('elapsed') {
+                  <circle cx="12" cy="12" r="7.5" />
+                  <path d="M12 8 V12 L15 14" />
                 }
               }
             </svg>

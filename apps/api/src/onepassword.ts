@@ -44,7 +44,8 @@ export class OnePasswordService {
 
   async scan(options: ScanOptions): Promise<ScanSnapshot> {
     const scanId = options.scanId ?? randomUUID();
-    const scannedAt = new Date().toISOString();
+    const startedAt = Date.now();
+    const scannedAt = new Date(startedAt).toISOString();
     let vaults: VaultSummary[] = [];
     const summaries: ItemSummary[] = [];
     const discoveredItemCounts = new Map<string, number>();
@@ -58,6 +59,8 @@ export class OnePasswordService {
         progress: {
           scanId,
           phase: type === "completed" ? "completed" : type === "failed" ? "failed" : "scanning",
+          startedAt: scannedAt,
+          finishedAt: type === "completed" || type === "failed" ? new Date().toISOString() : undefined,
           totalVaults: vaults.length,
           scannedVaults,
           totalItems,
@@ -127,6 +130,7 @@ export class OnePasswordService {
     const scan = {
       scanId,
       scannedAt,
+      durationMs: Date.now() - startedAt,
       vaults,
       items: summaries
     };

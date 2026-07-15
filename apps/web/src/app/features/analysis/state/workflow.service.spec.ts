@@ -5,6 +5,15 @@ import type { ExecuteResponse, SkipGroupResponse } from '../../../core/services/
 import { WorkflowService } from './workflow.service';
 
 describe('WorkflowService analysis filters', () => {
+  it('shows the configured account in the header before scanning starts', () => {
+    const service = createService();
+
+    service.updateAccount(' BppleMan ');
+
+    expect(service.accountChip()).toBe('BppleMan');
+    expect(service.authState()).toBe('idle');
+  });
+
   it('keeps multiple credential metadata fields as separate detail entries', () => {
     const service = createService();
     const result = scanResult();

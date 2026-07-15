@@ -88,6 +88,41 @@ describe('ApiService session bootstrap', () => {
     expect(service.session()?.enableMutations).toBe(true);
   });
 
+  it("sends the selected dry-run speed with a batch execution", async () => {
+    service.session.set(sessionResponse({ token: "browser-token" }));
+    const draft = {
+      scanId: "scan-test",
+      groups: [{
+        groupId: "group-test",
+        items: [{ itemId: "vault:item", keep: false, deleteMode: "archive" as const }],
+      }],
+    };
+
+    const starting = service.startActionExecution(draft, undefined, 5);
+    const request = http.expectOne("/api/action-executions/start");
+
+    expect(request.request.body).toEqual({
+      draft,
+      permanentDeleteConfirmationPhrase: undefined,
+      dryRunSpeedMultiplier: 5,
+    });
+    request.flush({
+      executionId: "execution-test",
+      eventsToken: "events-token",
+      status: "running",
+      writeEnabled: false,
+      dryRunSpeedMultiplier: 5,
+      totalGroups: 1,
+      totalOperations: 1,
+      completedOperations: 0,
+      cancelledOperations: 0,
+      plan: {},
+      draft,
+    });
+
+    await expect(starting).resolves.toMatchObject({ dryRunSpeedMultiplier: 5 });
+  });
+
   it('streams scan events through native EventSource and closes after a terminal event', async () => {
     const completed = scanEvent('completed', 'completed', 2);
     const onEvent = vi.fn();

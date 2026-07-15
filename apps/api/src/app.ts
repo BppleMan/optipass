@@ -62,6 +62,7 @@ export interface ApiLifecycleOptions {
 }
 
 type ScanMode = "live" | "mock";
+type DryRunSpeedMultiplier = 1 | 5 | 10;
 const permanentDeleteConfirmationPhrase = "永久删除";
 const revealExpiresInSeconds = 30;
 type DecisionBody = GroupDecision & {
@@ -211,6 +212,7 @@ interface ActionExecutionJob {
   executionId: string;
   tabId: string;
   eventsToken: string;
+  dryRunSpeedMultiplier: DryRunSpeedMultiplier;
   draft: ActionDraft;
   plan: ActionPlan;
   queue: ActionPlanQueueEntry[];
@@ -668,7 +670,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       return reply.code(422).send({ error: "需要确认", message: `永久删除需要输入“${permanentDeleteConfirmationPhrase}”确认。` });
     }
 
-    const job = createActionExecutionJob(randomUUID(), tabIdFor(request), body.draft, plan);
+    const job = createActionExecutionJob(randomUUID(), tabIdFor(request), body.draft, plan, body.dryRunSpeedMultiplier);
     actionExecutionJobs.set(job.executionId, job);
     activeMutationScanId = body.draft.scanId;
     void runActionExecution(job, state);
@@ -1223,6 +1225,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
             executionError = result.error ?? "执行操作失败。";
             break;
           }
+          await waitForDryRunPacing(job);
           if (job.pauseRequested) {
             enterPaused(job);
           }
@@ -1334,6 +1337,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (job.cancelled) {
       return;
     }
+    snapshot.durationMs = Math.max(0, Date.now() - Date.parse(job.progress.startedAt ?? snapshot.scannedAt));
     latestScan = snapshot;
     latestScanMode = "mock";
     latestScanAccountName = undefined;
@@ -1580,7 +1584,8 @@ const actionExecutionStartSchema = z.object({
       items: z.array(actionDraftItemSchema)
     })).min(1)
   }),
-  permanentDeleteConfirmationPhrase: z.string().optional()
+  permanentDeleteConfirmationPhrase: z.string().optional(),
+  dryRunSpeedMultiplier: z.union([z.literal(1), z.literal(5), z.literal(10)]).default(1)
 });
 
 function createScanId(): string {
@@ -1588,9 +1593,11 @@ function createScanId(): string {
 }
 
 function createScanJob(scanId: string, mode: ScanMode): ScanJob {
+  const startedAt = new Date().toISOString();
   const progress: ScanProgress = {
     scanId,
     phase: "scanning",
+    startedAt,
     totalVaults: 0,
     scannedVaults: 0,
     totalItems: 0,
@@ -1622,7 +1629,13 @@ function createExecutionJob(executionId: string): ExecutionJob {
   };
 }
 
-function createActionExecutionJob(executionId: string, tabId: string, draft: ActionDraft, plan: ActionPlan): ActionExecutionJob {
+function createActionExecutionJob(
+  executionId: string,
+  tabId: string,
+  draft: ActionDraft,
+  plan: ActionPlan,
+  dryRunSpeedMultiplier: DryRunSpeedMultiplier
+): ActionExecutionJob {
   const queue = plan.groups.flatMap((group, groupIndex) => group.actions
     .filter((action) => action.type !== "keep")
     .map((action, actionIndex) => ({
@@ -1637,6 +1650,7 @@ function createActionExecutionJob(executionId: string, tabId: string, draft: Act
     executionId,
     tabId,
     eventsToken: randomUUID(),
+    dryRunSpeedMultiplier,
     draft,
     plan,
     queue,
@@ -1660,6 +1674,7 @@ function actionExecutionSnapshot(job: ActionExecutionJob, includeCredentials = f
     eventsToken: includeCredentials ? job.eventsToken : undefined,
     status: job.status,
     writeEnabled: job.plan.writeEnabled,
+    dryRunSpeedMultiplier: job.dryRunSpeedMultiplier,
     totalGroups: job.plan.groups.length,
     totalOperations: job.queue.length,
     completedOperations: job.queue.filter((entry) => entry.status === "completed").length,
@@ -1704,6 +1719,24 @@ async function waitWhilePaused(job: ActionExecutionJob): Promise<void> {
   await new Promise<void>((resolve) => job.resumeWaiters.add(resolve));
 }
 
+const dryRunActionDelayMs: Record<DryRunSpeedMultiplier, number> = {
+  1: 0,
+  5: 100,
+  10: 200
+};
+
+async function waitForDryRunPacing(job: ActionExecutionJob): Promise<void> {
+  if (job.plan.writeEnabled || job.stopRequested || job.pauseRequested) {
+    return;
+  }
+  let remainingMs = dryRunActionDelayMs[job.dryRunSpeedMultiplier];
+  while (remainingMs > 0 && !job.stopRequested && !job.pauseRequested) {
+    const sliceMs = Math.min(remainingMs, 25);
+    await sleep(sliceMs);
+    remainingMs -= sliceMs;
+  }
+}
+
 function terminalActionExecution(status: ActionExecutionStatus): boolean {
   return status === "stopped" || status === "completed" || status === "failed";
 }
@@ -1729,12 +1762,21 @@ function cancelScanJobs(scanJobs: Map<string, ScanJob>): void {
 }
 
 function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
-  job.progress = event.progress;
-  job.events.push(event);
+  const terminal = event.type === "completed" || event.type === "failed";
+  const normalizedEvent: ScanProgressEvent = {
+    ...event,
+    progress: {
+      ...event.progress,
+      startedAt: event.progress.startedAt ?? job.progress.startedAt ?? job.events[0]?.progress.startedAt,
+      finishedAt: terminal ? event.progress.finishedAt ?? new Date().toISOString() : event.progress.finishedAt
+    }
+  };
+  job.progress = normalizedEvent.progress;
+  job.events.push(normalizedEvent);
   for (const subscriber of job.subscribers) {
-    subscriber(event);
+    subscriber(normalizedEvent);
   }
-  if (event.type === "completed" || event.type === "failed") {
+  if (terminal) {
     job.done = true;
   }
 }

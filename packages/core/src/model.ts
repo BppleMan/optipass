@@ -111,6 +111,7 @@ export interface RecommendedKeepReason {
 export interface ScanSnapshot {
   scanId: string;
   scannedAt: string;
+  durationMs?: number;
   vaults: VaultSummary[];
   items: ItemSummary[];
 }
@@ -152,6 +153,8 @@ export interface VaultScanSummary {
 export interface ScanProgress {
   scanId: string;
   phase: ScanPhase;
+  startedAt?: string;
+  finishedAt?: string;
   totalVaults: number;
   scannedVaults: number;
   totalItems: number;

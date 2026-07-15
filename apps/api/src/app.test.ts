@@ -210,15 +210,21 @@ describe("api app", () => {
       scanId: scan.scanId,
       groups: groups.map((group) => decisionForGroup(scan, group))
     };
+    const executionStartedAt = Date.now();
     const start = await app.inject({
       method: "POST",
       url: "/api/action-executions/start",
       headers: { "x-session-token": token },
-      payload: { draft }
+      payload: { draft, dryRunSpeedMultiplier: 5 }
     });
 
     expect(start.statusCode).toBe(200);
-    expect(start.json()).toMatchObject({ writeEnabled: false, totalGroups: 2, status: "running" });
+    expect(start.json()).toMatchObject({
+      writeEnabled: false,
+      dryRunSpeedMultiplier: 5,
+      totalGroups: 2,
+      status: "running"
+    });
     const events = await app.inject({
       method: "GET",
       url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
@@ -227,6 +233,7 @@ describe("api app", () => {
     expect(events.body).toContain("event: action-started");
     expect(events.body).toContain("event: refreshed");
     expect(events.body).toContain("event: completed");
+    expect(Date.now() - executionStartedAt).toBeGreaterThanOrEqual(90);
     const snapshot = await app.inject({
       method: "GET",
       url: `/api/action-executions/${start.json().executionId}`,
@@ -491,7 +498,10 @@ describe("api app", () => {
 
     expect(start).not.toHaveProperty("groups");
     expect(start.progress.phase).toBe("completed");
+    expect(start.progress.startedAt).toEqual(expect.any(String));
+    expect(start.progress.finishedAt).toEqual(expect.any(String));
     expect(snapshot.items.length).toBeGreaterThan(0);
+    expect(snapshot.durationMs).toEqual(expect.any(Number));
     expect(snapshot).not.toHaveProperty("groups");
     expect(analyzeResponse.statusCode).toBe(200);
     expect(analyzeResponse.json().groups.length).toBeGreaterThan(0);

@@ -219,7 +219,7 @@ describe("OnePasswordService", () => {
 
     const events: ScanProgressEvent[] = [];
     const service = new OnePasswordService();
-    await service.scan({
+    const scan = await service.scan({
       serviceAccountToken: "ops-test",
       onProgress: (event) => events.push(event)
     });
@@ -228,6 +228,8 @@ describe("OnePasswordService", () => {
 
     expect(discovered?.progress.totalItems).toBe(2);
     expect(discovered?.progress.scannedItems).toBe(0);
+    expect(discovered?.progress.startedAt).toEqual(expect.any(String));
+    expect(scan.durationMs).toEqual(expect.any(Number));
     expect(list).toHaveBeenCalledWith("vault-1");
     expect(discovered?.progress.vaults[0]).toEqual(
       expect.objectContaining({

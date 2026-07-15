@@ -1,8 +1,11 @@
 <div class="op-shell flex">
   <op-header
     [accountChip]="wf.accountChip()"
+    [dryRunSpeedMultiplier]="wf.dryRunSpeedMultiplier()"
+    [dryRunSpeedDisabled]="wf.applying() || wf.groupApplying()"
     [mutationsEnabled]="wf.mutationsEnabled()"
     [mutationToggleDisabled]="wf.mutationToggleBusy() || wf.applying() || wf.groupApplying()"
+    (dryRunSpeedMultiplierChange)="wf.dryRunSpeedMultiplier.set($event)"
     (mutationsEnabledChange)="wf.setMutationsEnabled($event)"
   ></op-header>
   <main class="op-main">

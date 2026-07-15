@@ -29,6 +29,7 @@ import {
   type ActionExecutionEvent,
   type ActionExecutionRefreshResponse,
   type ActionExecutionStatus,
+  type DryRunSpeedMultiplier,
   type ExecuteProgressEvent,
   type ExecuteResponse,
   type ItemSearchField,
@@ -226,16 +227,13 @@ export class WorkflowService {
   readonly groupApplying = signal(false);
   readonly groupApplyError = signal<string | undefined>(undefined);
   readonly mutationToggleBusy = signal(false);
+  readonly dryRunSpeedMultiplier = signal<DryRunSpeedMultiplier>(1);
   private scanAbortController: AbortController | undefined;
   private globalSearchRequestId = 0;
 
   readonly session = computed(() => this.api.session());
   readonly mutationsEnabled = computed(() => Boolean(this.session()?.enableMutations));
-  readonly accountChip = computed(() => {
-    const account = this.account().trim();
-    const authed = this.authState() === 'authorized' || Boolean(this.scanSnapshot()) || Boolean(this.scanResult());
-    return authed && account ? account : '';
-  });
+  readonly accountChip = computed(() => this.account().trim());
   readonly scanData = computed(() => this.scanResult() ?? this.scanSnapshot());
   readonly scanDone = computed(() => this.scanProgress()?.phase === 'completed' || Boolean(this.scanSnapshot()));
   readonly scanFailed = computed(() => this.scanProgress()?.phase === 'failed' || this.authState() === 'failed');
@@ -1032,7 +1030,11 @@ export class WorkflowService {
     this.actionExecutionRefreshProgress.set(undefined);
     try {
       const hasDelete = draft.groups.some((group) => group.items.some((item) => !item.keep && item.deleteMode === 'delete'));
-      const execution = await this.api.startActionExecution(draft, hasDelete ? deleteConfirmationPhrase : undefined);
+      const execution = await this.api.startActionExecution(
+        draft,
+        hasDelete ? deleteConfirmationPhrase : undefined,
+        this.dryRunSpeedMultiplier(),
+      );
       if (!execution.eventsToken) {
         throw new Error('执行任务缺少进度令牌。');
       }
@@ -1107,6 +1109,8 @@ export class WorkflowService {
     this.scanProgress.set({
       scanId: scan.scanId,
       phase: 'completed',
+      startedAt: scan.scannedAt,
+      finishedAt: new Date(Date.parse(scan.scannedAt) + (scan.durationMs ?? 0)).toISOString(),
       totalVaults: scan.vaults.length,
       scannedVaults: scan.vaults.length,
       totalItems: scan.items.length,
@@ -1124,6 +1128,7 @@ export class WorkflowService {
     this.restoreScanSnapshot({
       scanId: result.scanId,
       scannedAt: result.scannedAt,
+      durationMs: result.durationMs,
       vaults: result.vaults,
       items: result.items
     });
@@ -1143,6 +1148,7 @@ export class WorkflowService {
     this.scanSnapshot.set({
       scanId: result.scanId,
       scannedAt: result.scannedAt,
+      durationMs: result.durationMs,
       vaults: result.vaults,
       items: result.items
     });

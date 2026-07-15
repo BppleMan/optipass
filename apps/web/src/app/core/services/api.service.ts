@@ -33,6 +33,8 @@ const actionExecutionEventTypes = [
   'failed',
 ] as const;
 
+export type DryRunSpeedMultiplier = 1 | 5 | 10;
+
 interface TauriBackendSession {
   baseUrl: string;
   token: string;
@@ -145,6 +147,7 @@ export interface ActionExecutionSnapshot {
   eventsToken?: string;
   status: ActionExecutionStatus;
   writeEnabled: boolean;
+  dryRunSpeedMultiplier: DryRunSpeedMultiplier;
   totalGroups: number;
   totalOperations: number;
   completedOperations: number;
@@ -437,10 +440,14 @@ export class ApiService {
     ));
   }
 
-  async startActionExecution(draft: ActionDraft, permanentDeleteConfirmationPhrase?: string): Promise<ActionExecutionSnapshot> {
+  async startActionExecution(
+    draft: ActionDraft,
+    permanentDeleteConfirmationPhrase?: string,
+    dryRunSpeedMultiplier: DryRunSpeedMultiplier = 1,
+  ): Promise<ActionExecutionSnapshot> {
     return this.request(firstValueFrom(this.http.post<ActionExecutionSnapshot>(
       this.apiUrl('/api/action-executions/start'),
-      { draft, permanentDeleteConfirmationPhrase },
+      { draft, permanentDeleteConfirmationPhrase, dryRunSpeedMultiplier },
       { headers: this.headers() }
     )));
   }
