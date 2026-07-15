@@ -566,6 +566,32 @@ describe('WorkflowService analysis filters', () => {
 
     expect(service.applyDialogOpen()).toBe(false);
   });
+
+  it('allows closing the progress dialog during the read-only refresh stage', () => {
+    const service = createService();
+    service.applyDialogOpen.set(true);
+    service.applying.set(true);
+    service.actionExecutionStatus.set('running');
+
+    service.closeApplyDialog();
+
+    expect(service.applyDialogOpen()).toBe(true);
+    expect(service.canCloseApplyDialog()).toBe(false);
+
+    service.actionExecutionStatus.set('refreshing');
+
+    expect(service.actionExecutionStatusLabel()).toBe('正在刷新');
+    expect(service.canCloseApplyDialog()).toBe(true);
+
+    service.closeApplyDialog();
+
+    expect(service.applyDialogOpen()).toBe(false);
+    expect(service.applying()).toBe(true);
+
+    service.openApplyDialog();
+
+    expect(service.applyDialogOpen()).toBe(true);
+  });
 });
 
 function createService(overrides: {

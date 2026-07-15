@@ -310,6 +310,35 @@ export class WorkflowService {
     const failedGroups = Object.keys(this.operationGroupErrors()).length;
     return `共执行 ${operations.length} 项操作，成功 ${success} 项${failed ? `，失败 ${failed} 项` : ''}${failedGroups ? `，${failedGroups} 组校验失败` : ''}${skipped ? `，跳过 ${skipped} 项` : ''}`;
   });
+  readonly actionExecutionStatusLabel = computed(() => {
+    switch (this.actionExecutionStatus()) {
+      case 'running':
+        return '执行中';
+      case 'pause-requested':
+        return '正在暂停';
+      case 'paused':
+        return '已暂停';
+      case 'stop-requested':
+        return '正在停止';
+      case 'refreshing':
+      case 'refreshing-after-stop':
+        return '正在刷新';
+      case 'stopped':
+        return '已停止';
+      case 'completed':
+        return '已完成';
+      case 'failed':
+        return '执行失败';
+      default:
+        return this.applying() ? '正在准备' : '已结束';
+    }
+  });
+  readonly canCloseApplyDialog = computed(() => {
+    if (!this.applying()) {
+      return true;
+    }
+    return ['refreshing', 'refreshing-after-stop', 'stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '');
+  });
 
   constructor(
     private readonly api: ApiService,
@@ -1045,10 +1074,14 @@ export class WorkflowService {
   }
 
   closeApplyDialog(): void {
-    if (this.applying()) {
+    if (!this.canCloseApplyDialog()) {
       return;
     }
     this.applyDialogOpen.set(false);
+  }
+
+  openApplyDialog(): void {
+    this.applyDialogOpen.set(true);
   }
 
   async resetAll(): Promise<void> {

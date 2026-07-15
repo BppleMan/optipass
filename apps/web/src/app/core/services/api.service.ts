@@ -464,12 +464,14 @@ export class ApiService {
         callback();
       };
       const handle = (message: Event): void => {
-        const event = JSON.parse((message as MessageEvent<string>).data) as ActionExecutionEvent;
-        onEvent(event);
-        if (event.type === 'stopped' || event.type === 'completed') {
-          settle(resolve);
-        } else if (event.type === 'failed') {
-          settle(resolve);
+        try {
+          const event = JSON.parse((message as MessageEvent<string>).data) as ActionExecutionEvent;
+          onEvent(event);
+          if (event.type === 'stopped' || event.type === 'completed' || event.type === 'failed') {
+            settle(resolve);
+          }
+        } catch (error) {
+          settle(() => reject(error instanceof Error ? error : new Error('无法处理执行进度事件。')));
         }
       };
       for (const type of actionExecutionEventTypes) {

@@ -30,6 +30,37 @@
         font-size: 13px;
     }
 
+    .apply-progress-summary em {
+        margin-left: auto;
+        margin-right: 12px;
+        border: 1px solid rgba(130, 170, 255, 0.36);
+        border-radius: 999px;
+        padding: 2px 8px;
+        background: rgba(130, 170, 255, 0.1);
+        color: #82AAFF;
+        font-style: normal;
+    }
+
+    .apply-progress-summary em[data-status="refreshing"],
+    .apply-progress-summary em[data-status="refreshing-after-stop"] {
+        border-color: rgba(255, 203, 107, 0.36);
+        background: rgba(255, 203, 107, 0.1);
+        color: #FFCB6B;
+    }
+
+    .apply-progress-summary em[data-status="completed"],
+    .apply-progress-summary em[data-status="stopped"] {
+        border-color: rgba(195, 232, 141, 0.36);
+        background: rgba(195, 232, 141, 0.1);
+        color: #C3E88D;
+    }
+
+    .apply-progress-summary em[data-status="failed"] {
+        border-color: rgba(240, 113, 120, 0.36);
+        background: rgba(240, 113, 120, 0.1);
+        color: #F07178;
+    }
+
     .execution-group-list {
         min-height: 0;
         display: flex;

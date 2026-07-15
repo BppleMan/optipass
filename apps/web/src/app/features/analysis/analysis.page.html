@@ -360,14 +360,18 @@
         <div class="op-modal apply-progress-modal" role="dialog" aria-modal="true" aria-labelledby="batch-apply-title">
           <div class="op-modal-head">
             <div>
-              <h2 id="batch-apply-title">{{ wf.applying() ? '正在应用计划' : '应用结果' }}</h2>
+              <h2 id="batch-apply-title">
+                {{ wf.actionExecutionStatus() === 'refreshing' || wf.actionExecutionStatus() === 'refreshing-after-stop'
+                  ? '正在刷新分析结果'
+                  : wf.applying() ? '正在应用计划' : '应用结果' }}
+              </h2>
               <p class="modal-subtitle">
                 @if (wf.actionExecutionStatus() === 'paused') {
                   执行已暂停，计划和剩余队列保持不变
                 } @else if (wf.actionExecutionStatus() === 'stop-requested') {
                   正在停止，当前操作完成后不会再执行新操作
                 } @else if (wf.actionExecutionStatus() === 'refreshing-after-stop' || wf.actionExecutionStatus() === 'refreshing') {
-                  正在重新扫描并刷新分析结果
+                  {{ wf.actionExecutionRefreshProgress()?.message || '正在重新扫描并刷新分析结果' }}
                 } @else if (wf.applying()) {
                   逐组执行计划，请勿关闭窗口
                 } @else {
@@ -375,10 +379,11 @@
                 }
               </p>
             </div>
-            <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="wf.applying()" (click)="wf.closeApplyDialog()">X</button>
+            <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="!wf.canCloseApplyDialog()" (click)="wf.closeApplyDialog()">X</button>
           </div>
           <div class="apply-progress-summary" aria-live="polite">
             <span>共 {{ wf.operationGroups().length }} 组</span>
+            <em [attr.data-status]="wf.actionExecutionStatus()">{{ wf.actionExecutionStatusLabel() }}</em>
             <strong>{{ wf.applyPct() }}%</strong>
           </div>
           <op-progress [value]="wf.applyPct()" color="#F07178"></op-progress>

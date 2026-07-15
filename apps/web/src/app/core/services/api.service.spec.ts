@@ -148,6 +148,40 @@ describe('ApiService session bootstrap', () => {
     expect(onEvent).toHaveBeenCalledWith(completed);
     expect(read).toHaveBeenCalledTimes(1);
   });
+
+  it('closes the action execution stream when an event consumer fails', async () => {
+    class MockEventSource {
+      static readonly instances: MockEventSource[] = [];
+      readonly listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+      readonly close = vi.fn();
+      onerror: (() => void) | null = null;
+      readyState = 1;
+
+      constructor(readonly url: string) {
+        MockEventSource.instances.push(this);
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+      }
+
+      emit(type: string, event: unknown): void {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener(new MessageEvent(type, { data: JSON.stringify(event) }));
+        }
+      }
+    }
+    vi.stubGlobal('EventSource', MockEventSource);
+    const streaming = service.streamActionExecutionEvents('execution-test', 'events-token', () => {
+      throw new Error('consumer failed');
+    });
+    const rejected = expect(streaming).rejects.toThrow('consumer failed');
+
+    MockEventSource.instances[0].emit('refreshed', { type: 'refreshed' });
+
+    await rejected;
+    expect(MockEventSource.instances[0].close).toHaveBeenCalledTimes(1);
+  });
 });
 
 function sessionResponse(overrides: Partial<SessionResponse>): SessionResponse {

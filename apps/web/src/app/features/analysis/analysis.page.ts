@@ -179,6 +179,10 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
   }
 
   handleBatchApply(): void {
+    if (this.wf.applying()) {
+      this.wf.openApplyDialog();
+      return;
+    }
     void this.wf.applyPlan();
   }
 
@@ -189,10 +193,16 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
   }
 
   batchApplyLabel(): string {
+    if (this.wf.applying()) {
+      return `${this.wf.actionExecutionStatusLabel()} · 查看进度`;
+    }
     return `应用计划 (${this.wf.planOperationCount()} 项操作)`;
   }
 
   batchApplyDisabled(): boolean {
+    if (this.wf.applying()) {
+      return this.wf.applyDialogOpen();
+    }
     return !this.wf.canApply();
   }
 
