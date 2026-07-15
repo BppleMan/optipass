@@ -1,16 +1,17 @@
 import { computed, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import {
-  createExecutionPlan,
+  createActionPlanGroup,
   dashboardCategoryDefinitions,
   normalizeLooseText,
   normalizeUrlHost,
   summarizeVaults,
   type DashboardCategory,
+  type ActionDraft,
   type DuplicateGroup,
-  type ExecutionPlan,
+  type ActionDraftItem,
+  type ActionPlanGroup,
   type GroupDecision,
-  type ItemDecision,
   type ItemSummary,
   type PlanAction,
   type RevealedCredentialField,
@@ -25,8 +26,12 @@ import {
   ApiService,
   type ActiveScanResponse,
   type AnalysisResultResponse,
-  type ExecuteProgressEvent,
-  type ExecuteResponse
+  type ActionExecutionEvent,
+  type ActionExecutionStatus,
+  type DryRunSpeedMultiplier,
+  type ItemSearchField,
+  type ItemSearchSuggestion,
+  type ItemSearchSuggestionKind
 } from '../../../core/services/api.service';
 import {
   type AnalysisFilterChipView,
@@ -34,7 +39,7 @@ import {
   type AnalysisFilterSectionId,
   type AnalysisFilterSectionView,
   type AnalysisFilterSummaryView,
-  type AnalysisDisplayMode,
+  type ApplyOperationGroupView,
   type ApplyOperationRowView,
   type ApplyOperationView,
   type ApplyStatus,
@@ -44,13 +49,11 @@ import {
   type DuplicateItemView,
   type DuplicateKind,
   type FilterCredentialKind,
-  type GroupPlanDialogView,
   type KindTabView,
   type PlanActionPreviewView,
   type PreviewGroupView,
   type RemoveAction,
   type ScanVaultRow,
-  type SummaryCardView,
   itemUpdatedDate,
   kindFromCandidateClass,
   removeActionFromDecision
@@ -61,6 +64,9 @@ const deleteConfirmationPhrase = '永久删除';
 const missingYearId = '__missing_year__';
 const scanRecoveryTimeoutMs = 120_000;
 const scanRecoveryPollMs = 500;
+
+type ActionExecutionViewStatus = ActionExecutionStatus | 'ready' | 'starting';
+type ActionExecutionScope = 'plan' | 'group';
 
 const kindOrder: DuplicateKind[] = ['similar', 'identical', 'incomplete'];
 const kindMeta: Record<DuplicateKind, { label: string; color: string; bg: string }> = {
@@ -112,30 +118,39 @@ interface AnalysisFilterOptionData {
   count: number;
 }
 
+interface GlobalSearchSuggestionView extends ItemSearchSuggestion {
+  detail: string;
+  index: number;
+  selected: boolean;
+}
+
+interface GlobalSearchSuggestionGroupView {
+  kind: ItemSearchSuggestionKind;
+  label: string;
+  allSelected: boolean;
+  someSelected: boolean;
+  suggestions: GlobalSearchSuggestionView[];
+}
+
 const filterSectionMeta: Record<AnalysisFilterSectionId, {
   label: string;
-  searchable: boolean;
   emptyText: string;
 }> = {
   years: {
     label: '年份',
-    searchable: false,
     emptyText: '没有可筛选年份'
   },
   vaults: {
     label: '保险库',
-    searchable: false,
     emptyText: '没有可筛选保险库'
   },
   credentials: {
     label: '凭据类型',
-    searchable: false,
     emptyText: '没有可筛选凭据类型'
   },
   domains: {
     label: 'Domain',
-    searchable: true,
-    emptyText: '没有匹配的 domain'
+    emptyText: '没有可筛选 domain'
   }
 };
 
@@ -143,6 +158,23 @@ const credentialKindMeta: Record<FilterCredentialKind, { label: string; order: n
   password: { label: '密码', order: 1 },
   totp: { label: '一次性密码', order: 2 },
   passkey: { label: 'Passkey', order: 3 }
+};
+
+const globalSearchSuggestionKindLabels: Record<ItemSearchSuggestionKind, string> = {
+  year: "年份匹配项",
+  vault: "保险库匹配项",
+  credential: "凭据匹配项",
+  domain: "Domain 匹配项",
+  field: "字段匹配项",
+};
+
+const globalSearchFieldLabels: Record<ItemSearchField, string> = {
+  title: "标题",
+  username: "用户名",
+  url: "URL",
+  phone: "电话",
+  email: "邮箱",
+  note: "备注",
 };
 
 const defaultFilterSectionsOpen: Record<AnalysisFilterSectionId, boolean> = {
@@ -165,7 +197,7 @@ export class WorkflowService {
   readonly analysisPct = signal(0);
   readonly error = signal<string | undefined>(undefined);
   readonly status = signal<string | undefined>(undefined);
-  readonly decisions = signal<Record<string, ItemDecision>>({});
+  readonly decisions = signal<Record<string, ActionDraftItem>>({});
   readonly skippedGroups = signal<Record<string, boolean>>({});
   readonly reveal = signal(false);
   readonly visibleSecretItems = signal<Record<string, boolean>>({});
@@ -174,27 +206,31 @@ export class WorkflowService {
   readonly activeKind = signal<DuplicateKind>('similar');
   readonly analysisFilters = signal<AnalysisFilterState>(emptyAnalysisFilters());
   readonly filterSectionsOpen = signal<Record<AnalysisFilterSectionId, boolean>>(defaultFilterSectionsOpen);
-  readonly domainFilterQuery = signal('');
-  readonly analysisDisplayMode = signal<AnalysisDisplayMode>('edit');
-  readonly phase = signal<'applying' | 'summary'>('summary');
+  readonly globalSearchQuery = signal('');
+  readonly globalSearchItemIds = signal<string[] | undefined>(undefined);
+  readonly globalSearchMatchedItemIds = signal<string[]>([]);
+  readonly globalSearchSuggestions = signal<ItemSearchSuggestion[]>([]);
+  readonly globalSearchAutocompleteOpen = signal(false);
+  readonly activeGlobalSearchSuggestionIndex = signal(0);
+  readonly selectedGlobalSearchSuggestionIds = signal<string[]>([]);
   readonly operations = signal<ApplyOperationView[]>([]);
+  readonly operationGroupErrors = signal<Record<string, string>>({});
   readonly applying = signal(false);
   readonly applyDialogOpen = signal(false);
-  readonly applyMessage = signal<string | undefined>(undefined);
-  readonly groupPlanDialog = signal<GroupPlanDialogView | undefined>(undefined);
+  readonly actionExecutionId = signal<string | undefined>(undefined);
+  readonly actionExecutionStatus = signal<ActionExecutionViewStatus | undefined>(undefined);
+  readonly actionExecutionScope = signal<ActionExecutionScope>('plan');
+  readonly actionExecutionWriteEnabled = signal(false);
   readonly groupPlanLoading = signal<Record<string, boolean>>({});
-  readonly groupApplying = signal(false);
-  readonly groupApplyError = signal<string | undefined>(undefined);
   readonly mutationToggleBusy = signal(false);
+  readonly dryRunSpeedMultiplier = signal<DryRunSpeedMultiplier>(1);
+  private readonly preparedActionDraft = signal<ActionDraft | undefined>(undefined);
   private scanAbortController: AbortController | undefined;
+  private globalSearchRequestId = 0;
 
   readonly session = computed(() => this.api.session());
   readonly mutationsEnabled = computed(() => Boolean(this.session()?.enableMutations));
-  readonly accountChip = computed(() => {
-    const account = this.account().trim();
-    const authed = this.authState() === 'authorized' || Boolean(this.scanSnapshot()) || Boolean(this.scanResult());
-    return authed && account ? account : '';
-  });
+  readonly accountChip = computed(() => this.account().trim());
   readonly scanData = computed(() => this.scanResult() ?? this.scanSnapshot());
   readonly scanDone = computed(() => this.scanProgress()?.phase === 'completed' || Boolean(this.scanSnapshot()));
   readonly scanFailed = computed(() => this.scanProgress()?.phase === 'failed' || this.authState() === 'failed');
@@ -230,6 +266,16 @@ export class WorkflowService {
   readonly visibleGroups = computed<DuplicateGroupView[]>(() => this.filterGroups(this.activeKindGroups()));
   readonly analysisFilterSections = computed<AnalysisFilterSectionView[]>(() => this.buildAnalysisFilterSections());
   readonly analysisFilterSummary = computed<AnalysisFilterSummaryView>(() => this.buildAnalysisFilterSummary());
+  readonly globalSearchSuggestionGroups = computed<GlobalSearchSuggestionGroupView[]>(() => this.buildGlobalSearchSuggestionGroups());
+  public readonly selectedGlobalSearchSuggestionCount = computed(() => this.selectedGlobalSearchSuggestions().length);
+  public readonly allGlobalSearchSuggestionsSelected = computed(() => {
+    const suggestions = this.scopedGlobalSearchSuggestions();
+    return suggestions.length > 0 && this.selectedGlobalSearchSuggestions().length === suggestions.length;
+  });
+  public readonly activeGlobalSearchSuggestionId = computed(() => {
+    const id = this.scopedGlobalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()]?.id;
+    return id ? `global-search-suggestion-${id}` : undefined;
+  });
   readonly decisionStats = computed<DecisionStatsView>(() => this.buildDecisionStats());
   readonly allPreviewGroups = computed<PreviewGroupView[]>(() => this.buildPreviewGroups());
   readonly visiblePreviewGroups = computed(() => {
@@ -237,13 +283,13 @@ export class WorkflowService {
     return this.allPreviewGroups().filter((group) => visibleIds.has(group.id));
   });
   readonly planOperationCount = computed(() => this.countPlanOperations(this.visiblePreviewGroups()));
-  readonly previewEmpty = computed(() => this.visiblePreviewGroups().length === 0);
   readonly canApply = computed(() =>
     this.planOperationCount() > 0 &&
     !this.loading() &&
     !this.applying()
   );
   readonly operationRows = computed<ApplyOperationRowView[]>(() => this.operations().map((operation) => toOperationRow(operation)));
+  readonly operationGroups = computed<ApplyOperationGroupView[]>(() => buildOperationGroups(this.operationRows(), this.operationGroupErrors()));
   readonly applyPct = computed(() => {
     const operations = this.operations();
     if (operations.length === 0) {
@@ -252,23 +298,44 @@ export class WorkflowService {
     const finished = operations.filter((operation) => ['done', 'failed', 'skipped'].includes(operation.status)).length;
     return Math.round((finished / operations.length) * 100);
   });
-  readonly summaryCards = computed<SummaryCardView[]>(() => {
-    const operations = this.operations();
-    return [
-      { label: '保留', value: this.decisionStats().keep, color: '#c3e88d' },
-      { label: '已归档', value: operations.filter((operation) => operation.type === 'archive' && operation.status === 'done').length, color: '#ffcb6b' },
-      { label: '已删除', value: operations.filter((operation) => operation.type === 'delete' && operation.status === 'done').length, color: '#ff5370' },
-      { label: '已迁移', value: operations.filter((operation) => operation.type === 'move' && operation.status === 'done').length, color: '#82aaff' }
-    ];
-  });
   readonly summaryLine = computed(() => {
     const operations = this.operations();
     const failed = operations.filter((operation) => operation.status === 'failed').length;
     const skipped = operations.filter((operation) => operation.status === 'skipped').length;
     const success = operations.filter((operation) => operation.status === 'done').length;
-    return `共执行 ${operations.length} 项操作，成功 ${success} 项${failed ? `，失败 ${failed} 项` : ''}${skipped ? `，跳过 ${skipped} 项` : ''}`;
+    const failedGroups = Object.keys(this.operationGroupErrors()).length;
+    return `共执行 ${operations.length} 项操作，成功 ${success} 项${failed ? `，失败 ${failed} 项` : ''}${failedGroups ? `，${failedGroups} 组校验失败` : ''}${skipped ? `，跳过 ${skipped} 项` : ''}`;
   });
-  readonly hasFailed = computed(() => this.operations().some((operation) => operation.status === 'failed'));
+  readonly actionExecutionStatusLabel = computed(() => {
+    switch (this.actionExecutionStatus()) {
+      case 'ready':
+        return '待开始';
+      case 'starting':
+        return '正在启动';
+      case 'running':
+        return '执行中';
+      case 'pause-requested':
+        return '正在暂停';
+      case 'paused':
+        return '已暂停';
+      case 'stop-requested':
+        return '正在停止';
+      case 'stopped':
+        return '已停止';
+      case 'completed':
+        return '已完成';
+      case 'failed':
+        return '执行失败';
+      default:
+        return this.applying() ? '正在准备' : '已结束';
+    }
+  });
+  readonly canCloseApplyDialog = computed(() => {
+    if (!this.applying()) {
+      return true;
+    }
+    return ['stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '');
+  });
 
   constructor(
     private readonly api: ApiService,
@@ -495,7 +562,6 @@ export class WorkflowService {
     try {
       const result = await this.api.analyze(scan.scanId);
       this.restoreAnalysisResult(result);
-      this.analysisDisplayMode.set('edit');
       this.clearAnalysisFilters();
       this.analysisPct.set(100);
       this.status.set(result.groups.length ? `分析完成，发现 ${result.groups.length} 组疑似重复。` : '分析完成，没有发现疑似重复。');
@@ -533,10 +599,6 @@ export class WorkflowService {
     this.clearAnalysisFilters();
   }
 
-  setAnalysisDisplayMode(mode: AnalysisDisplayMode): void {
-    this.analysisDisplayMode.set(mode);
-  }
-
   toggleAnalysisFilter(sectionId: AnalysisFilterSectionId, optionId: string, selected: boolean): void {
     const current = this.analysisFilters();
     switch (sectionId) {
@@ -558,13 +620,17 @@ export class WorkflowService {
   }
 
   removeAnalysisFilter(key: AnalysisFilterKey, optionId: string): void {
+    if (key === 'search') {
+      this.clearGlobalSearch();
+      return;
+    }
     const section = sectionIdForFilterKey(key);
     this.toggleAnalysisFilter(section, optionId, false);
   }
 
   clearAnalysisFilters(): void {
     this.analysisFilters.set(emptyAnalysisFilters());
-    this.domainFilterQuery.set('');
+    this.clearGlobalSearch();
   }
 
   toggleAnalysisFilterSection(sectionId: AnalysisFilterSectionId): void {
@@ -572,13 +638,106 @@ export class WorkflowService {
     this.filterSectionsOpen.set({ ...open, [sectionId]: !open[sectionId] });
   }
 
-  updateDomainFilterQuery(value: string): void {
-    this.domainFilterQuery.set(value);
+  public async updateGlobalSearchQuery(value: string): Promise<void> {
+    this.globalSearchQuery.set(value);
+    this.selectedGlobalSearchSuggestionIds.set([]);
+    const keywords = searchKeywords(value);
+    const requestId = ++this.globalSearchRequestId;
+    if (keywords.length === 0) {
+      this.globalSearchItemIds.set(undefined);
+      this.globalSearchMatchedItemIds.set([]);
+      this.globalSearchSuggestions.set([]);
+      this.globalSearchAutocompleteOpen.set(false);
+      return;
+    }
+
+    this.globalSearchItemIds.set([]);
+    this.globalSearchMatchedItemIds.set([]);
+    this.globalSearchSuggestions.set([]);
+    this.globalSearchAutocompleteOpen.set(true);
+    try {
+      const response = await this.api.searchItems(keywords);
+      if (requestId === this.globalSearchRequestId) {
+        this.globalSearchMatchedItemIds.set(response.itemIds);
+        this.globalSearchItemIds.set(response.itemIds);
+        this.globalSearchSuggestions.set(response.suggestions);
+        this.activeGlobalSearchSuggestionIndex.set(0);
+        this.globalSearchAutocompleteOpen.set(this.scopedGlobalSearchSuggestions().length > 0);
+      }
+    } catch (error) {
+      if (requestId === this.globalSearchRequestId) {
+        this.globalSearchItemIds.set([]);
+        this.globalSearchMatchedItemIds.set([]);
+        this.globalSearchSuggestions.set([]);
+        this.globalSearchAutocompleteOpen.set(false);
+        this.error.set(messageFor(error));
+      }
+    }
+  }
+
+  public openGlobalSearchAutocomplete(): void {
+    if (this.globalSearchQuery().trim() && this.scopedGlobalSearchSuggestions().length > 0) {
+      this.globalSearchAutocompleteOpen.set(true);
+    }
+  }
+
+  closeGlobalSearchAutocomplete(): void {
+    this.globalSearchAutocompleteOpen.set(false);
+  }
+
+  public moveGlobalSearchSuggestion(direction: 1 | -1): void {
+    const suggestions = this.scopedGlobalSearchSuggestions();
+    if (suggestions.length === 0) {
+      return;
+    }
+    const next = (this.activeGlobalSearchSuggestionIndex() + direction + suggestions.length) % suggestions.length;
+    this.activeGlobalSearchSuggestionIndex.set(next);
+    this.globalSearchAutocompleteOpen.set(true);
+  }
+
+  activateGlobalSearchSuggestion(index: number): void {
+    this.activeGlobalSearchSuggestionIndex.set(index);
+  }
+
+  public selectActiveGlobalSearchSuggestion(): void {
+    const suggestion = this.scopedGlobalSearchSuggestions()[this.activeGlobalSearchSuggestionIndex()];
+    if (suggestion) {
+      this.selectGlobalSearchSuggestion(suggestion);
+    }
+  }
+
+  selectGlobalSearchSuggestion(suggestion: ItemSearchSuggestion): void {
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    if (selectedIds.has(suggestion.id)) {
+      selectedIds.delete(suggestion.id);
+    } else {
+      selectedIds.add(suggestion.id);
+    }
+    this.applyGlobalSearchSuggestionSelection([...selectedIds]);
+  }
+
+  toggleGlobalSearchSuggestionGroup(group: GlobalSearchSuggestionGroupView): void {
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    for (const suggestion of group.suggestions) {
+      if (group.allSelected) {
+        selectedIds.delete(suggestion.id);
+      } else {
+        selectedIds.add(suggestion.id);
+      }
+    }
+    this.applyGlobalSearchSuggestionSelection([...selectedIds]);
+  }
+
+  public toggleAllGlobalSearchSuggestions(): void {
+    const selectedIds = this.allGlobalSearchSuggestionsSelected()
+      ? []
+      : this.scopedGlobalSearchSuggestions().map((suggestion) => suggestion.id);
+    this.applyGlobalSearchSuggestionSelection(selectedIds);
   }
 
   async toggleGroupSkip(groupId: string): Promise<void> {
     const result = this.scanResult();
-    if (!result || this.groupApplying() || this.groupPlanLoading()[groupId]) {
+    if (!result || this.applying() || this.groupPlanLoading()[groupId]) {
       return;
     }
 
@@ -592,7 +751,7 @@ export class WorkflowService {
       this.replaceAnalysisResult(response.scan);
       this.status.set(skippedGroups[groupId]
         ? "已取消跳过标记，该组重新纳入执行计划。"
-        : "已标记跳过；该组不会执行，且会在预览中保留记录。");
+        : "已标记跳过；该组不会纳入执行计划。");
     } catch (error) {
       this.error.set(messageFor(error));
     } finally {
@@ -780,139 +939,127 @@ export class WorkflowService {
     return this.groupOperationCount(groupId) > 0 &&
       !this.loading() &&
       !this.applying() &&
-      !this.groupApplying() &&
       !this.groupPlanLoading()[groupId];
   }
 
-  async openGroupPlanDialog(groupId: string): Promise<void> {
+  openGroupExecutionDialog(groupId: string): void {
     if (!this.canApplyGroup(groupId)) {
       return;
     }
-    const decision = this.groupDecisionById(groupId);
-    if (!decision) {
+    const group = this.allPreviewGroups().find((candidate) => candidate.id === groupId);
+    if (!group?.plan) {
       this.error.set('找不到待执行的重复组。');
       return;
     }
-
-    this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: true });
-    this.groupApplyError.set(undefined);
-    this.error.set(undefined);
-    try {
-      const plan = await this.api.createPlan(decision);
-      this.groupPlanDialog.set(this.buildGroupPlanDialog(groupId, plan));
-    } catch (error) {
-      this.error.set(messageFor(error));
-    } finally {
-      this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: false });
-    }
+    this.prepareActionExecution([group], 'group');
   }
 
-  closeGroupPlanDialog(): void {
-    if (this.groupApplying()) {
-      return;
-    }
-    this.groupPlanDialog.set(undefined);
-    this.groupApplyError.set(undefined);
-  }
-
-  async confirmGroupPlanDialog(): Promise<void> {
-    const dialog = this.groupPlanDialog();
-    if (!dialog || this.groupApplying() || dialog.plan.blockers.length > 0) {
-      return;
-    }
-    const decision = this.groupDecisionById(dialog.groupId);
-    if (!decision) {
-      this.groupApplyError.set('找不到待执行的重复组。');
-      return;
-    }
-
-    this.groupApplying.set(true);
-    this.groupApplyError.set(undefined);
-    this.error.set(undefined);
-    try {
-      const response = await this.executeGroupDecision(decision);
-      const failed = response.results?.find((result) => !result.ok && !result.skipped);
-      if (response.blocked || response.error || failed) {
-        this.groupApplyError.set(response.error || failed?.error || '执行被本地 API 阻止。');
-        return;
-      }
-      if (response.scanInvalidated) {
-        this.groupApplyError.set(executionInvalidatedMessage(response));
-        return;
-      }
-      if (response.scan) {
-        this.replaceAnalysisResult(response.scan);
-      }
-      this.status.set(response.dryRun ? '试写完成，未写入 1Password。' : '已应用该组，本轮分析不再显示。');
-      this.groupPlanDialog.set(undefined);
-    } catch (error) {
-      this.groupApplyError.set(messageFor(error));
-    } finally {
-      this.groupApplying.set(false);
-    }
-  }
-
-  prepareBatchPreview(): void {
-    this.analysisDisplayMode.set('preview');
-    this.operations.set(this.buildOperations(this.visiblePreviewGroups()));
-  }
-
-  async applyPlan(): Promise<void> {
+  applyPlan(): void {
     if (!this.canApply()) {
       return;
     }
-    const groups = this.visiblePreviewGroups();
-    const operations = this.buildOperations(groups);
-    this.operations.set(operations);
-    this.phase.set('applying');
-    this.applying.set(true);
-    this.applyDialogOpen.set(true);
-    this.applyMessage.set(undefined);
+    this.prepareActionExecution(this.visiblePreviewGroups(), 'plan');
+  }
 
-    for (const group of groups) {
-      const groupOps = this.operations().filter((operation) => operation.groupId === group.id);
-      if (groupOps.length === 0) {
-        continue;
-      }
-      this.patchGroupOperations(group.id, 'running');
-      try {
-        const decision = this.groupDecisionById(group.id);
-        if (!decision) {
-          throw new Error('找不到待执行的重复组。');
-        }
-        const response = await this.executeGroupDecision(decision);
-        if (response.blocked || response.error) {
-          this.failGroup(group.id, response.error || '执行被本地 API 阻止。');
-          this.skipPendingOperations();
-          break;
-        }
-        if (response.scanInvalidated) {
-          if (response.verification && !response.verification.ok) {
-            this.failGroup(group.id, executionInvalidatedMessage(response));
-          } else {
-            this.applyGroupResult(group.id, response);
-          }
-          this.skipPendingOperations();
-          break;
-        }
-        this.applyGroupResult(group.id, response);
-      } catch (error) {
-        this.failGroup(group.id, messageFor(error));
-        this.skipPendingOperations();
-        break;
-      }
+  async startPreparedActionExecution(): Promise<void> {
+    const draft = this.preparedActionDraft();
+    if (!draft || this.actionExecutionStatus() !== 'ready' || this.applying()) {
+      return;
     }
+    this.error.set(undefined);
+    this.applying.set(true);
+    this.actionExecutionStatus.set('starting');
+    try {
+      const hasDelete = draft.groups.some((group) => group.items.some((item) => !item.keep && item.deleteMode === 'delete'));
+      const execution = await this.api.startActionExecution(
+        draft,
+        hasDelete ? deleteConfirmationPhrase : undefined,
+        this.dryRunSpeedMultiplier(),
+      );
+      if (!execution.eventsToken) {
+        throw new Error('执行任务缺少进度令牌。');
+      }
+      this.actionExecutionId.set(execution.executionId);
+      this.actionExecutionStatus.set(execution.status);
+      this.actionExecutionWriteEnabled.set(execution.writeEnabled);
+      await this.api.streamActionExecutionEvents(execution.executionId, execution.eventsToken, (event) => this.applyActionExecutionEvent(event));
+    } catch (error) {
+      const executionError = messageFor(error);
+      this.error.set(executionError);
+      this.skipPendingOperations('执行未完成。');
+      this.actionExecutionStatus.set('failed');
+      if (isStaleAnalysisError(executionError)) {
+        await this.recoverStaleAnalysis(executionError);
+      }
+    } finally {
+      this.applying.set(false);
+      this.preparedActionDraft.set(undefined);
+      this.status.set(this.actionExecutionStatus() === 'failed'
+        ? this.error() ?? '执行失败。'
+        : this.actionExecutionWriteEnabled() ? this.summaryLine() : `试写完成，${this.summaryLine()}`);
+    }
+  }
 
-    this.phase.set('summary');
+  private prepareActionExecution(groups: PreviewGroupView[], scope: ActionExecutionScope): void {
+    const operations = this.buildOperations(groups);
+    if (operations.length === 0) {
+      return;
+    }
+    this.operations.set(operations);
+    this.operationGroupErrors.set({});
+    this.preparedActionDraft.set(this.actionDraftForGroups(groups));
+    this.error.set(undefined);
     this.applying.set(false);
-    this.status.set(this.operations().some((operation) => operation.dryRun) ? `试写完成，${this.summaryLine()}` : this.summaryLine());
+    this.applyDialogOpen.set(true);
+    this.actionExecutionId.set(undefined);
+    this.actionExecutionStatus.set('ready');
+    this.actionExecutionScope.set(scope);
+    this.actionExecutionWriteEnabled.set(this.mutationsEnabled());
+  }
+
+  async pauseActionExecution(): Promise<void> {
+    const executionId = this.actionExecutionId();
+    if (!executionId || !this.applying()) {
+      return;
+    }
+    const snapshot = await this.api.pauseActionExecution(executionId);
+    this.actionExecutionStatus.set(snapshot.status);
+  }
+
+  async resumeActionExecution(): Promise<void> {
+    const executionId = this.actionExecutionId();
+    if (!executionId || this.actionExecutionStatus() !== 'paused') {
+      return;
+    }
+    const snapshot = await this.api.resumeActionExecution(executionId);
+    this.actionExecutionStatus.set(snapshot.status);
+  }
+
+  async stopActionExecution(): Promise<void> {
+    const executionId = this.actionExecutionId();
+    if (!executionId || !this.applying()) {
+      return;
+    }
+    const snapshot = await this.api.stopActionExecution(executionId);
+    if (!['stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '')) {
+      this.actionExecutionStatus.set(snapshot.status);
+    }
   }
 
   closeApplyDialog(): void {
-    if (this.applying()) {
+    if (!this.canCloseApplyDialog()) {
       return;
     }
     this.applyDialogOpen.set(false);
+    if (this.actionExecutionStatus() === 'ready') {
+      this.preparedActionDraft.set(undefined);
+      this.actionExecutionStatus.set(undefined);
+      this.operations.set([]);
+    }
+  }
+
+  openApplyDialog(): void {
+    this.applyDialogOpen.set(true);
   }
 
   async resetAll(): Promise<void> {
@@ -928,6 +1075,8 @@ export class WorkflowService {
     this.scanProgress.set({
       scanId: scan.scanId,
       phase: 'completed',
+      startedAt: scan.scannedAt,
+      finishedAt: new Date(Date.parse(scan.scannedAt) + (scan.durationMs ?? 0)).toISOString(),
       totalVaults: scan.vaults.length,
       scannedVaults: scan.vaults.length,
       totalItems: scan.items.length,
@@ -945,6 +1094,7 @@ export class WorkflowService {
     this.restoreScanSnapshot({
       scanId: result.scanId,
       scannedAt: result.scannedAt,
+      durationMs: result.durationMs,
       vaults: result.vaults,
       items: result.items
     });
@@ -956,7 +1106,6 @@ export class WorkflowService {
     this.reveal.set(false);
     this.activeKind.set(firstAvailableKind(result.groups));
     this.clearAnalysisFilters();
-    this.analysisDisplayMode.set('edit');
     this.status.set(result.groups.length ? `已恢复本 tab 的分析缓存，剩余 ${result.groups.length} 组疑似重复。` : '已恢复本 tab 的分析缓存，没有剩余疑似重复。');
   }
 
@@ -965,6 +1114,7 @@ export class WorkflowService {
     this.scanSnapshot.set({
       scanId: result.scanId,
       scannedAt: result.scannedAt,
+      durationMs: result.durationMs,
       vaults: result.vaults,
       items: result.items
     });
@@ -974,7 +1124,7 @@ export class WorkflowService {
     this.skippedGroups.set(skippedGroupMap(result.skippedGroupIds));
   }
 
-  private localPlanForGroup(groupId: string): ExecutionPlan | undefined {
+  private localPlanForGroup(groupId: string): ActionPlanGroup | undefined {
     const group = this.groups().find((candidate) => candidate.id === groupId);
     const result = this.scanResult();
     if (!group || !result || this.skippedGroups()[group.id]) {
@@ -983,20 +1133,15 @@ export class WorkflowService {
     return this.createLocalPlan(group, result.items);
   }
 
-  private buildGroupPlanDialog(groupId: string, plan: ExecutionPlan): GroupPlanDialogView {
-    const group = this.groups().find((candidate) => candidate.id === groupId);
-    const result = this.scanResult();
-    const items = result && group
-      ? group.itemIds.map((id) => result.items.find((item) => item.id === id)).filter((item): item is ItemSummary => Boolean(item))
-      : [];
-    return {
-      groupId,
-      title: group ? `${groupUsername(group, items)} @ ${groupSite(group, items)}` : groupId,
-      subtitle: `${plan.summary.keep} 保留 · ${plan.summary.archive} 归档 · ${plan.summary.delete} 删除 · ${plan.summary.move} 迁移${plan.summary.tagUpdate > 0 ? ` · ${plan.summary.tagUpdate} 项标签修改 / 移除 ${plan.summary.removedTagCount} 个` : ''}`,
-      plan,
-      actions: this.planActionPreviewRows(plan),
-      operationCount: plan.actions.filter((action) => action.type !== 'keep').length
-    };
+  private clearGlobalSearch(): void {
+    this.globalSearchRequestId += 1;
+    this.globalSearchQuery.set('');
+    this.globalSearchItemIds.set(undefined);
+    this.globalSearchMatchedItemIds.set([]);
+    this.globalSearchSuggestions.set([]);
+    this.globalSearchAutocompleteOpen.set(false);
+    this.activeGlobalSearchSuggestionIndex.set(0);
+    this.selectedGlobalSearchSuggestionIds.set([]);
   }
 
   private resetForScan(): void {
@@ -1018,20 +1163,18 @@ export class WorkflowService {
     this.activeKind.set('similar');
     this.analysisFilters.set(emptyAnalysisFilters());
     this.filterSectionsOpen.set({ ...defaultFilterSectionsOpen });
-    this.domainFilterQuery.set('');
-    this.analysisDisplayMode.set('edit');
-    this.phase.set('summary');
+    this.clearGlobalSearch();
     this.operations.set([]);
+    this.operationGroupErrors.set({});
     this.applying.set(false);
-    this.applyMessage.set(undefined);
-    this.groupPlanDialog.set(undefined);
+    this.preparedActionDraft.set(undefined);
+    this.actionExecutionStatus.set(undefined);
+    this.applyDialogOpen.set(false);
     this.groupPlanLoading.set({});
-    this.groupApplying.set(false);
-    this.groupApplyError.set(undefined);
   }
 
-  private defaultDecisions(result: ScanResult): Record<string, ItemDecision> {
-    const decisions: Record<string, ItemDecision> = {};
+  private defaultDecisions(result: ScanResult): Record<string, ActionDraftItem> {
+    const decisions: Record<string, ActionDraftItem> = {};
     for (const group of result.groups) {
       const recommended = new Set(group.recommendedKeepIds);
       const items = group.itemIds
@@ -1054,6 +1197,34 @@ export class WorkflowService {
       }
     }
     return decisions;
+  }
+
+  private async recoverStaleAnalysis(originalError: string): Promise<void> {
+    try {
+      const previousDecisions = this.decisions();
+      const result = await this.api.loadAnalysis();
+      const defaults = this.defaultDecisions(result);
+      const vaultIds = new Set(result.vaults.map((vault) => vault.id));
+      const decisions = Object.fromEntries(Object.entries(defaults).map(([itemId, fallback]) => {
+        const previous = previousDecisions[itemId];
+        if (!previous) {
+          return [itemId, fallback];
+        }
+        return [itemId, {
+          ...previous,
+          itemId,
+          targetVaultId: previous.targetVaultId && vaultIds.has(previous.targetVaultId)
+            ? previous.targetVaultId
+            : fallback.targetVaultId,
+          removeTags: [...(previous.removeTags ?? [])]
+        } satisfies ActionDraftItem];
+      }));
+      this.replaceAnalysisResult(result);
+      this.decisions.set(decisions);
+      this.error.set('执行未开始：分析结果已自动同步，未执行 item 的处置意图已保留。请重新点击应用计划。');
+    } catch (recoveryError) {
+      this.error.set(`${originalError}\n自动同步失败：${messageFor(recoveryError)}`);
+    }
   }
 
   private buildScanRows(): ScanVaultRow[] {
@@ -1120,11 +1291,24 @@ export class WorkflowService {
 
   private filterGroups(groups: DuplicateGroupView[]): DuplicateGroupView[] {
     const filters = this.analysisFilters();
+    const searchItemIds = this.globalSearchItemIds();
+    const searchItemIdSet = searchItemIds ? new Set(searchItemIds) : undefined;
+    const selectedSuggestionItemIdsByKind = new Map<ItemSearchSuggestionKind, Set<string>>();
+    for (const suggestion of this.selectedGlobalSearchSuggestions()) {
+      const itemIds = selectedSuggestionItemIdsByKind.get(suggestion.kind) ?? new Set<string>();
+      for (const itemId of suggestion.itemIds) {
+        itemIds.add(itemId);
+      }
+      selectedSuggestionItemIdsByKind.set(suggestion.kind, itemIds);
+    }
     return groups.filter((group) =>
       matchesSelected(filters.years, group.filterYears) &&
       matchesSelected(filters.vaultIds, group.filterVaultIds) &&
       matchesSelected(filters.domains, group.filterDomains) &&
-      matchesSelected(filters.credentialKinds, group.filterCredentialKinds)
+      matchesSelected(filters.credentialKinds, group.filterCredentialKinds) &&
+      (selectedSuggestionItemIdsByKind.size > 0
+        ? Array.from(selectedSuggestionItemIdsByKind.values()).every((itemIds) => group.items.some((item) => itemIds.has(item.id)))
+        : !searchItemIdSet || group.items.some((item) => searchItemIdSet.has(item.id)))
     );
   }
 
@@ -1142,20 +1326,14 @@ export class WorkflowService {
     return (Object.keys(filterSectionMeta) as AnalysisFilterSectionId[]).map((id) => {
       const meta = filterSectionMeta[id];
       const selected = selectedFilterValues(filters, id);
-      const query = id === 'domains' ? this.domainFilterQuery().trim().toLowerCase() : '';
       const rawOptions = optionData[id];
-      const options = id === 'domains' && query
-        ? rawOptions.filter((option) => option.label.toLowerCase().includes(query))
-        : rawOptions;
       return {
         id,
         label: meta.label,
         countLabel: selected.length ? `${selected.length} / ${rawOptions.length}` : `${rawOptions.length}`,
         expanded: open[id],
-        searchable: meta.searchable,
-        query: id === 'domains' ? this.domainFilterQuery() : '',
         emptyText: meta.emptyText,
-        options: options.map((option) => ({
+        options: rawOptions.map((option) => ({
           ...option,
           selected: selected.includes(option.id)
         }))
@@ -1172,7 +1350,15 @@ export class WorkflowService {
       domains: optionLabelMap(domainOptions(groups)),
       credentialKinds: optionLabelMap(credentialOptions(groups))
     };
+    const search = this.globalSearchQuery().trim();
+    const selectedSuggestions = this.selectedGlobalSearchSuggestions();
+    const searchLabel = selectedSuggestions.length === 1
+      ? `${globalSearchSuggestionKindLabels[selectedSuggestions[0].kind]}：${selectedSuggestions[0].label}`
+      : selectedSuggestions.length > 1
+        ? `已选 ${selectedSuggestions.length} 个补全项`
+        : `搜索：${search}`;
     const chips: AnalysisFilterChipView[] = [
+      ...(search ? [{ key: 'search' as const, id: search, label: searchLabel }] : []),
       ...filters.years.map((id) => ({ key: 'year' as const, id, label: labels.years.get(id) ?? id })),
       ...filters.vaultIds.map((id) => ({ key: 'vault' as const, id, label: labels.vaultIds.get(id) ?? id })),
       ...filters.domains.map((id) => ({ key: 'domain' as const, id, label: labels.domains.get(id) ?? id })),
@@ -1185,6 +1371,69 @@ export class WorkflowService {
       activeCount: chips.length,
       chips
     };
+  }
+
+  private buildGlobalSearchSuggestionGroups(): GlobalSearchSuggestionGroupView[] {
+    const suggestions = this.scopedGlobalSearchSuggestions();
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    return (Object.keys(globalSearchSuggestionKindLabels) as ItemSearchSuggestionKind[])
+      .map((kind) => {
+        const groupSuggestions = suggestions
+          .filter((suggestion) => suggestion.kind === kind)
+          .map((suggestion) => ({
+            ...suggestion,
+            index: suggestions.findIndex((candidate) => candidate.id === suggestion.id),
+            selected: selectedIds.has(suggestion.id),
+            detail: suggestion.kind === "field" && suggestion.field
+              ? `${globalSearchFieldLabels[suggestion.field]}匹配`
+              : `${suggestion.count} 个 item`,
+          }));
+        const selectedCount = groupSuggestions.filter((suggestion) => suggestion.selected).length;
+        return {
+          kind,
+          label: globalSearchSuggestionKindLabels[kind],
+          allSelected: groupSuggestions.length > 0 && selectedCount === groupSuggestions.length,
+          someSelected: selectedCount > 0 && selectedCount < groupSuggestions.length,
+          suggestions: groupSuggestions,
+        };
+      })
+      .filter((group) => group.suggestions.length > 0);
+  }
+
+  private selectedGlobalSearchSuggestions(): ItemSearchSuggestion[] {
+    const selectedIds = new Set(this.selectedGlobalSearchSuggestionIds());
+    return this.scopedGlobalSearchSuggestions().filter((suggestion) => selectedIds.has(suggestion.id));
+  }
+
+  private applyGlobalSearchSuggestionSelection(selectedIds: string[]): void {
+    const suggestions = this.scopedGlobalSearchSuggestions();
+    const availableIds = new Set(suggestions.map((suggestion) => suggestion.id));
+    const normalizedIds = selectedIds.filter((id) => availableIds.has(id));
+    this.selectedGlobalSearchSuggestionIds.set(normalizedIds);
+    if (normalizedIds.length === 0) {
+      this.globalSearchItemIds.set(this.globalSearchMatchedItemIds());
+      return;
+    }
+    const itemIds = new Set(
+      suggestions
+        .filter((suggestion) => normalizedIds.includes(suggestion.id))
+        .flatMap((suggestion) => suggestion.itemIds),
+    );
+    this.globalSearchItemIds.set([...itemIds]);
+  }
+
+  private scopedGlobalSearchSuggestions(): ItemSearchSuggestion[] {
+    const activeItemIds = new Set(this.activeKindGroups().flatMap((group) => group.items.map((item) => item.id)));
+    return this.globalSearchSuggestions()
+      .map((suggestion) => {
+        const itemIds = suggestion.itemIds.filter((itemId) => activeItemIds.has(itemId));
+        return {
+          ...suggestion,
+          itemIds,
+          count: itemIds.length,
+        };
+      })
+      .filter((suggestion) => suggestion.itemIds.length > 0);
   }
 
   private toGroupView(group: DuplicateGroup, itemById: Map<string, ItemSummary>, vaults: VaultSummary[]): DuplicateGroupView {
@@ -1352,13 +1601,13 @@ export class WorkflowService {
     }, 0);
   }
 
-  private createLocalPlan(group: DuplicateGroup, items: ItemSummary[]): ExecutionPlan {
-    return createExecutionPlan(group.id, this.groupDecision(group, items), items, {
+  private createLocalPlan(group: DuplicateGroup, items: ItemSummary[]): ActionPlanGroup {
+    return createActionPlanGroup(group.id, this.groupDecision(group, items), items, {
       requireKeep: group.candidateClass !== 'delete-suggestion'
     });
   }
 
-  private planActionPreviewRows(plan: ExecutionPlan): PlanActionPreviewView[] {
+  private planActionPreviewRows(plan: ActionPlanGroup): PlanActionPreviewView[] {
     const result = this.scanResult();
     if (!result) {
       return [];
@@ -1403,124 +1652,123 @@ export class WorkflowService {
       }
       return plan.actions
         .filter((action) => action.type !== 'keep')
-        .map((action) => this.toApplyOperation(group.id, action));
+        .map((action) => this.toApplyOperation(group, action));
     });
   }
 
-  private toApplyOperation(groupId: string, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {
+  private actionDraftForGroups(groups: PreviewGroupView[]): ActionDraft {
+    const scanId = this.scanResult()?.scanId ?? '';
+    return {
+      scanId,
+      groups: groups.map((group) => {
+        const draft = this.groupDecisionById(group.id);
+        if (!draft) {
+          throw new Error(`找不到待执行的重复组：${ group.id }`);
+        }
+        return { groupId: draft.groupId, items: draft.items };
+      }),
+    };
+  }
+
+  private applyActionExecutionEvent(event: ActionExecutionEvent): void {
+    this.actionExecutionStatus.set(event.status);
+    if (event.type === 'action-started' && event.action && event.groupId) {
+      this.operations.set(this.operations().map((operation) =>
+        operation.groupId === event.groupId && operation.itemId === event.action?.itemId && operation.sourceAction === event.action.type
+          ? { ...operation, status: 'running' as ApplyStatus }
+          : operation
+      ));
+    } else if ((event.type === 'action-completed' || event.type === 'action-failed') && event.result && event.groupId) {
+      const result = event.result;
+      this.operations.set(this.operations().map((operation) => {
+        if (operation.groupId !== event.groupId || operation.itemId !== result.itemId || operation.sourceAction !== result.action) {
+          return operation;
+        }
+        if (result.skipped) {
+          return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
+        }
+        return {
+          ...operation,
+          status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus),
+          dryRun: !event.writeEnabled,
+          error: result.error
+        };
+      }));
+    }
+    if (event.type === 'analysis-updated' && event.response && event.writeEnabled) {
+      this.removeCompletedGroups(event.response.completedGroupIds);
+    }
+    if (event.type === 'stopped' || event.type === 'failed') {
+      this.skipPendingOperations(event.type === 'stopped' ? '执行已停止。' : '执行失败，未继续处理。');
+    }
+    if (event.type === 'failed') {
+      this.error.set(event.error ?? '执行失败。');
+      if (event.groupId) {
+        this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? '执行失败。' });
+      }
+    }
+  }
+
+  private removeCompletedGroups(completedGroupIds: string[]): void {
+    if (completedGroupIds.length === 0) {
+      return;
+    }
+    const result = this.scanResult();
+    if (!result) {
+      return;
+    }
+    const completed = new Set(completedGroupIds);
+    const groups = result.groups.filter((group) => !completed.has(group.id));
+    const remainingItemIds = new Set(groups.flatMap((group) => group.itemIds));
+    this.scanResult.set({ ...result, groups });
+    this.decisions.set(Object.fromEntries(
+      Object.entries(this.decisions()).filter(([itemId]) => remainingItemIds.has(itemId))
+    ));
+  }
+
+  private toApplyOperation(group: PreviewGroupView, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {
     const item = this.itemById(action.itemId);
     const title = item?.title || action.itemId;
+    const groupLabel = `${group.username} @ ${group.site}`;
     if (action.type === 'copy-to-vault-and-archive-source') {
       const targetName = vaultName(this.scanResult()?.vaults ?? [], action.targetVaultId);
       return {
-        id: `op-${action.itemId}`,
-        groupId,
+        id: `op-${group.id}-${action.type}-${action.itemId}`,
+        groupId: group.id,
+        groupLabel,
         itemId: action.itemId,
         type: 'move',
+        sourceAction: action.type,
         label: `迁移「${title}」：${item?.vaultName ?? action.vaultId} → ${targetName}${action.removeTags.length > 0 ? `，同时${removedTagsLabel(action.removeTags)}` : ''}`,
         status: 'pending'
       };
     }
     if (action.type === 'update-tags') {
       return {
-        id: `op-${action.itemId}`,
-        groupId,
+        id: `op-${group.id}-${action.type}-${action.itemId}`,
+        groupId: group.id,
+        groupLabel,
         itemId: action.itemId,
         type: 'tags',
+        sourceAction: action.type,
         label: `更新「${title}」：${removedTagsLabel(action.removeTags)}`,
         status: 'pending'
       };
     }
     return {
-      id: `op-${action.itemId}`,
-      groupId,
+      id: `op-${group.id}-${action.type}-${action.itemId}`,
+      groupId: group.id,
+      groupLabel,
       itemId: action.itemId,
       type: action.type,
+      sourceAction: action.type,
       label: `${action.type === 'delete' ? '删除' : '归档'}「${title}」（${item?.vaultName ?? action.vaultId}）`,
       status: 'pending'
     };
   }
 
-  private async executeGroupDecision(decision: GroupDecision): Promise<ExecuteResponse> {
-    const hasDelete = decision.items.some((item) => !item.keep && item.deleteMode === 'delete');
-    const execution = await this.api.startExecution({
-      ...decision,
-      confirmPermanentDelete: hasDelete || undefined,
-      permanentDeleteConfirmationPhrase: hasDelete ? deleteConfirmationPhrase : undefined
-    });
-    let response: ExecuteResponse | undefined;
-    await this.api.streamExecutionEvents(execution.executionId, execution.eventsToken, (event) => {
-      this.applyExecutionEvent(decision.groupId, event);
-      if (event.type === 'completed') {
-        response = event.response;
-      }
-    });
-    if (!response) {
-      throw new Error('执行进度流未返回最终结果。');
-    }
-    return response;
-  }
-
-  private applyExecutionEvent(groupId: string, event: ExecuteProgressEvent): void {
-    if (event.type !== 'action' || !event.result) {
-      return;
-    }
-    const result = event.result;
-    this.operations.set(this.operations().map((operation) => {
-      if (operation.groupId !== groupId || operation.itemId !== result.itemId) {
-        return operation;
-      }
-      if (result.skipped) {
-        return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
-      }
-      return {
-        ...operation,
-        status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus),
-        dryRun: event.dryRun,
-        error: result.error
-      };
-    }));
-  }
-
-  private applyGroupResult(groupId: string, response: ExecuteResponse): void {
-    const results = response.results ?? [];
-    if (results.length === 0) {
-      if (response.dryRun) {
-        this.operations.set(this.operations().map((operation) => operation.groupId === groupId
-          ? { ...operation, status: 'done' as ApplyStatus, dryRun: true }
-          : operation));
-        return;
-      }
-      this.patchGroupOperations(groupId, 'done');
-      return;
-    }
-    const next = this.operations().map((operation) => {
-      if (operation.groupId !== groupId) {
-        return operation;
-      }
-      const result = results.find((candidate) => candidate.itemId === operation.itemId);
-      if (!result) {
-        return { ...operation, status: 'done' as ApplyStatus, dryRun: response.dryRun || operation.dryRun };
-      }
-      if (result.skipped) {
-        return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
-      }
-      return { ...operation, status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus), error: result.error, dryRun: result.dryRun };
-    });
-    this.operations.set(next);
-  }
-
-  private patchGroupOperations(groupId: string, status: ApplyStatus): void {
-    this.operations.set(this.operations().map((operation) => operation.groupId === groupId ? { ...operation, status } : operation));
-  }
-
-  private failGroup(groupId: string, error: string): void {
-    this.operations.set(this.operations().map((operation) => operation.groupId === groupId ? { ...operation, status: 'failed', error } : operation));
-    this.applyMessage.set(error);
-  }
-
-  private skipPendingOperations(): void {
-    this.operations.set(this.operations().map((operation) => operation.status === 'pending' ? { ...operation, status: 'skipped', error: '前序操作失败，已跳过。' } : operation));
+  private skipPendingOperations(error = '前序操作失败，已跳过。'): void {
+    this.operations.set(this.operations().map((operation) => operation.status === 'pending' ? { ...operation, status: 'skipped', error } : operation));
   }
 }
 
@@ -1543,6 +1791,8 @@ function sectionIdForFilterKey(key: AnalysisFilterKey): AnalysisFilterSectionId 
       return 'domains';
     case 'credential':
       return 'credentials';
+    case 'search':
+      throw new Error('全局搜索不属于分类筛选。');
   }
 }
 
@@ -1646,7 +1896,7 @@ function vaultOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] 
 
 function domainOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
   return countGroupValues(groups, (group) => group.filterDomains, (id) => id)
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function credentialOptions(groups: DuplicateGroupView[]): AnalysisFilterOptionData[] {
@@ -1997,7 +2247,7 @@ function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
   const statusText = operation.status === 'done'
     ? operation.dryRun ? '已试写' : '成功'
     : operation.status === 'failed'
-      ? operation.error || '失败'
+      ? '失败'
       : operation.status === 'running'
         ? '执行中…'
         : operation.status === 'skipped'
@@ -2015,16 +2265,91 @@ function toOperationRow(operation: ApplyOperationView): ApplyOperationRowView {
   };
 }
 
+function buildOperationGroups(operations: ApplyOperationRowView[], errors: Record<string, string>): ApplyOperationGroupView[] {
+  const groups = new Map<string, ApplyOperationRowView[]>();
+  for (const operation of operations) {
+    const groupOperations = groups.get(operation.groupId) ?? [];
+    groupOperations.push(operation);
+    groups.set(operation.groupId, groupOperations);
+  }
+  return Array.from(groups, ([id, groupOperations]) => {
+    const error = errors[id];
+    const status = error ? "failed" : operationGroupStatus(groupOperations);
+    return {
+      id,
+      label: groupOperations[0]?.groupLabel ?? id,
+      status,
+      statusText: error ? "校验失败" : operationGroupStatusText(status, groupOperations),
+      statusColor: operationGroupStatusColor(status),
+      completed: groupOperations.filter((operation) => operation.status === "done" || operation.status === "failed" || operation.status === "skipped").length,
+      total: groupOperations.length,
+      error,
+      operations: groupOperations,
+    };
+  });
+}
+
+function operationGroupStatus(operations: ApplyOperationRowView[]): ApplyStatus {
+  if (operations.some((operation) => operation.status === "failed")) {
+    return "failed";
+  }
+  if (operations.some((operation) => operation.status === "running")) {
+    return "running";
+  }
+  if (operations.some((operation) => operation.status === "pending")) {
+    return "pending";
+  }
+  if (operations.some((operation) => operation.status === "skipped")) {
+    return "skipped";
+  }
+  return "done";
+}
+
+function operationGroupStatusText(status: ApplyStatus, operations: ApplyOperationRowView[]): string {
+  if (status === "failed") {
+    return "执行失败";
+  }
+  if (status === "running") {
+    return "执行中";
+  }
+  if (status === "pending") {
+    return "等待执行";
+  }
+  if (status === "skipped") {
+    return operations.every((operation) => operation.status === "skipped") ? "已跳过" : "部分跳过";
+  }
+  return operations.some((operation) => operation.dryRun) ? "试写完成" : "执行成功";
+}
+
+function operationGroupStatusColor(status: ApplyStatus): string {
+  if (status === "done") {
+    return "#C3E88D";
+  }
+  if (status === "failed") {
+    return "#FF5370";
+  }
+  if (status === "running") {
+    return "#82AAFF";
+  }
+  return "#727272";
+}
+
+function searchKeywords(value: string): string[] {
+  return Array.from(new Set(
+    value
+      .normalize('NFKC')
+      .split(/\s+/)
+      .map((keyword) => keyword.trim())
+      .filter(Boolean)
+  ));
+}
+
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function executionInvalidatedMessage(response: ExecuteResponse): string {
-  if (response.verification && !response.verification.ok) {
-    const detail = response.verification.results.find((result) => !result.ok)?.message;
-    return detail ? `${detail} 请重新扫描确认。` : '执行后校验失败，请重新扫描确认。';
-  }
-  return '部分操作失败，当前扫描结果已失效，请重新扫描后继续。';
+function isStaleAnalysisError(message: string): boolean {
+  return message.includes('分析结果已过期');
 }
 
 function sleep(ms: number): Promise<void> {

@@ -1,8 +1,11 @@
 import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
 import { Injectable, signal } from '@angular/core';
 import type {
-  ExecutionPlan,
+  ActionDraft,
+  ActionPlan,
+  ActionPlanGroup,
   GroupDecision,
+  PlanAction,
   RevealCredentialsResponse,
   ScanProgress,
   ScanProgressEvent,
@@ -10,6 +13,25 @@ import type {
   ScanSnapshot
 } from '@optimize-password/core';
 import { firstValueFrom } from 'rxjs';
+
+const actionExecutionEventTypes = [
+  'started',
+  'group-started',
+  'action-started',
+  'action-completed',
+  'action-failed',
+  'group-verifying',
+  'group-completed',
+  'paused',
+  'resumed',
+  'stop-requested',
+  'analysis-updated',
+  'stopped',
+  'completed',
+  'failed',
+] as const;
+
+export type DryRunSpeedMultiplier = 1 | 5 | 10;
 
 interface TauriBackendSession {
   baseUrl: string;
@@ -73,7 +95,7 @@ export interface ExecutionVerification {
 }
 
 export interface ExecuteResponse {
-  plan?: ExecutionPlan;
+  plan?: ActionPlanGroup;
   scan?: AnalysisResultResponse;
   results?: ExecuteActionResult[];
   verification?: ExecutionVerification;
@@ -94,11 +116,16 @@ export interface ExecuteStartResponse {
 }
 
 export interface ExecuteProgressEvent {
-  type: 'started' | 'action' | 'completed' | 'failed';
+  type: 'started' | 'action-started' | 'action' | 'completed' | 'failed';
+  sequence: number;
   executionId: string;
   dryRun: boolean;
   totalOperations: number;
   completedOperations: number;
+  action?: {
+    itemId: string;
+    type: string;
+  };
   result?: ExecuteActionResult;
   response?: ExecuteResponse;
   error?: string;
@@ -111,8 +138,76 @@ export type ExecuteRequest = GroupDecision & {
   dryRun?: boolean;
 };
 
+export type ActionExecutionStatus = 'running' | 'pause-requested' | 'paused' | 'stop-requested' | 'stopped' | 'completed' | 'failed';
+
+export interface ActionExecutionSnapshot {
+  executionId: string;
+  eventsToken?: string;
+  status: ActionExecutionStatus;
+  writeEnabled: boolean;
+  dryRunSpeedMultiplier: DryRunSpeedMultiplier;
+  totalGroups: number;
+  totalOperations: number;
+  completedOperations: number;
+  cancelledOperations: number;
+  plan: ActionPlan;
+  draft: ActionDraft;
+}
+
+export interface ActionExecutionUpdateResponse {
+  draft: ActionDraft;
+  completedGroupIds: string[];
+  results: ExecuteActionResult[];
+  effects: ActionExecutionEffect[];
+  cancelledOperations: number;
+}
+
+export interface ActionExecutionEffect {
+  groupId: string;
+  sourceItemId: string;
+  createdItemId?: string;
+  actionType: PlanAction["type"];
+  wroteToOnePassword: boolean;
+  succeeded: boolean;
+}
+
+export interface ActionExecutionEvent {
+  type: string;
+  sequence: number;
+  executionId: string;
+  status: ActionExecutionStatus;
+  writeEnabled: boolean;
+  totalGroups: number;
+  totalOperations: number;
+  completedOperations: number;
+  groupId?: string;
+  entryId?: string;
+  action?: { itemId: string; type: string };
+  result?: ExecuteActionResult;
+  progress?: ScanProgress;
+  response?: ActionExecutionUpdateResponse;
+  error?: string;
+}
+
 export interface AnalysisResultResponse extends ScanResult {
   skippedGroupIds: string[];
+}
+
+export interface ItemSearchResponse {
+  itemIds: string[];
+  suggestions: ItemSearchSuggestion[];
+}
+
+export type ItemSearchSuggestionKind = "year" | "vault" | "credential" | "domain" | "field";
+export type ItemSearchField = "title" | "username" | "url" | "phone" | "email" | "note";
+
+export interface ItemSearchSuggestion {
+  id: string;
+  kind: ItemSearchSuggestionKind;
+  label: string;
+  field?: ItemSearchField;
+  itemIds: string[];
+  count: number;
 }
 
 export interface SkipGroupResponse {
@@ -175,6 +270,12 @@ export class ApiService {
   async analyze(scanId: string): Promise<AnalysisResultResponse> {
     return this.request(firstValueFrom(
       this.http.post<AnalysisResultResponse>(this.apiUrl('/api/analyze'), { scanId }, { headers: this.headers() })
+    ));
+  }
+
+  async searchItems(keywords: string[]): Promise<ItemSearchResponse> {
+    return this.request(firstValueFrom(
+      this.http.post<ItemSearchResponse>(this.apiUrl("/api/items/search"), { keywords }, { headers: this.headers() })
     ));
   }
 
@@ -298,8 +399,8 @@ export class ApiService {
     }
   }
 
-  async createPlan(decision: GroupDecision): Promise<ExecutionPlan> {
-    return this.request(firstValueFrom(this.http.post<ExecutionPlan>(this.apiUrl('/api/plan'), decision, { headers: this.headers() })));
+  async createPlan(decision: GroupDecision): Promise<ActionPlanGroup> {
+    return this.request(firstValueFrom(this.http.post<ActionPlanGroup>(this.apiUrl('/api/plan'), decision, { headers: this.headers() })));
   }
 
   async skipGroup(scanId: string, groupId: string): Promise<SkipGroupResponse> {
@@ -335,6 +436,65 @@ export class ApiService {
     return this.request(firstValueFrom(
       this.http.post<ExecuteStartResponse>(this.apiUrl('/api/execute/start'), decision, { headers: this.headers() })
     ));
+  }
+
+  async startActionExecution(
+    draft: ActionDraft,
+    permanentDeleteConfirmationPhrase?: string,
+    dryRunSpeedMultiplier: DryRunSpeedMultiplier = 1,
+  ): Promise<ActionExecutionSnapshot> {
+    return this.request(firstValueFrom(this.http.post<ActionExecutionSnapshot>(
+      this.apiUrl('/api/action-executions/start'),
+      { draft, permanentDeleteConfirmationPhrase, dryRunSpeedMultiplier },
+      { headers: this.headers() }
+    )));
+  }
+
+  async pauseActionExecution(executionId: string): Promise<ActionExecutionSnapshot> {
+    return this.actionExecutionCommand(executionId, 'pause');
+  }
+
+  async resumeActionExecution(executionId: string): Promise<ActionExecutionSnapshot> {
+    return this.actionExecutionCommand(executionId, 'resume');
+  }
+
+  async stopActionExecution(executionId: string): Promise<ActionExecutionSnapshot> {
+    return this.actionExecutionCommand(executionId, 'stop');
+  }
+
+  async streamActionExecutionEvents(
+    executionId: string,
+    eventsToken: string,
+    onEvent: (event: ActionExecutionEvent) => void,
+    after = 0
+  ): Promise<void> {
+    const source = new EventSource(this.actionExecutionEventsUrl(executionId, eventsToken, after));
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (callback: () => void): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        source.close();
+        callback();
+      };
+      const handle = (message: Event): void => {
+        try {
+          const event = JSON.parse((message as MessageEvent<string>).data) as ActionExecutionEvent;
+          onEvent(event);
+          if (event.type === 'stopped' || event.type === 'completed' || event.type === 'failed') {
+            settle(resolve);
+          }
+        } catch (error) {
+          settle(() => reject(error instanceof Error ? error : new Error('无法处理执行进度事件。')));
+        }
+      };
+      for (const type of actionExecutionEventTypes) {
+        source.addEventListener(type, handle);
+      }
+      source.onerror = () => source.readyState === EventSource.CLOSED && settle(() => reject(new Error('执行进度流已关闭。')));
+    });
   }
 
   async streamExecutionEvents(
@@ -417,6 +577,22 @@ export class ApiService {
     return this.apiUrl(`/api/execute/events?${query.toString()}`);
   }
 
+  private actionExecutionEventsUrl(executionId: string, eventsToken: string, after = 0): string {
+    const query = new URLSearchParams({ eventsToken });
+    if (after > 0) {
+      query.set('after', String(after));
+    }
+    return this.apiUrl(`/api/action-executions/${ encodeURIComponent(executionId) }/events?${ query.toString() }`);
+  }
+
+  private async actionExecutionCommand(executionId: string, command: 'pause' | 'resume' | 'stop'): Promise<ActionExecutionSnapshot> {
+    return this.request(firstValueFrom(this.http.post<ActionExecutionSnapshot>(
+      this.apiUrl(`/api/action-executions/${ encodeURIComponent(executionId) }/${ command }`),
+      {},
+      { headers: this.headers() }
+    )));
+  }
+
   private streamExecutionEventsWithEventSource(
     executionId: string,
     eventsToken: string,
@@ -452,6 +628,7 @@ export class ApiService {
       };
 
       source.addEventListener('started', handleEvent);
+      source.addEventListener('action-started', handleEvent);
       source.addEventListener('action', handleEvent);
       source.addEventListener('completed', handleEvent);
       source.addEventListener('failed', handleEvent);

@@ -1,30 +1,56 @@
 <header class="op-header">
-  <div class="brand-lockup">
-    <img class="brand-mark" src="brand/optipass-dock.svg" alt="" aria-hidden="true">
-    <div class="brand-wordmark">
-      <img class="brand-logo" src="brand/optipass-text.svg" alt="Optipass">
-      <div class="brand-subtitle">1Password 查重工具</div>
+    <div class="brand-lockup">
+        <img class="brand-mark" src="brand/optipass-dock.svg" alt="" aria-hidden="true">
+        <div class="brand-wordmark">
+            <img class="brand-logo" src="brand/optipass-text.svg" alt="Optipass">
+            <div class="brand-subtitle">1Password 查重工具</div>
+        </div>
     </div>
-  </div>
-  <div class="header-spacer"></div>
-  <button
-    type="button"
-    class="mutation-switch"
-    [class.enabled]="mutationsEnabled()"
-    [attr.aria-pressed]="mutationsEnabled()"
-    [disabled]="mutationToggleDisabled()"
-    [attr.title]="mutationsEnabled() ? '可写模式：应用计划会写入 1Password' : '试写模式：应用计划只执行 dry-run'"
-    (click)="toggleMutations()"
-  >
-    <span class="mutation-switch-track" aria-hidden="true">
-      <i></i>
-    </span>
-    <strong>{{ mutationsEnabled() ? '可写' : '试写' }}</strong>
-  </button>
-  @if (accountChip()) {
-    <div class="account-chip">
-      <span aria-hidden="true"></span>
-      <strong>{{ accountChip() }}</strong>
+    <div class="header-spacer"></div>
+    <div class="header-context">
+        <div
+            class="account-chip"
+            [class.empty]="!accountChip()"
+            [class.authorizing]="accountAuthorizationState() === 'authorizing'"
+            [class.authorized]="accountAuthorizationState() === 'authorized'"
+            [class.failed]="accountAuthorizationState() === 'failed'"
+            [attr.title]="accountAuthorizationLabel()"
+        >
+            @if (accountChip()) {
+                <span aria-hidden="true"></span>
+                <strong>{{ accountChip() }}</strong>
+            }
+        </div>
+        <div class="execution-context">
+            <button
+                type="button"
+                class="mutation-switch"
+                [class.enabled]="mutationsEnabled()"
+                [attr.aria-pressed]="mutationsEnabled()"
+                [disabled]="mutationToggleDisabled()"
+                [attr.title]="mutationsEnabled() ? '可写模式：应用计划会写入 1Password' : '试写模式：应用计划只执行 dry-run'"
+                (click)="toggleMutations()"
+            >
+                <span class="mutation-switch-track" aria-hidden="true">
+                    <i></i>
+                </span>
+                <strong>{{ mutationsEnabled() ? "可写模式" : "试写模式" }}</strong>
+            </button>
+            @if (!mutationsEnabled()) {
+                <div class="dry-run-speed-control">
+                    <div class="dry-run-speed-segments" role="group" aria-label="试写执行速度">
+                        @for (multiplier of dryRunSpeedOptions; track multiplier) {
+                            <button
+                                type="button"
+                                [class.active]="dryRunSpeedMultiplier() === multiplier"
+                                [attr.aria-pressed]="dryRunSpeedMultiplier() === multiplier"
+                                [disabled]="dryRunSpeedDisabled()"
+                                (click)="selectDryRunSpeed(multiplier)"
+                            >{{ multiplier }}x</button>
+                        }
+                    </div>
+                </div>
+            }
+        </div>
     </div>
-  }
 </header>

@@ -1,8 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { createExecutionPlan, validateDecisionItemSet } from "./plan.js";
+import { createActionPlan, createExecutionPlan, validateDecisionItemSet } from "./plan.js";
 import { item } from "./test-helpers.js";
 
 describe("createExecutionPlan", () => {
+  it("builds one immutable batch plan from an ActionDraft", () => {
+    const items = [item({ id: "vault-a:1", title: "A" }), item({ id: "vault-a:2", title: "A" })];
+    const scan = {
+      scanId: "scan-1",
+      scannedAt: "2026-07-14T00:00:00.000Z",
+      analyzedAt: "2026-07-14T00:00:00.000Z",
+      vaults: [{ id: "vault-a", name: "A" }],
+      items,
+      groups: [{
+        id: "group-1",
+        candidateClass: "exact-duplicate" as const,
+        itemIds: items.map((candidate) => candidate.id),
+        reasons: [],
+        recommendedKeepIds: [items[0].id],
+        recommendedKeepReasons: [],
+        confidence: "high" as const
+      }]
+    };
+    const plan = createActionPlan({
+      scanId: scan.scanId,
+      groups: [{
+        groupId: "group-1",
+        items: [{ itemId: items[0].id, keep: true }, { itemId: items[1].id, keep: false }]
+      }]
+    }, scan, false);
+
+    expect(plan).toMatchObject({ sourceScanId: "scan-1", writeEnabled: false, requiresExplicitDeleteConfirmation: false });
+    expect(plan.groups).toHaveLength(1);
+    expect(plan.summary).toMatchObject({ keep: 1, archive: 1 });
+  });
+
   it("plans archive by default for non-kept items", () => {
     const plan = createExecutionPlan(
       "group-1",

@@ -31,6 +31,7 @@ const items: ItemSummary[] = [
       { label: "password", kind: "secret", normalizedValueHash: "mock-github-work-secret" }
     ],
     analysis: {
+      notesText: "GitHub work account",
       notesValueHash: "mock-analysis-github-notes",
       exactUrlKeys: ["https://github.com/login"],
       similarUrlKeys: ["https://github.com/login"],
@@ -165,13 +166,25 @@ const items: ItemSummary[] = [
     urls: [],
     usernames: [],
     tags: ["vpn"],
-    fieldCount: 1,
+    fieldCount: 3,
     hasPassword: false,
     hasTotp: false,
     hasPasskey: false,
     hasAttachments: false,
     hasNotes: true,
-    comparableFields: [{ label: "note", kind: "text", normalizedValue: "vpn recovery note" }]
+    comparableFields: [
+      { label: "note", kind: "text", normalizedValue: "vpn recovery note" },
+      { label: "support email", kind: "email", normalizedValue: "vpn@example.com" },
+      { label: "support phone", kind: "phone", normalizedValue: "13800000000" }
+    ],
+    analysis: {
+      notesText: "vpn recovery note",
+      notesValueHash: "mock-analysis-vpn-notes",
+      exactUrlKeys: [],
+      similarUrlKeys: [],
+      identityValues: [],
+      fieldSignatures: ["mock-analysis-vpn-note"]
+    }
   }
 ];
 

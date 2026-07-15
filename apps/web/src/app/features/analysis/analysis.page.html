@@ -54,45 +54,153 @@
           <button type="button" class="filter-clear" (click)="wf.clearAnalysisFilters()">清空筛选</button>
         }
       </div>
+      <div class="global-search-shell" (focusout)="onGlobalSearchFocusOut($event)">
+        <input
+          type="search"
+          class="global-search"
+          role="combobox"
+          aria-label="全局搜索重复项"
+          aria-autocomplete="list"
+          aria-controls="global-search-suggestions"
+          [attr.aria-expanded]="wf.globalSearchAutocompleteOpen()"
+          [attr.aria-activedescendant]="wf.globalSearchAutocompleteOpen() ? wf.activeGlobalSearchSuggestionId() : null"
+          placeholder="搜索年份、保险库、凭据、Domain 或凭据字段"
+          [ngModel]="wf.globalSearchQuery()"
+          (focus)="wf.openGlobalSearchAutocomplete()"
+          (keydown)="onGlobalSearchKeydown($event)"
+          (ngModelChange)="wf.updateGlobalSearchQuery($event)"
+        >
+        @if (wf.globalSearchAutocompleteOpen()) {
+          <div
+            #globalSearchSuggestions
+            id="global-search-suggestions"
+            class="global-search-suggestions"
+            role="listbox"
+            aria-label="全局搜索补全项"
+            aria-multiselectable="true"
+          >
+            <div class="global-search-selection-toolbar">
+              <span>已选 {{ wf.selectedGlobalSearchSuggestionCount() }} / {{ wf.globalSearchSuggestions().length }}</span>
+              <button
+                type="button"
+                [attr.aria-pressed]="wf.allGlobalSearchSuggestionsSelected()"
+                (click)="wf.toggleAllGlobalSearchSuggestions()"
+              >
+                {{ wf.allGlobalSearchSuggestionsSelected() ? '取消全选' : '全选' }}
+              </button>
+            </div>
+            @for (group of wf.globalSearchSuggestionGroups(); track group.kind) {
+              <div class="global-search-suggestion-group" role="group" [attr.aria-label]="group.label">
+                <div class="global-search-suggestion-heading">
+                  <span>{{ group.label }}</span>
+                  <button
+                    type="button"
+                    [class.partial]="group.someSelected"
+                    [attr.aria-pressed]="group.allSelected"
+                    (click)="wf.toggleGlobalSearchSuggestionGroup(group)"
+                  >
+                    {{ group.allSelected ? '取消全选' : '全选本组' }}
+                  </button>
+                </div>
+                @for (suggestion of group.suggestions; track suggestion.id) {
+                  <button
+                    type="button"
+                    role="option"
+                    class="global-search-suggestion"
+                    [id]="'global-search-suggestion-' + suggestion.id"
+                    [class.active]="suggestion.index === wf.activeGlobalSearchSuggestionIndex()"
+                    [class.selected]="suggestion.selected"
+                    [attr.aria-selected]="suggestion.selected"
+                    (focus)="wf.activateGlobalSearchSuggestion(suggestion.index)"
+                    (mouseenter)="wf.activateGlobalSearchSuggestion(suggestion.index)"
+                    (click)="wf.selectGlobalSearchSuggestion(suggestion)"
+                  >
+                    <span class="global-search-suggestion-check" aria-hidden="true">{{ suggestion.selected ? '✓' : '' }}</span>
+                    <span class="global-search-suggestion-label">{{ suggestion.label }}</span>
+                    <em>{{ suggestion.detail }}</em>
+                  </button>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
     </div>
 
     <div class="analysis-content">
       <aside class="analysis-filter-sidebar" aria-label="筛选重复组">
+        <div class="filter-container filter-container-primary">
+          @for (section of wf.analysisFilterSections(); track section.id) {
+            @if (section.id !== 'domains') {
+              <div
+                class="filter-section"
+                [class.expanded]="section.expanded"
+                [class.collapsed]="!section.expanded"
+              >
+                <button
+                  type="button"
+                  class="filter-section-toggle"
+                  [attr.aria-expanded]="section.expanded"
+                  (click)="wf.toggleAnalysisFilterSection(section.id)"
+                >
+                  <span>{{ section.label }}</span>
+                  <em>{{ section.countLabel }}</em>
+                  <b aria-hidden="true">▾</b>
+                </button>
+                <div
+                  class="filter-section-body"
+                  [class.expanded]="section.expanded"
+                  [attr.aria-hidden]="!section.expanded"
+                  [attr.inert]="section.expanded ? null : ''"
+                >
+                  <div class="filter-section-body-inner">
+                    <div class="filter-option-list">
+                      @for (option of section.options; track option.id) {
+                        <label class="filter-option">
+                          <input
+                            type="checkbox"
+                            [ngModel]="option.selected"
+                            (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
+                          >
+                          @if (section.id === 'vaults') {
+                            <op-vault-icon class="filter-vault-icon" [name]="option.label"></op-vault-icon>
+                          }
+                          <span>{{ option.label }}</span>
+                          <em>{{ option.count }}</em>
+                        </label>
+                      }
+                      @if (section.options.length === 0) {
+                        <div class="filter-option-empty">{{ section.emptyText }}</div>
+                      }
+                    </div>
+                  </div>
+                </div>
+              </div>
+            }
+          }
+        </div>
+        <div class="filter-container filter-container-domains">
         @for (section of wf.analysisFilterSections(); track section.id) {
-          <div
-            class="filter-section"
-            [class.domain-section]="section.id === 'domains'"
-            [class.expanded]="section.expanded"
-            [class.collapsed]="!section.expanded"
-          >
-            <button
-              type="button"
-              class="filter-section-toggle"
-              [attr.aria-expanded]="section.expanded"
-              (click)="wf.toggleAnalysisFilterSection(section.id)"
-            >
-              <span>{{ section.label }}</span>
-              <em>{{ section.countLabel }}</em>
-              <b aria-hidden="true">▾</b>
-            </button>
-            <div
-              class="filter-section-body"
-              [class.expanded]="section.expanded"
-              [attr.aria-hidden]="!section.expanded"
-              [attr.inert]="section.expanded ? null : ''"
-            >
-              <div class="filter-section-body-inner">
-                @if (section.searchable) {
-                  <input
-                    type="search"
-                    class="filter-search"
-                    placeholder="搜索 domain"
-                    [ngModel]="section.query"
-                    (ngModelChange)="wf.updateDomainFilterQuery($event)"
-                  >
-                }
-                <div class="filter-option-clip">
-                  <div class="filter-option-list" [class.scrollable]="section.id === 'domains'">
+          @if (section.id === 'domains') {
+            <div class="filter-section" [class.expanded]="section.expanded" [class.collapsed]="!section.expanded">
+              <button
+                type="button"
+                class="filter-section-toggle"
+                [attr.aria-expanded]="section.expanded"
+                (click)="wf.toggleAnalysisFilterSection(section.id)"
+              >
+                <span>{{ section.label }}</span>
+                <em>{{ section.countLabel }}</em>
+                <b aria-hidden="true">▾</b>
+              </button>
+              <div
+                class="filter-section-body"
+                [class.expanded]="section.expanded"
+                [attr.aria-hidden]="!section.expanded"
+                [attr.inert]="section.expanded ? null : ''"
+              >
+                <div class="filter-section-body-inner">
+                  <div class="filter-option-list">
                     @for (option of section.options; track option.id) {
                       <label class="filter-option">
                         <input
@@ -100,9 +208,6 @@
                           [ngModel]="option.selected"
                           (ngModelChange)="wf.toggleAnalysisFilter(section.id, option.id, $event)"
                         >
-                        @if (section.id === 'vaults') {
-                          <op-vault-icon class="filter-vault-icon" [name]="option.label"></op-vault-icon>
-                        }
                         <span>{{ option.label }}</span>
                         <em>{{ option.count }}</em>
                       </label>
@@ -114,8 +219,9 @@
                 </div>
               </div>
             </div>
-          </div>
+          }
         }
+        </div>
       </aside>
 
       <div class="scroll-list-panel">
@@ -126,18 +232,9 @@
             [active]="wf.activeKind()"
             (activeChange)="setKind($event)"
           ></op-tabs>
-          <op-tabs
-            class="display-mode-tabs"
-            ariaLabel="主视图模式"
-            [tabs]="displayModeTabs"
-            [active]="wf.analysisDisplayMode()"
-            [showCount]="false"
-            (activeChange)="switchDisplayMode($event)"
-          ></op-tabs>
         </div>
-        <div #groupList class="group-list" [class.preview-mode]="wf.analysisDisplayMode() === 'preview'">
-          @if (wf.analysisDisplayMode() === 'edit') {
-            @for (group of wf.visibleGroups(); track group.id) {
+        <div class="group-list">
+          @for (group of wf.visibleGroups(); track group.id) {
             <div
               class="group-card"
               [attr.data-group-id]="group.id"
@@ -183,13 +280,13 @@
                 type="button"
                 class="group-tool-button apply-group-button"
                 [disabled]="!wf.canApplyGroup(group.id)"
-                (click)="wf.openGroupPlanDialog(group.id)"
-              >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
+                (click)="wf.openGroupExecutionDialog(group.id)"
+              >应用本组 ({{ wf.groupOperationCount(group.id) }})</button>
               <button
                 type="button"
                 class="skip-button group-icon-button"
                 [style.color]="group.skipColor"
-                [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
+                [disabled]="wf.groupPlanLoading()[group.id] || wf.applying()"
                 [attr.aria-label]="group.skipLabel"
                 [attr.title]="group.skipLabel"
                 (click)="wf.toggleGroupSkip(group.id)"
@@ -215,62 +312,8 @@
               (tagScopeApplied)="applyTagScope($event)"
             ></op-analysis-item-matrix>
             </div>
-            }
-          } @else {
-            @for (group of wf.visiblePreviewGroups(); track group.id) {
-              <div
-                class="group-card"
-                [attr.data-group-id]="group.id"
-                [style.border-color]="group.cardBorder"
-                [style.opacity]="group.opacity"
-              >
-                <div class="group-head">
-                  <span
-                    class="group-category"
-                    [style.color]="groupCategoryColor(group)"
-                    [attr.aria-label]="groupCategoryLabel(group)"
-                    [attr.title]="groupCategoryLabel(group)"
-                  >
-                    <op-item-type-icon [type]="groupCategory(group)"></op-item-type-icon>
-                    <span>{{ groupCategoryLabel(group) }}</span>
-                  </span>
-                  <span class="mono group-username">{{ group.username }}</span>
-                  <span class="muted">@</span>
-                  <span class="mono group-site">{{ group.site }}</span>
-                  <span class="head-spacer"></span>
-                  <button
-                    type="button"
-                    class="group-tool-button apply-group-button"
-                    [disabled]="!wf.canApplyGroup(group.id)"
-                    (click)="wf.openGroupPlanDialog(group.id)"
-                  >{{ wf.groupPlanLoading()[group.id] ? '生成中…' : '应用本组 (' + wf.groupOperationCount(group.id) + ')' }}</button>
-                  <button
-                    type="button"
-                    class="skip-button group-icon-button"
-                    [style.color]="group.skipColor"
-                    [disabled]="wf.groupPlanLoading()[group.id] || wf.groupApplying()"
-                    [attr.aria-label]="group.skipped ? '恢复此组' : '跳过此组'"
-                    [attr.title]="group.skipped ? '恢复此组' : '跳过此组'"
-                    (click)="wf.toggleGroupSkip(group.id)"
-                  >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                      @if (group.skipped) {
-                        <path d="M7 8V4.5L3.5 8 7 11.5V8h5.5a4.5 4.5 0 1 1-3.9 6.75" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
-                      } @else {
-                        <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.9"></circle>
-                        <path d="m7.2 16.8 9.6-9.6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
-                      }
-                    </svg>
-                  </button>
-                </div>
-
-                <div class="item-rows">
-                  <op-plan-action-group [actions]="group.actions" [plan]="group.plan"></op-plan-action-group>
-                </div>
-              </div>
-            }
           }
-          @if ((wf.analysisDisplayMode() === 'edit' ? wf.visibleGroups().length : wf.visiblePreviewGroups().length) === 0) {
+          @if (wf.visibleGroups().length === 0) {
             <div class="empty-box">
               {{ wf.analysisFilterSummary().activeCount > 0 ? '没有符合当前筛选条件的疑似重复组' : '此分类下没有疑似重复组' }}
             </div>
@@ -279,64 +322,98 @@
       </div>
     </div>
 
-    @if (wf.groupPlanDialog(); as dialog) {
-      <div class="op-modal-backdrop" (click)="wf.closeGroupPlanDialog()">
-        <div class="op-modal group-plan-modal" role="dialog" aria-modal="true" aria-labelledby="group-plan-title" (click)="$event.stopPropagation()">
-          <div class="op-modal-head">
-            <div>
-              <h2 id="group-plan-title">应用本组</h2>
-              <p class="modal-subtitle">
-                <span class="mono">{{ dialog.title }}</span>
-                <span>{{ dialog.subtitle }}</span>
-              </p>
-            </div>
-            <button type="button" class="modal-close" aria-label="关闭" [disabled]="wf.groupApplying()" (click)="wf.closeGroupPlanDialog()">X</button>
-          </div>
-
-          <op-plan-action-group class="modal-plan-preview" [actions]="dialog.actions" [plan]="dialog.plan"></op-plan-action-group>
-
-          @if (wf.groupApplyError()) {
-            <div class="page-notice danger-text">{{ wf.groupApplyError() }}</div>
-          }
-
-          <div class="modal-actions">
-            <op-button size="sm" variant="ghost" label="取消" [disabled]="wf.groupApplying()" (pressed)="wf.closeGroupPlanDialog()"></op-button>
-            <op-button
-              size="sm"
-              [label]="wf.groupApplying() ? '正在应用…' : '确认应用 (' + dialog.operationCount + ' 项操作)'"
-              [disabled]="wf.groupApplying() || dialog.plan.blockers.length > 0"
-              (pressed)="wf.confirmGroupPlanDialog()"
-            ></op-button>
-          </div>
-        </div>
-      </div>
-    }
-
     @if (wf.applyDialogOpen()) {
       <div class="op-modal-backdrop">
         <div class="op-modal apply-progress-modal" role="dialog" aria-modal="true" aria-labelledby="batch-apply-title">
           <div class="op-modal-head">
             <div>
-              <h2 id="batch-apply-title">{{ wf.applying() ? '正在应用计划' : '应用结果' }}</h2>
-              <p class="modal-subtitle">{{ wf.applying() ? '逐组执行计划，请勿关闭窗口' : wf.summaryLine() }}</p>
+              <h2 id="batch-apply-title">
+                {{ wf.actionExecutionStatus() === 'ready'
+                  ? (wf.actionExecutionScope() === 'group' ? '应用本组' : '应用计划')
+                  : wf.applying() ? '正在应用计划' : '应用结果' }}
+              </h2>
+              <p class="modal-subtitle">
+                @if (wf.actionExecutionStatus() === 'ready') {
+                  已准备 {{ wf.operationGroups().length }} 组、{{ wf.operations().length }} 项操作，点击开始后才会执行
+                } @else if (wf.actionExecutionStatus() === 'paused') {
+                  执行已暂停，计划和剩余队列保持不变
+                } @else if (wf.actionExecutionStatus() === 'stop-requested') {
+                  正在停止，当前操作完成后不会再执行新操作
+                } @else if (wf.applying()) {
+                  逐组执行计划，请勿关闭窗口
+                } @else {
+                  {{ wf.summaryLine() }}
+                }
+              </p>
             </div>
-            <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="wf.applying()" (click)="wf.closeApplyDialog()">X</button>
+            <button type="button" class="modal-close" aria-label="关闭应用结果" [disabled]="!wf.canCloseApplyDialog()" (click)="wf.closeApplyDialog()">X</button>
           </div>
-          <op-progress [value]="wf.applyPct()" color="#f07178"></op-progress>
-          <div #applyOperationList class="op-list" (scroll)="onApplyOperationListScroll()">
-            @for (operation of wf.operationRows(); track operation.id) {
-              <div class="op-row" [style.border-color]="operation.border" [style.opacity]="operation.opacity">
-                <span [style.color]="operation.iconColor" [style.animation]="operation.anim">{{ operation.icon }}</span>
-                <strong>{{ operation.label }}</strong>
-                <em [style.color]="operation.statusColor">{{ operation.statusText }}</em>
-              </div>
+          <div class="apply-progress-summary" aria-live="polite">
+            <span>共 {{ wf.operationGroups().length }} 组</span>
+            <em [attr.data-status]="wf.actionExecutionStatus()">{{ wf.actionExecutionStatusLabel() }}</em>
+            <strong>{{ wf.applyPct() }}%</strong>
+          </div>
+          @if (wf.actionExecutionStatus() === 'failed' && wf.error()) {
+            <p class="execution-batch-error" role="alert">{{ wf.error() }}</p>
+          }
+          <op-progress [value]="wf.applyPct()" color="#F07178"></op-progress>
+          <div #applyOperationList class="execution-group-list" (scroll)="onApplyOperationListScroll()">
+            @for (group of wf.operationGroups(); track group.id) {
+              <section class="execution-group" [attr.data-status]="group.status">
+                <header class="execution-group-head">
+                  <strong>{{ group.label }}</strong>
+                  <span>{{ group.completed }} / {{ group.total }}</span>
+                  <em [style.color]="group.statusColor">{{ group.statusText }}</em>
+                </header>
+                @if (group.error) {
+                  <p class="execution-group-error">{{ group.error }}</p>
+                }
+                <div class="execution-action-list">
+                  @for (operation of group.operations; track operation.id) {
+                    <div
+                      class="op-row"
+                      [attr.data-operation-id]="operation.id"
+                      [attr.data-status]="operation.status"
+                      [style.border-color]="operation.border"
+                      [style.opacity]="operation.opacity"
+                    >
+                      <span [style.color]="operation.iconColor" [style.animation]="operation.anim">{{ operation.icon }}</span>
+                      <div class="op-row-copy">
+                        <strong>{{ operation.label }}</strong>
+                        @if (operation.error) {
+                          <small>{{ operation.error }}</small>
+                        }
+                      </div>
+                      <em [style.color]="operation.statusColor">{{ operation.statusText }}</em>
+                    </div>
+                  }
+                </div>
+              </section>
             }
           </div>
-          @if (!wf.applying()) {
-            <div class="modal-actions">
+          <div class="modal-actions execution-controls">
+            @if (wf.actionExecutionStatus() === 'ready') {
+              <op-button size="sm" variant="ghost" label="取消" (pressed)="wf.closeApplyDialog()"></op-button>
+              <op-button size="sm" [label]="'开始执行 (' + wf.operations().length + ' 项操作)'" (pressed)="wf.startPreparedActionExecution()"></op-button>
+            } @else if (wf.applying()) {
+              @if (wf.actionExecutionStatus() === 'paused') {
+                <op-button size="sm" variant="ghost" label="继续" (pressed)="wf.resumeActionExecution()"></op-button>
+              } @else if (wf.actionExecutionStatus() === 'running' || wf.actionExecutionStatus() === 'pause-requested') {
+                <op-button
+                  size="sm"
+                  variant="ghost"
+                  [label]="wf.actionExecutionStatus() === 'pause-requested' ? '正在暂停' : '暂停'"
+                  [disabled]="wf.actionExecutionStatus() === 'pause-requested'"
+                  (pressed)="wf.pauseActionExecution()"
+                ></op-button>
+              }
+              @if (wf.actionExecutionStatus() === 'running' || wf.actionExecutionStatus() === 'pause-requested' || wf.actionExecutionStatus() === 'paused') {
+                <op-button size="sm" label="停止" (pressed)="requestStopActionExecution()"></op-button>
+              }
+            } @else {
               <op-button size="sm" variant="ghost" label="关闭" (pressed)="wf.closeApplyDialog()"></op-button>
-            </div>
-          }
+            }
+          </div>
         </div>
       </div>
     }

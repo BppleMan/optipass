@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit } from "@angular/core";
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, signal } from "@angular/core";
 import { FormsModule } from '@angular/forms';
 import { AuthToastBridgeComponent } from './components/auth-toast-bridge/auth-toast-bridge';
 import { OpButtonComponent } from '../../shared/ui/op-button/op-button';
@@ -18,13 +18,26 @@ import { WorkflowService } from '../analysis/state/workflow.service';
     "./scan-vault-list.scss",
   ],
 })
-export class ScanPageComponent implements OnInit {
-  errorDialogOpen = false;
+export class ScanPageComponent implements OnInit, OnDestroy {
+  public errorDialogOpen = false;
+  private readonly elapsedNow = signal(Date.now());
+  private elapsedTimer: number | undefined;
 
-  constructor(readonly wf: WorkflowService) {}
+  constructor(public readonly wf: WorkflowService) {}
 
-  ngOnInit(): void {
+  public ngOnInit(): void {
+    this.elapsedTimer = window.setInterval(() => {
+      if (this.scanInProgress()) {
+        this.elapsedNow.set(Date.now());
+      }
+    }, 1000);
     void this.wf.restoreCachedState();
+  }
+
+  public ngOnDestroy(): void {
+    if (this.elapsedTimer !== undefined) {
+      window.clearInterval(this.elapsedTimer);
+    }
   }
 
   scanButtonLabel(): string {
@@ -45,10 +58,6 @@ export class ScanPageComponent implements OnInit {
 
   scanControlsDisabled(): boolean {
     return !this.wf.scanDone() && (this.wf.loading() || this.wf.authState() === 'authorizing' || this.wf.authState() === 'authorized');
-  }
-
-  rescanDisabled(): boolean {
-    return !this.scanInProgress() && !this.wf.scanRows().length && !this.wf.scanDone() && !this.wf.scanFailed();
   }
 
   scanInProgress(): boolean {
@@ -157,13 +166,29 @@ export class ScanPageComponent implements OnInit {
     return this.wf.overallPct();
   }
 
-  summaryMetrics(): Array<{ label: string; value: string; kind: 'items' | 'vaults' | 'failed' | 'done'; color: string }> {
+  summaryMetrics(): Array<{ label: string; value: string; kind: 'items' | 'vaults' | 'failed' | 'done' | 'elapsed'; color: string }> {
     return [
       { label: '总 items', value: String(this.wf.totalItems()), kind: 'items', color: '#82aaff' },
       { label: '已扫描 vault', value: String(this.scannedVaults()), kind: 'vaults', color: '#c3e88d' },
       { label: '异常 vault', value: String(this.failedVaults()), kind: 'failed', color: '#c792ea' },
+      { label: '扫描耗时', value: this.scanElapsedLabel(), kind: 'elapsed', color: '#89ddff' },
       { label: '扫描完成', value: `${this.displayOverallPct()}%`, kind: 'done', color: '#ffcb6b' }
     ];
+  }
+
+  public scanElapsedLabel(): string {
+    const progress = this.wf.scanProgress();
+    const snapshotDuration = this.wf.scanData()?.durationMs;
+    if (!progress?.startedAt) {
+      return formatElapsedDuration(snapshotDuration ?? 0);
+    }
+
+    const startedAt = Date.parse(progress.startedAt);
+    const finishedAt = progress.finishedAt ? Date.parse(progress.finishedAt) : this.elapsedNow();
+    if (!Number.isFinite(startedAt) || !Number.isFinite(finishedAt)) {
+      return formatElapsedDuration(snapshotDuration ?? 0);
+    }
+    return formatElapsedDuration(Math.max(0, finishedAt - startedAt));
   }
 
   statusIcon(status: string): string {
@@ -185,4 +210,13 @@ export class ScanPageComponent implements OnInit {
     }
     return '';
   }
+}
+
+function formatElapsedDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const minuteSecondLabel = `${ String(minutes).padStart(2, "0") }:${ String(seconds).padStart(2, "0") }`;
+  return hours > 0 ? `${ String(hours).padStart(2, "0") }:${ minuteSecondLabel }` : minuteSecondLabel;
 }

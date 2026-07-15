@@ -9,10 +9,11 @@ import { WorkflowService } from './features/analysis/state/workflow.service';
 describe('App', () => {
   const workflow = {
     accountChip: signal(''),
+    authState: signal('idle'),
+    dryRunSpeedMultiplier: signal(1),
     mutationsEnabled: signal(false),
     mutationToggleBusy: signal(false),
     applying: signal(false),
-    groupApplying: signal(false),
     setMutationsEnabled: () => Promise.resolve(),
     loadSession: () => Promise.resolve()
   };

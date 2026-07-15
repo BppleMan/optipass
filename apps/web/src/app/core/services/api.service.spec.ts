@@ -88,6 +88,41 @@ describe('ApiService session bootstrap', () => {
     expect(service.session()?.enableMutations).toBe(true);
   });
 
+  it("sends the selected dry-run speed with a batch execution", async () => {
+    service.session.set(sessionResponse({ token: "browser-token" }));
+    const draft = {
+      scanId: "scan-test",
+      groups: [{
+        groupId: "group-test",
+        items: [{ itemId: "vault:item", keep: false, deleteMode: "archive" as const }],
+      }],
+    };
+
+    const starting = service.startActionExecution(draft, undefined, 5);
+    const request = http.expectOne("/api/action-executions/start");
+
+    expect(request.request.body).toEqual({
+      draft,
+      permanentDeleteConfirmationPhrase: undefined,
+      dryRunSpeedMultiplier: 5,
+    });
+    request.flush({
+      executionId: "execution-test",
+      eventsToken: "events-token",
+      status: "running",
+      writeEnabled: false,
+      dryRunSpeedMultiplier: 5,
+      totalGroups: 1,
+      totalOperations: 1,
+      completedOperations: 0,
+      cancelledOperations: 0,
+      plan: {},
+      draft,
+    });
+
+    await expect(starting).resolves.toMatchObject({ dryRunSpeedMultiplier: 5 });
+  });
+
   it('streams scan events through native EventSource and closes after a terminal event', async () => {
     const completed = scanEvent('completed', 'completed', 2);
     const onEvent = vi.fn();
@@ -147,6 +182,40 @@ describe('ApiService session bootstrap', () => {
 
     expect(onEvent).toHaveBeenCalledWith(completed);
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the action execution stream when an event consumer fails', async () => {
+    class MockEventSource {
+      static readonly instances: MockEventSource[] = [];
+      readonly listeners = new Map<string, Array<(event: MessageEvent<string>) => void>>();
+      readonly close = vi.fn();
+      onerror: (() => void) | null = null;
+      readyState = 1;
+
+      constructor(readonly url: string) {
+        MockEventSource.instances.push(this);
+      }
+
+      addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+      }
+
+      emit(type: string, event: unknown): void {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener(new MessageEvent(type, { data: JSON.stringify(event) }));
+        }
+      }
+    }
+    vi.stubGlobal('EventSource', MockEventSource);
+    const streaming = service.streamActionExecutionEvents('execution-test', 'events-token', () => {
+      throw new Error('consumer failed');
+    });
+    const rejected = expect(streaming).rejects.toThrow('consumer failed');
+
+    MockEventSource.instances[0].emit('analysis-updated', { type: 'analysis-updated' });
+
+    await rejected;
+    expect(MockEventSource.instances[0].close).toHaveBeenCalledTimes(1);
   });
 });
 

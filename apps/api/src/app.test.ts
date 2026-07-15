@@ -126,6 +126,15 @@ function decisionForGroup(scan: ScanResult, group: ScanResult["groups"][number])
   };
 }
 
+function sseEvent(body: string, type: string): unknown {
+  const block = body.split("\n\n").find((candidate) => candidate.includes(`event: ${type}\n`));
+  const data = block?.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+  if (!data) {
+    throw new Error(`找不到 SSE 事件：${type}`);
+  }
+  return JSON.parse(data);
+}
+
 function mockArchiveGroupVerification(service: PasswordService, scan: ScanResult, group: ScanResult["groups"][number]): void {
   const groupItems = group.itemIds.map((itemId) => scan.items.find((item) => item.id === itemId)!);
   const keepItem = groupItems[0];
@@ -192,6 +201,200 @@ describe("api app", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("executes a batch ActionDraft in dry-run mode and refreshes the unchanged draft", async () => {
+    const scan = await scanAndAnalyze(app, { mode: "mock" });
+    const groups = scan.groups.slice(0, 2);
+    const draft = {
+      scanId: scan.scanId,
+      groups: groups.map((group) => decisionForGroup(scan, group))
+    };
+    const executionStartedAt = Date.now();
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft, dryRunSpeedMultiplier: 5 }
+    });
+
+    expect(start.statusCode).toBe(200);
+    expect(start.json()).toMatchObject({
+      writeEnabled: false,
+      dryRunSpeedMultiplier: 5,
+      totalGroups: 2,
+      status: "running"
+    });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
+    });
+    expect(events.statusCode).toBe(200);
+    expect(events.body).toContain("event: action-started");
+    expect(events.body).toContain("event: analysis-updated");
+    expect(events.body).toContain("event: completed");
+    expect(Date.now() - executionStartedAt).toBeGreaterThanOrEqual(90);
+    const snapshot = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}`,
+      headers: { "x-session-token": token }
+    });
+    expect(snapshot.json()).toMatchObject({ status: "completed", writeEnabled: false });
+    expect(snapshot.json().draft.groups.map((group: { items: Array<Record<string, unknown>> }) => group.items.map((item) => ({
+      itemId: item.itemId,
+      keep: item.keep,
+      deleteMode: item.deleteMode
+    })))).toEqual(draft.groups.map((group) => group.items));
+
+    const update = sseEvent(events.body, "analysis-updated") as { response: { draft: Record<string, unknown> } };
+    const restarted = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: update.response.draft }
+    });
+    expect(restarted.statusCode).toBe(200);
+    const restartedEvents = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${restarted.json().executionId}/events?eventsToken=${restarted.json().eventsToken}`
+    });
+    expect(restartedEvents.body).toContain("event: completed");
+  });
+
+  it("does not rescan 1Password after a live dry-run batch", async () => {
+    await app.close();
+    service = createService();
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    app = await createApiServer({
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        webOrigins: ["http://127.0.0.1:4200"],
+        enableMutations: false,
+        sessionToken: token,
+        accountName: "test-account"
+      },
+      onePassword: service,
+      logger: false
+    });
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
+    const group = scan.groups[0];
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
+    });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
+    });
+    const update = sseEvent(events.body, "analysis-updated") as { response: { completedGroupIds: string[] } };
+
+    expect(update.response.completedGroupIds).toEqual([]);
+    expect(service.scan).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes completed write groups from cached analysis without rescanning or reanalyzing", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
+    const group = scan.groups[0];
+    mockArchiveGroupVerification(service, scan, group);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
+    });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
+    });
+    const update = sseEvent(events.body, "analysis-updated") as { response: { completedGroupIds: string[] } };
+    const cachedAnalysis = await app.inject({
+      method: "GET",
+      url: "/api/analysis",
+      headers: { "x-session-token": token }
+    });
+
+    expect(events.body).toContain("event: completed");
+    expect(update.response.completedGroupIds).toEqual([group.id]);
+    expect(cachedAnalysis.json().scanId).toBe(scan.scanId);
+    expect(cachedAnalysis.json().groups.some((candidate: { id: string }) => candidate.id === group.id)).toBe(false);
+    expect(cachedAnalysis.json().items).toEqual(scan.items);
+    expect(service.scan).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses after the running action, resumes the same execution, and can stop it", async () => {
+    await app.close();
+    const liveScan = createMockScanResult();
+    let releaseArchive!: () => void;
+    const archiveGate = new Promise<void>((resolve) => {
+      releaseArchive = resolve;
+    });
+    vi.mocked(service.scan).mockResolvedValue(liveScan);
+    vi.mocked(service.archive).mockImplementationOnce(async () => archiveGate);
+    vi.mocked(service.listItemStates).mockResolvedValue({
+      activeIds: liveScan.items.map((item) => item.onePasswordItemId),
+      archivedIds: []
+    });
+    app = await createApiServer({
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        webOrigins: ["http://127.0.0.1:4200"],
+        enableMutations: true,
+        sessionToken: token,
+        accountName: "test-account"
+      },
+      onePassword: service,
+      logger: false
+    });
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
+    const group = scan.groups[0];
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
+    });
+    const executionId = start.json().executionId;
+    await vi.waitFor(() => expect(service.archive).toHaveBeenCalledTimes(1));
+    const pause = await app.inject({
+      method: "POST",
+      url: `/api/action-executions/${executionId}/pause`,
+      headers: { "x-session-token": token }
+    });
+    expect(pause.json().status).toBe("pause-requested");
+    releaseArchive();
+    await vi.waitFor(async () => {
+      const snapshot = await app.inject({
+        method: "GET",
+        url: `/api/action-executions/${executionId}`,
+        headers: { "x-session-token": token }
+      });
+      expect(snapshot.json().status).toBe("paused");
+    });
+    const resume = await app.inject({
+      method: "POST",
+      url: `/api/action-executions/${executionId}/resume`,
+      headers: { "x-session-token": token }
+    });
+    expect(resume.statusCode).toBe(200);
+    const stop = await app.inject({
+      method: "POST",
+      url: `/api/action-executions/${executionId}/stop`,
+      headers: { "x-session-token": token }
+    });
+    expect(["stop-requested", "stopped"]).toContain(stop.json().status);
+    await vi.waitFor(async () => {
+      const snapshot = await app.inject({
+        method: "GET",
+        url: `/api/action-executions/${executionId}`,
+        headers: { "x-session-token": token }
+      });
+      expect(snapshot.json().status).toBe("stopped");
+    });
   });
 
   it("limits browser CORS access to configured local web origins", async () => {
@@ -300,7 +503,10 @@ describe("api app", () => {
 
     expect(start).not.toHaveProperty("groups");
     expect(start.progress.phase).toBe("completed");
+    expect(start.progress.startedAt).toEqual(expect.any(String));
+    expect(start.progress.finishedAt).toEqual(expect.any(String));
     expect(snapshot.items.length).toBeGreaterThan(0);
+    expect(snapshot.durationMs).toEqual(expect.any(Number));
     expect(snapshot).not.toHaveProperty("groups");
     expect(analyzeResponse.statusCode).toBe(200);
     expect(analyzeResponse.json().groups.length).toBeGreaterThan(0);
@@ -317,6 +523,39 @@ describe("api app", () => {
     expect(JSON.stringify(body)).not.toContain("AKIA-MOCK-KEY");
     expect(JSON.stringify(body)).not.toContain("mock-aws-secret");
     expect(JSON.stringify(body)).not.toContain("mock-analysis");
+  });
+
+  it("searches category values and sensitive local fields without returning their values", async () => {
+    const start = await startScan(app, { mode: "mock" });
+    await waitForScan(app, start.scanId);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/items/search",
+      headers: { "x-session-token": token },
+      payload: { keywords: ["2026", "Personal", "github.com", "recovery", "vpn@example.com", "13800000000", "一次性密码"] }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.itemIds).toEqual(expect.arrayContaining([
+      "vault-personal:github-1",
+      "vault-work:github-2",
+      "vault-work:note-1"
+    ]));
+    expect(body.suggestions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "year", label: "2026" }),
+      expect.objectContaining({ kind: "vault", label: "Personal" }),
+      expect.objectContaining({ kind: "credential", label: "一次性密码" }),
+      expect.objectContaining({ kind: "domain", label: "github.com" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "title" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "note" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "email" }),
+      expect.objectContaining({ kind: "field", label: "VPN recovery note", field: "phone" })
+    ]));
+    expect(response.body).not.toContain("vpn recovery note");
+    expect(response.body).not.toContain("vpn@example.com");
+    expect(response.body).not.toContain("13800000000");
   });
 
   it("streams scan progress events with a completed snapshot", async () => {
@@ -422,8 +661,18 @@ describe("api app", () => {
 
     expect(stream.statusCode).toBe(200);
     expect(stream.body).toContain("event: started");
+    expect(stream.body).toContain("event: action-started");
     expect(stream.body).toContain("event: action");
     expect(stream.body).toContain("event: completed");
+    expect(stream.body).toContain("id: 1");
+    expect(stream.body.indexOf("event: action-started")).toBeLessThan(stream.body.indexOf("event: action\n"));
+    const resumedStream = await app.inject({
+      method: "GET",
+      url: `/api/execute/events?executionId=${start.json().executionId}&eventsToken=${start.json().eventsToken}`,
+      headers: { "last-event-id": "1" }
+    });
+    expect(resumedStream.body).not.toContain("event: started\n");
+    expect(resumedStream.body).toContain("event: action-started");
     expect(vi.mocked(service.archive)).not.toHaveBeenCalled();
     expect(vi.mocked(service.delete)).not.toHaveBeenCalled();
   });

@@ -1,10 +1,19 @@
-import { ExecutionPlan, ExecutionPlanSummary, GroupDecision, ItemSummary, PlanAction } from "./model.js";
+import {
+  ActionDraft,
+  ActionDraftGroup,
+  ActionPlan,
+  ActionPlanGroup,
+  ActionPlanSummary,
+  ItemSummary,
+  PlanAction,
+  ScanResult
+} from "./model.js";
 
 interface ExecutionPlanOptions {
   requireKeep?: boolean;
 }
 
-export function validateDecisionItemSet(decisions: GroupDecision, expectedItemIds: string[]): string[] {
+export function validateDecisionItemSet(decisions: ActionDraftGroup, expectedItemIds: string[]): string[] {
   const blockers: string[] = [];
   const actualItemIds = decisions.items.map((decision) => decision.itemId);
   const duplicateItemIds = actualItemIds.filter((itemId, index) => actualItemIds.indexOf(itemId) !== index);
@@ -26,10 +35,10 @@ export function validateDecisionItemSet(decisions: GroupDecision, expectedItemId
 
 export function createExecutionPlan(
   groupId: string,
-  decisions: GroupDecision,
+  decisions: ActionDraftGroup,
   items: ItemSummary[],
   options: ExecutionPlanOptions = {}
-): ExecutionPlan {
+): ActionPlanGroup {
   const itemById = new Map(items.map((item) => [item.id, item]));
   const warnings: string[] = [];
   const blockers: string[] = [];
@@ -99,9 +108,45 @@ export function createExecutionPlan(
   };
 }
 
-function summarizeActions(actions: PlanAction[]): ExecutionPlanSummary {
+export const createActionPlanGroup = createExecutionPlan;
+
+export function createActionPlan(draft: ActionDraft, scan: ScanResult, writeEnabled: boolean): ActionPlan {
+  if (draft.scanId !== scan.scanId) {
+    throw new Error("ActionDraft 对应的扫描结果已过期。");
+  }
+
+  const groupById = new Map(scan.groups.map((group) => [group.id, group]));
+  const groups = draft.groups.map((draftGroup) => {
+    const group = groupById.get(draftGroup.groupId);
+    if (!group) {
+      throw new Error(`ActionDraft 包含未知重复组：${draftGroup.groupId}`);
+    }
+    const consistencyBlockers = validateDecisionItemSet(draftGroup, group.itemIds);
+    const plan = createActionPlanGroup(draftGroup.groupId, draftGroup, scan.items, {
+      requireKeep: group.candidateClass !== "delete-suggestion"
+    });
+    return {
+      ...plan,
+      blockers: Array.from(new Set([...plan.blockers, ...consistencyBlockers]))
+    };
+  });
+
+  return {
+    planId: globalThis.crypto.randomUUID(),
+    sourceScanId: scan.scanId,
+    createdAt: new Date().toISOString(),
+    writeEnabled,
+    groups,
+    summary: summarizeActions(groups.flatMap((group) => group.actions)),
+    warnings: Array.from(new Set(groups.flatMap((group) => group.warnings))),
+    blockers: Array.from(new Set(groups.flatMap((group) => group.blockers))),
+    requiresExplicitDeleteConfirmation: groups.some((group) => group.requiresExplicitDeleteConfirmation)
+  };
+}
+
+function summarizeActions(actions: PlanAction[]): ActionPlanSummary {
   const affectedVaultIds = new Set<string>();
-  const summary: ExecutionPlanSummary = {
+  const summary: ActionPlanSummary = {
     keep: 0,
     archive: 0,
     delete: 0,
