@@ -172,11 +172,13 @@ export class OnePasswordService {
   async archive(vaultId: string, onePasswordItemId: string): Promise<void> {
     const client = await this.requireClient();
     await client.items.archive(vaultId, onePasswordItemId);
+    this.rawItems.delete(toAppItemId(vaultId, onePasswordItemId));
   }
 
   async delete(vaultId: string, onePasswordItemId: string): Promise<void> {
     const client = await this.requireClient();
     await client.items.delete(vaultId, onePasswordItemId);
+    this.rawItems.delete(toAppItemId(vaultId, onePasswordItemId));
   }
 
   async removeTags(appItemId: string, removeTags: string[]): Promise<void> {
@@ -249,6 +251,12 @@ export class OnePasswordService {
       throw new Error(`无法迁移 ${appItemId}：目标保险库的新 item 缺少 ID。`);
     }
     await client.items.archive(sourceVaultId, rawItemId);
+    this.rawItems.delete(appItemId);
+    this.rawItems.set(toAppItemId(targetVaultId, createdItemId), {
+      item: created,
+      onePasswordItemId: createdItemId,
+      vaultId: targetVaultId
+    });
     return { createdItemId };
   }
 

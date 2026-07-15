@@ -27,6 +27,7 @@ import {
   type ActiveScanResponse,
   type AnalysisResultResponse,
   type ActionExecutionEvent,
+  type ActionExecutionRefreshResponse,
   type ActionExecutionStatus,
   type ExecuteProgressEvent,
   type ExecuteResponse,
@@ -322,7 +323,7 @@ export class WorkflowService {
         return '正在停止';
       case 'refreshing':
       case 'refreshing-after-stop':
-        return '正在刷新';
+        return '正在更新';
       case 'stopped':
         return '已停止';
       case 'completed':
@@ -1715,8 +1716,9 @@ export class WorkflowService {
       });
     }
     if (event.type === 'refreshed' && event.response) {
+      const previousDecisions = this.decisions();
       this.replaceAnalysisResult(event.response.scan);
-      this.decisions.set(Object.fromEntries(event.response.draft.groups.flatMap((group) => group.items).map((item) => [item.itemId, item])));
+      this.decisions.set(this.mergeRefreshedDecisions(event.response, previousDecisions));
     }
     if (event.type === 'stopped' || event.type === 'failed') {
       this.skipPendingOperations(event.type === 'stopped' ? '执行已停止。' : '执行失败，未继续处理。');
@@ -1727,6 +1729,32 @@ export class WorkflowService {
         this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? '执行失败。' });
       }
     }
+  }
+
+  private mergeRefreshedDecisions(
+    response: ActionExecutionRefreshResponse,
+    previousDecisions: Record<string, ActionDraftItem>
+  ): Record<string, ActionDraftItem> {
+    const defaults = this.defaultDecisions(response.scan);
+    const refreshed = new Map(response.draft.groups.flatMap((group) => group.items).map((item) => [item.itemId, item]));
+    const affectedItemIds = new Set(response.effects
+      .filter((effect) => effect.wroteToOnePassword && effect.succeeded)
+      .map((effect) => effect.sourceItemId));
+    const vaultIds = new Set(response.scan.vaults.map((vault) => vault.id));
+    return Object.fromEntries(Object.entries(defaults).map(([itemId, fallback]) => {
+      const previous = previousDecisions[itemId];
+      if (previous && !affectedItemIds.has(itemId)) {
+        return [itemId, {
+          ...previous,
+          itemId,
+          targetVaultId: previous.targetVaultId && vaultIds.has(previous.targetVaultId)
+            ? previous.targetVaultId
+            : fallback.targetVaultId,
+          removeTags: [...(previous.removeTags ?? [])]
+        } satisfies ActionDraftItem];
+      }
+      return [itemId, refreshed.get(itemId) ?? fallback];
+    }));
   }
 
   private toApplyOperation(group: PreviewGroupView, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {

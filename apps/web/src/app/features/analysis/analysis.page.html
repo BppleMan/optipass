@@ -362,7 +362,7 @@
             <div>
               <h2 id="batch-apply-title">
                 {{ wf.actionExecutionStatus() === 'refreshing' || wf.actionExecutionStatus() === 'refreshing-after-stop'
-                  ? '正在刷新分析结果'
+                  ? '正在更新分析结果'
                   : wf.applying() ? '正在应用计划' : '应用结果' }}
               </h2>
               <p class="modal-subtitle">
@@ -371,7 +371,7 @@
                 } @else if (wf.actionExecutionStatus() === 'stop-requested') {
                   正在停止，当前操作完成后不会再执行新操作
                 } @else if (wf.actionExecutionStatus() === 'refreshing-after-stop' || wf.actionExecutionStatus() === 'refreshing') {
-                  {{ wf.actionExecutionRefreshProgress()?.message || '正在重新扫描并刷新分析结果' }}
+                  正在根据执行结果更新分析页面
                 } @else if (wf.applying()) {
                   逐组执行计划，请勿关闭窗口
                 } @else {

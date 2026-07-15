@@ -254,6 +254,65 @@ describe("api app", () => {
     expect(restartedEvents.body).toContain("event: completed");
   });
 
+  it("does not rescan 1Password after a live dry-run batch", async () => {
+    await app.close();
+    service = createService();
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    app = await createApiServer({
+      config: {
+        host: "127.0.0.1",
+        port: 0,
+        webOrigins: ["http://127.0.0.1:4200"],
+        enableMutations: false,
+        sessionToken: token,
+        accountName: "test-account"
+      },
+      onePassword: service,
+      logger: false
+    });
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
+    const group = scan.groups[0];
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
+    });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
+    });
+    const refreshed = sseEvent(events.body, "refreshed") as { response: { scan: ScanResult } };
+
+    expect(refreshed.response.scan.scanId).toBe(scan.scanId);
+    expect(refreshed.response.scan.items).toEqual(scan.items);
+    expect(service.scan).toHaveBeenCalledTimes(1);
+  });
+
+  it("projects successful writes into memory instead of rescanning 1Password", async () => {
+    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
+    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
+    const group = scan.groups[0];
+    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
+    mockArchiveGroupVerification(service, scan, group);
+    const start = await app.inject({
+      method: "POST",
+      url: "/api/action-executions/start",
+      headers: { "x-session-token": token },
+      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
+    });
+    const events = await app.inject({
+      method: "GET",
+      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
+    });
+    const refreshed = sseEvent(events.body, "refreshed") as { response: { scan: ScanResult } };
+
+    expect(events.body).toContain("event: completed");
+    expect(refreshed.response.scan.scanId).not.toBe(scan.scanId);
+    expect(refreshed.response.scan.items.some((item) => item.id === archiveItem.id)).toBe(false);
+    expect(service.scan).toHaveBeenCalledTimes(1);
+  });
+
   it("pauses after the running action, resumes the same execution, and can stop it", async () => {
     await app.close();
     const liveScan = createMockScanResult();

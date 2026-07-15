@@ -183,6 +183,7 @@ interface ActionEffect {
   groupId: string;
   sourceItemId: string;
   createdItemId?: string;
+  createdOnePasswordItemId?: string;
   actionType: PlanAction["type"];
   wroteToOnePassword: boolean;
   succeeded: boolean;
@@ -1200,10 +1201,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
           entry.status = result.ok ? "completed" : "failed";
           job.results.push(result);
           groupResults.push(result);
+          const createdItemId = entry.action.type === "copy-to-vault-and-archive-source" && result.createdItemId
+            ? `${entry.action.targetVaultId}:${result.createdItemId}`
+            : result.createdItemId;
           job.effects.push({
             groupId: group.groupId,
             sourceItemId: entry.action.itemId,
-            createdItemId: result.createdItemId,
+            createdItemId,
+            createdOnePasswordItemId: result.createdItemId,
             actionType: entry.action.type,
             wroteToOnePassword: job.plan.writeEnabled && result.ok,
             succeeded: result.ok
@@ -1249,7 +1254,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     job.status = job.stopRequested ? "refreshing-after-stop" : "refreshing";
     emitActionExecutionEvent(job, { type: "refresh-started" });
     try {
-      const refreshed = await refreshAfterActionExecution(job, state);
+      const refreshed = refreshAfterActionExecution(job, state);
       emitActionExecutionEvent(job, { type: "refreshed", response: refreshed });
       job.status = job.stopRequested ? "stopped" : executionError ? "failed" : "completed";
       emitActionExecutionEvent(job, {
@@ -1266,23 +1271,17 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
   }
 
-  async function refreshAfterActionExecution(job: ActionExecutionJob, state: TabAnalysisState): Promise<Record<string, unknown>> {
-    const scanId = createScanId();
-    let refreshedScan: ScanSnapshot;
-    if (latestScanMode === "mock") {
-      const mock = createMockScanResult();
-      refreshedScan = { scanId, scannedAt: new Date().toISOString(), vaults: mock.vaults, items: mock.items };
-    } else {
-      refreshedScan = await onePassword.scan({
-        scanId,
-        serviceAccountToken: config.serviceAccountToken,
-        accountName: latestScanAccountName ?? config.accountName,
-        onProgress: (event) => emitActionExecutionEvent(job, { type: "refresh-progress", progress: event.progress })
-      });
-      refreshedScan = { ...refreshedScan, scanId };
+  function refreshAfterActionExecution(job: ActionExecutionJob, state: TabAnalysisState): Record<string, unknown> {
+    if (!latestScan || !state.analysis) {
+      throw new ClientInputError("当前分析结果已过期，请重新扫描并重新分析后再继续。");
     }
+    const refreshedScan = job.plan.writeEnabled
+      ? projectScanAfterActionExecution(latestScan, job)
+      : latestScan;
+    const analysis = job.plan.writeEnabled
+      ? analyzeScan(refreshedScan)
+      : state.analysis;
     latestScan = refreshedScan;
-    const analysis = analyzeScan(refreshedScan);
     state.analysis = analysis;
     state.dryRunKey = undefined;
     state.skippedGroups = state.skippedGroups.filter((groupId) => analysis.groups.some((group) => group.id === groupId));
@@ -2057,6 +2056,67 @@ async function executeActionPlanEntry(
   } catch (error) {
     return { itemId: action.itemId, action: action.type, ok: false, error: mutationActionError(action, error) };
   }
+}
+
+function projectScanAfterActionExecution(scan: ScanSnapshot, job: ActionExecutionJob): ScanSnapshot {
+  const effects = job.effects.filter((effect) => effect.wroteToOnePassword && effect.succeeded);
+  if (effects.length === 0) {
+    return scan;
+  }
+
+  const actionByEffect = new Map(job.queue.map((entry) => [
+    `${entry.action.itemId}:${entry.action.type}`,
+    entry.action
+  ]));
+  const items = new Map(scan.items.map((item) => [item.id, item]));
+  const vaultById = new Map(scan.vaults.map((vault) => [vault.id, vault]));
+  const projectedAt = new Date().toISOString();
+
+  for (const effect of effects) {
+    const action = actionByEffect.get(`${effect.sourceItemId}:${effect.actionType}`);
+    const source = items.get(effect.sourceItemId);
+    if (!action || !source) {
+      continue;
+    }
+
+    if (action.type === "update-tags") {
+      const removedTags = new Set(action.removeTags);
+      items.set(source.id, {
+        ...source,
+        tags: source.tags.filter((tag) => !removedTags.has(tag)),
+        updatedAt: projectedAt
+      });
+      continue;
+    }
+
+    if (action.type === "archive" || action.type === "delete") {
+      items.delete(source.id);
+      continue;
+    }
+
+    if (action.type === "copy-to-vault-and-archive-source" && effect.createdItemId && effect.createdOnePasswordItemId) {
+      const removedTags = new Set(action.removeTags);
+      const targetVault = vaultById.get(action.targetVaultId);
+      items.delete(source.id);
+      items.set(effect.createdItemId, {
+        ...source,
+        id: effect.createdItemId,
+        onePasswordItemId: effect.createdOnePasswordItemId,
+        vaultId: action.targetVaultId,
+        vaultName: targetVault?.name ?? action.targetVaultId,
+        createdAt: projectedAt,
+        updatedAt: projectedAt,
+        tags: source.tags.filter((tag) => !removedTags.has(tag))
+      });
+    }
+  }
+
+  return {
+    scanId: createScanId(),
+    scannedAt: projectedAt,
+    vaults: scan.vaults,
+    items: Array.from(items.values())
+  };
 }
 
 function reconcileActionDraft(draft: ActionDraft, scan: ScanResult, effects: ActionEffect[]): ActionDraft {

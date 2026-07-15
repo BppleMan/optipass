@@ -110,6 +110,68 @@ describe("OnePasswordService", () => {
     expect(put).toHaveBeenCalledWith(expect.objectContaining({ tags: ["work"] }));
   });
 
+  it("removes archived items from the local mutation cache", async () => {
+    const item = { ...loginItem("item-1"), vaultId: "vault-1" };
+    const archive = vi.fn();
+    sdkMock.createClient.mockResolvedValue({
+      vaults: {
+        list: vi.fn(() => [{ id: "vault-1", title: "Personal" }])
+      },
+      items: {
+        list: vi.fn(() => [{ id: "item-1" }]),
+        getAll: vi.fn(async () => ({ individualResponses: [{ content: item }] })),
+        archive,
+        get: vi.fn()
+      }
+    });
+
+    const service = new OnePasswordService();
+    await service.scan({ serviceAccountToken: "ops-test" });
+    await service.archive("vault-1", "item-1");
+
+    await expect(service.removeTags("vault-1:item-1", [])).rejects.toThrow("扫描缓存中没有完整项目数据");
+    expect(archive).toHaveBeenCalledWith("vault-1", "item-1");
+  });
+
+  it("adds a moved copy to the local mutation cache", async () => {
+    const source = {
+      ...loginItem("item-1"),
+      vaultId: "vault-1",
+      tags: ["CSV Import", "work"],
+      sections: [],
+      files: []
+    };
+    const created = { ...source, id: "created-1", vaultId: "vault-2", tags: ["work"] };
+    const get = vi.fn(async (vaultId: string, itemId: string) => vaultId === "vault-2" && itemId === "created-1" ? created : source);
+    const put = vi.fn(async (item: typeof created) => item);
+    const archive = vi.fn();
+    const create = vi.fn(async () => created);
+    sdkMock.createClient.mockResolvedValue({
+      vaults: {
+        list: vi.fn(() => [{ id: "vault-1", title: "Personal" }, { id: "vault-2", title: "Archive" }])
+      },
+      items: {
+        list: vi.fn((vaultId: string) => vaultId === "vault-1" ? [{ id: "item-1" }] : []),
+        getAll: vi.fn(async (_vaultId: string, itemIds: string[]) => ({ individualResponses: itemIds.map(() => ({ content: source })) })),
+        get,
+        put,
+        create,
+        archive,
+        files: { read: vi.fn() }
+      }
+    });
+
+    const service = new OnePasswordService();
+    await service.scan({ serviceAccountToken: "ops-test" });
+    await service.copyToVaultAndArchiveSource("vault-1:item-1", "vault-2", ["CSV Import"]);
+    await service.removeTags("vault-2:created-1", ["work"]);
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ vaultId: "vault-2", tags: ["work"] }));
+    expect(archive).toHaveBeenCalledWith("vault-1", "item-1");
+    expect(get).toHaveBeenLastCalledWith("vault-2", "created-1");
+    expect(put).toHaveBeenCalledWith(expect.objectContaining({ id: "created-1", tags: [] }));
+  });
+
   it("reads full items in SDK-sized batches", async () => {
     const itemIds = Array.from({ length: 121 }, (_, index) => `item-${index}`);
     const getAll = vi.fn(async (_vaultId: string, batch: string[]) => ({

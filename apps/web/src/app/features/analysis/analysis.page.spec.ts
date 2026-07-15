@@ -21,12 +21,12 @@ describe("AnalysisPageComponent item decisions", () => {
         const workflow = {
             applying: () => true,
             applyDialogOpen: () => false,
-            actionExecutionStatusLabel: () => "正在刷新",
+            actionExecutionStatusLabel: () => "正在更新",
             openApplyDialog: vi.fn(),
         };
         const component = new AnalysisPageComponent(workflow as never);
 
-        expect(component.batchApplyLabel()).toBe("正在刷新 · 查看进度");
+        expect(component.batchApplyLabel()).toBe("正在更新 · 查看进度");
         expect(component.batchApplyDisabled()).toBe(false);
 
         component.handleBatchApply();

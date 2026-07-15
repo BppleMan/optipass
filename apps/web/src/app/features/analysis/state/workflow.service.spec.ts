@@ -493,6 +493,67 @@ describe('WorkflowService analysis filters', () => {
     expect(service.operationGroups()[0].operations[0].label).toContain('归档「GitHub old」');
   });
 
+  it('preserves existing item decisions when a dry-run returns unchanged analysis', async () => {
+    const refreshed = { ...scanResult(), scanId: 'scan-refreshed', skippedGroupIds: [] };
+    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
+      onEvent({
+        type: 'refreshed',
+        sequence: 1,
+        executionId: 'action-execution-test',
+        status: 'refreshing',
+        writeEnabled: false,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1,
+        response: {
+          scan: refreshed,
+          draft: {
+            scanId: refreshed.scanId,
+            groups: refreshed.groups.map((group) => ({
+              groupId: group.id,
+              items: group.itemIds.map((itemId, index) => ({
+                itemId,
+                keep: index === 0,
+                targetVaultId: refreshed.items.find((item) => item.id === itemId)?.vaultId,
+                deleteMode: 'archive',
+                removeTags: []
+              }))
+            }))
+          },
+          results: [],
+          effects: [],
+          cancelledOperations: 0
+        }
+      } as never);
+      onEvent({
+        type: 'completed',
+        sequence: 2,
+        executionId: 'action-execution-test',
+        status: 'completed',
+        writeEnabled: false,
+        totalGroups: 1,
+        totalOperations: 1,
+        completedOperations: 1
+      } as never);
+    });
+    const service = createService({ streamActionExecutionEvents, enableMutations: false });
+    service.scanResult.set(scanResult());
+    service.decisions.set({
+      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive', removeTags: ['CSV Import'] },
+      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'delete', removeTags: [] },
+      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive', removeTags: [] },
+      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive', removeTags: [] }
+    });
+    service.toggleAnalysisFilter('vaults', 'icloud', true);
+
+    await service.applyPlan();
+
+    expect(service.scanResult()?.scanId).toBe('scan-refreshed');
+    expect(service.decisions()['icloud:github-new']).toMatchObject({ removeTags: ['CSV Import'] });
+    expect(service.decisions()['private:github-old']).toMatchObject({ deleteMode: 'delete' });
+    expect(service.decisions()['private:apple-new']).toMatchObject({ keep: true });
+  });
+
   it('stops batch apply and skips pending groups after verification failure', async () => {
     const result = scanResult();
     const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => {
@@ -580,7 +641,7 @@ describe('WorkflowService analysis filters', () => {
 
     service.actionExecutionStatus.set('refreshing');
 
-    expect(service.actionExecutionStatusLabel()).toBe('正在刷新');
+    expect(service.actionExecutionStatusLabel()).toBe('正在更新');
     expect(service.canCloseApplyDialog()).toBe(true);
 
     service.closeApplyDialog();

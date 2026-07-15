@@ -5,6 +5,7 @@ import type {
   ActionPlan,
   ActionPlanGroup,
   GroupDecision,
+  PlanAction,
   RevealCredentialsResponse,
   ScanProgress,
   ScanProgressEvent,
@@ -156,7 +157,17 @@ export interface ActionExecutionRefreshResponse {
   scan: AnalysisResultResponse;
   draft: ActionDraft;
   results: ExecuteActionResult[];
+  effects: ActionExecutionEffect[];
   cancelledOperations: number;
+}
+
+export interface ActionExecutionEffect {
+  groupId: string;
+  sourceItemId: string;
+  createdItemId?: string;
+  actionType: PlanAction["type"];
+  wroteToOnePassword: boolean;
+  succeeded: boolean;
 }
 
 export interface ActionExecutionEvent {
