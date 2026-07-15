@@ -1,0 +1,4 @@
+interface:
+  display_name: "Optipass 开发进程"
+  short_description: "快速提权启动或停止 Optipass API 与 Angular 服务"
+  default_prompt: "使用 $optipass-dev-process 启动或停止当前 Optipass 的 API 与 Angular 开发服务。"
