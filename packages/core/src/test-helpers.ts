@@ -1,6 +1,9 @@
 import { ItemAnalysisMaterial, ItemSummary } from "./model.js";
 
-export function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, "id" | "title">): ItemSummary {
+export function item(overrides: Partial<ItemSummary>): ItemSummary {
+  if (!overrides.id || !overrides.title) {
+    throw new Error("测试 Item 必须提供 id 和 title。");
+  }
   return {
     onePasswordItemId: overrides.id,
     vaultId: "vault-a",

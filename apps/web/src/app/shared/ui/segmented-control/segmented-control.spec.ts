@@ -1,12 +1,12 @@
 import { ComponentFixture, TestBed } from "@angular/core/testing";
 import { describe, expect, it, vi } from "vitest";
-import { SegmentedControlComponent, type SegmentedControlItem } from "./segmented-control";
+import { SegmentedControlComponent, SegmentedControlIcon, type SegmentedControlItem } from "./segmented-control";
 
 describe("SegmentedControlComponent", () => {
     const items: SegmentedControlItem[] = [
-        { value: "keep", label: "保留", icon: "keep" },
-        { value: "archive", label: "归档", icon: "archive" },
-        { value: "delete", label: "删除", icon: "delete", activeColor: "#FFB8C3" },
+        { value: "keep", label: "保留", icon: SegmentedControlIcon.Keep },
+        { value: "archive", label: "归档", icon: SegmentedControlIcon.Archive },
+        { value: "delete", label: "删除", icon: SegmentedControlIcon.Delete, activeColor: "#FFB8C3" },
     ];
 
     it("emits an enabled click selection and supports arrow-key selection", () => {

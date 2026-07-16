@@ -1,13 +1,15 @@
 import { Component, computed, input } from '@angular/core';
 import { toast, type ExternalToast } from 'ngx-sonner';
 
-export type OpToastTone = 'success' | 'error' | 'warning' | 'info';
+export enum OpToastTone {
+  Success = 'success', Error = 'error', Warning = 'warning', Info = 'info',
+}
 
 const toneStyles: Record<OpToastTone, { color: string; border: string; tint: string }> = {
-  success: { color: '#c3e88d', border: 'rgba(195, 232, 141, 0.35)', tint: 'rgba(195, 232, 141, 0.08)' },
-  error: { color: '#f07178', border: 'rgba(240, 113, 120, 0.45)', tint: 'rgba(240, 113, 120, 0.09)' },
-  warning: { color: '#ffcb6b', border: 'rgba(255, 203, 107, 0.4)', tint: 'rgba(255, 203, 107, 0.07)' },
-  info: { color: '#82aaff', border: 'rgba(130, 170, 255, 0.4)', tint: 'rgba(130, 170, 255, 0.08)' }
+  [OpToastTone.Success]: { color: '#c3e88d', border: 'rgba(195, 232, 141, 0.35)', tint: 'rgba(195, 232, 141, 0.08)' },
+  [OpToastTone.Error]: { color: '#f07178', border: 'rgba(240, 113, 120, 0.45)', tint: 'rgba(240, 113, 120, 0.09)' },
+  [OpToastTone.Warning]: { color: '#ffcb6b', border: 'rgba(255, 203, 107, 0.4)', tint: 'rgba(255, 203, 107, 0.07)' },
+  [OpToastTone.Info]: { color: '#82aaff', border: 'rgba(130, 170, 255, 0.4)', tint: 'rgba(130, 170, 255, 0.08)' }
 };
 
 @Component({
@@ -103,7 +105,7 @@ const toneStyles: Record<OpToastTone, { color: string; border: string; tint: str
   `]
 })
 export class OpToastComponent {
-  readonly id = input.required<string | number>();
+  readonly id = input.required<string>();
   readonly tone = input.required<OpToastTone>();
   readonly message = input.required<string>();
 
@@ -115,9 +117,9 @@ export class OpToastComponent {
   }
 }
 
-function showOpToast(tone: OpToastTone, message: string, options: ExternalToast = {}): string | number {
-  const id = options.id ?? crypto.randomUUID();
-  return toast.custom(OpToastComponent, {
+function showOpToast(tone: OpToastTone, message: string, options: ExternalToast = {}): string {
+  const id = String(options.id ?? crypto.randomUUID());
+  toast.custom(OpToastComponent, {
     ...options,
     id,
     closeButton: true,
@@ -129,12 +131,13 @@ function showOpToast(tone: OpToastTone, message: string, options: ExternalToast 
       message
     }
   });
+  return id;
 }
 
 export const opToast = {
-  success: (message: string, options?: ExternalToast) => showOpToast('success', message, options),
-  error: (message: string, options?: ExternalToast) => showOpToast('error', message, options),
-  warning: (message: string, options?: ExternalToast) => showOpToast('warning', message, options),
-  info: (message: string, options?: ExternalToast) => showOpToast('info', message, options),
-  dismiss: (id?: string | number) => toast.dismiss(id)
+  success: (message: string, options?: ExternalToast) => showOpToast(OpToastTone.Success, message, options),
+  error: (message: string, options?: ExternalToast) => showOpToast(OpToastTone.Error, message, options),
+  warning: (message: string, options?: ExternalToast) => showOpToast(OpToastTone.Warning, message, options),
+  info: (message: string, options?: ExternalToast) => showOpToast(OpToastTone.Info, message, options),
+  dismiss: (id?: string) => toast.dismiss(id)
 };

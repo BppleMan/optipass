@@ -1,16 +1,16 @@
-export function normalizeSimilarityIdentity(value: string): string | undefined {
+export function normalizeSimilarityIdentity(value: string): string {
   const normalized = value.trim().toLowerCase();
-  return normalized || undefined;
+  return normalized;
 }
 
 export function normalizeLooseText(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
-export function normalizeComparableUrl(raw: string): string | undefined {
+export function normalizeComparableUrl(raw: string): string {
   const value = raw.trim();
   if (!value) {
-    return undefined;
+    return "";
   }
 
   const withProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(value) ? value : `https://${value}`;
@@ -25,10 +25,10 @@ export function normalizeComparableUrl(raw: string): string | undefined {
   }
 }
 
-export function normalizeSimilarityUrl(raw: string): string | undefined {
+export function normalizeSimilarityUrl(raw: string): string {
   const value = raw.trim();
   if (!value) {
-    return undefined;
+    return "";
   }
 
   try {
@@ -48,10 +48,10 @@ export function normalizeSimilarityUrl(raw: string): string | undefined {
   }
 }
 
-export function normalizeUrlHost(raw: string): string | undefined {
+export function normalizeUrlHost(raw: string): string {
   const comparable = normalizeComparableUrl(raw);
   if (!comparable) {
-    return undefined;
+    return "";
   }
   return comparable.split("/")[0];
 }

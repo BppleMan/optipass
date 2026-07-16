@@ -5,16 +5,30 @@ import sdk from "@1password/sdk";
 import type { FileAttributes, Item, ItemCreateParams, ItemField, ItemFile, ItemListFilter, ItemSection, Website } from "@1password/sdk";
 import {
   ComparableField,
+  ComparableFieldKind,
   ItemCategory,
+  ItemFieldKind,
+  ItemFieldSensitivity,
+  ItemPatch,
   ItemSummary,
   RevealedCredentialField,
   ScanProgressEvent,
+  ScanPhase,
+  ScanProgressEventType,
   ScanSnapshot,
   summarizeVaults,
   VaultScanSummary,
   VaultSummary
 } from "@optimize-password/core";
-import type { CopyToVaultResult, ItemStateSnapshot } from "./app.js";
+
+export interface ItemStateSnapshot {
+  activeIds: string[];
+  archivedIds: string[];
+}
+
+export interface CopyToVaultResult {
+  createdItemId: string;
+}
 
 type OnePasswordClient = Awaited<ReturnType<typeof sdk.createClient>>;
 type RawItem = Item;
@@ -26,6 +40,12 @@ interface CachedRawItem {
   item: RawItem;
   onePasswordItemId: string;
   vaultId: string;
+}
+
+export interface OnePasswordCanonicalMaterial {
+  sections: Array<{ id: string; label: string }>;
+  fields: Array<{ id: string; sectionId?: string; label: string; kind: ItemFieldKind; sensitivity: ItemFieldSensitivity; value?: string }>;
+  attachments: Array<{ id: string; name: string; mediaType?: string; size?: number }>;
 }
 
 export interface ScanOptions {
@@ -56,15 +76,16 @@ export class OnePasswordService {
         scan,
         progress: {
           scanId,
-          phase: type === "completed" ? "completed" : type === "failed" ? "failed" : "scanning",
+          phase: type === ScanProgressEventType.Completed ? ScanPhase.Completed
+            : type === ScanProgressEventType.Failed ? ScanPhase.Failed : ScanPhase.Scanning,
           startedAt: scannedAt,
-          finishedAt: type === "completed" || type === "failed" ? new Date().toISOString() : undefined,
+          finishedAt: type === ScanProgressEventType.Completed || type === ScanProgressEventType.Failed ? new Date().toISOString() : undefined,
           totalVaults: vaults.length,
           scannedVaults,
           totalItems,
           scannedItems: summaries.length,
           vaults:
-            type === "completed"
+            type === ScanProgressEventType.Completed
               ? summarizeVaults(vaults, summaries)
               : summarizeVaultProgress(vaults, summaries, discoveredItemCounts),
           message
@@ -72,9 +93,9 @@ export class OnePasswordService {
       });
     };
 
-    emit("started", "正在连接 1Password Desktop App。");
-    const client = await this.getClient(options, (message) => emit("progress", message));
-    emit("progress", "正在读取保险库列表。");
+    emit(ScanProgressEventType.Started, "正在连接 1Password Desktop App。");
+    const client = await this.getClient(options, (message) => emit(ScanProgressEventType.Progress, message));
+    emit(ScanProgressEventType.Progress, "正在读取保险库列表。");
     vaults = await collectAsync(await client.vaults.list({ decryptDetails: true }), (vault) => ({
       id: String(readAny(vault, "id") ?? ""),
       name: String(readAny(vault, "title", "name") ?? "Untitled vault")
@@ -93,7 +114,7 @@ export class OnePasswordService {
       itemIdsByVault.set(vault.id, itemIds);
       discoveredItemCounts.set(vault.id, itemIds.length);
       totalItems += itemIds.length;
-      emit("progress", `已发现 ${vault.name} 中的 ${itemIds.length} 个项目。`);
+      emit(ScanProgressEventType.Progress, `已发现 ${vault.name} 中的 ${itemIds.length} 个项目。`);
     }
 
     for (const vault of vaults) {
@@ -118,11 +139,11 @@ export class OnePasswordService {
             vaultId: vault.id
           });
           summaries.push(toItemSummary(item, vault, rawItemId, appItemId));
-          emit("progress", `正在读取 ${vault.name}。`);
+          emit(ScanProgressEventType.Progress, `正在读取 ${vault.name}。`);
         }
       }
       scannedVaults += 1;
-      emit("progress", `已读取 ${vault.name}。`);
+      emit(ScanProgressEventType.Progress, `已读取 ${vault.name}。`);
     }
 
     const scan = {
@@ -132,7 +153,7 @@ export class OnePasswordService {
       vaults,
       items: summaries
     };
-    emit("completed", "扫描完成，等待手动分析。", scan);
+    emit(ScanProgressEventType.Completed, "扫描完成，等待手动分析。", scan);
     return scan;
   }
 
@@ -167,7 +188,50 @@ export class OnePasswordService {
     this.rawItems.set(appItemId, { ...cached, item: updated });
   }
 
-  async copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string, removeTags: string[] = []): Promise<CopyToVaultResult> {
+  async updateTitle(appItemId: string, title: string): Promise<void> {
+    const client = await this.requireClient();
+    const cached = this.rawItems.get(appItemId);
+    if (!cached) {
+      throw new Error(`无法更新 ${appItemId}：扫描缓存中没有完整项目数据。`);
+    }
+
+    const latest = await client.items.get(cached.vaultId, cached.onePasswordItemId);
+    if (String(readAny(latest, "title") ?? "") === title) {
+      return;
+    }
+    const updated = await client.items.put({ ...latest, title });
+    this.rawItems.set(appItemId, { ...cached, item: updated });
+  }
+
+  async updateItem(appItemId: string, patch: ItemPatch): Promise<void> {
+    const client = await this.requireClient();
+    const cached = this.rawItems.get(appItemId);
+    if (!cached) {
+      throw new Error(`无法更新 ${appItemId}：扫描缓存中没有完整项目数据。`);
+    }
+    const latest = await client.items.get(cached.vaultId, cached.onePasswordItemId);
+    const currentTitle = String(readAny(latest, "title") ?? "");
+    const currentTags = readArray<string>(latest, "tags").map(String);
+    const nextTitle = patch.title ?? currentTitle;
+    const nextTags = patch.tags ?? currentTags;
+    if (nextTitle === currentTitle && nextTags.length === currentTags.length && nextTags.every((tag, index) => tag === currentTags[index])) {
+      return;
+    }
+    const updated = await client.items.put({ ...latest, title: nextTitle, tags: nextTags });
+    this.rawItems.set(appItemId, { ...cached, item: updated });
+  }
+
+  async copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string, removeTags: string[] = [], title?: string): Promise<CopyToVaultResult> {
+    const result = await this.copyToVault(appItemId, targetVaultId, removeTags, title);
+    const cached = this.rawItems.get(appItemId);
+    if (!cached) {
+      throw new Error(`无法迁移 ${appItemId}：扫描缓存中没有完整项目数据。`);
+    }
+    await this.archive(cached.vaultId, cached.onePasswordItemId);
+    return result;
+  }
+
+  async copyToVault(appItemId: string, targetVaultId: string, removeTags: string[] = [], title?: string): Promise<CopyToVaultResult> {
     const client = await this.requireClient();
     const cached = this.rawItems.get(appItemId);
     if (!cached) {
@@ -179,7 +243,7 @@ export class OnePasswordService {
     const source = await client.items.get(sourceVaultId, rawItemId);
     const removeTagSet = new Set(removeTags);
     const sourceFiles = readArray<ItemFile>(source, "files");
-    const sourceDocument = readAny(source, "document") as FileAttributes | undefined;
+    const sourceDocument = readAny(source, "document") as FileAttributes;
     const files = await Promise.all(
       sourceFiles.map(async (file) => {
         if (!file.attributes || !file.sectionId || !file.fieldId) {
@@ -203,7 +267,7 @@ export class OnePasswordService {
     const createParams: ItemCreateParams = {
       category: source.category,
       vaultId: targetVaultId,
-      title: String(readAny(source, "title") ?? "Untitled item"),
+      title: title ?? String(readAny(source, "title") ?? "Untitled item"),
       fields: readArray<ItemField>(source, "fields"),
       sections: readArray<ItemSection>(source, "sections"),
       notes: String(readAny(source, "notes") ?? ""),
@@ -217,8 +281,6 @@ export class OnePasswordService {
     if (!createdItemId) {
       throw new Error(`无法迁移 ${appItemId}：目标保险库的新 item 缺少 ID。`);
     }
-    await client.items.archive(sourceVaultId, rawItemId);
-    this.rawItems.delete(appItemId);
     this.rawItems.set(toAppItemId(targetVaultId, createdItemId), {
       item: created,
       onePasswordItemId: createdItemId,
@@ -267,6 +329,36 @@ export class OnePasswordService {
         fieldType: fieldType(field)
       }))
       .filter((field) => field.value.length > 0);
+  }
+
+  canonicalMaterial(appItemId: string): OnePasswordCanonicalMaterial {
+    const cached = this.rawItems.get(appItemId);
+    if (!cached) {
+      throw new Error(`无法建立规范 Item：扫描缓存中没有 ${appItemId} 的完整项目数据。`);
+    }
+    const sections = readArray<ItemSection>(cached.item, "sections").map((section) => ({
+      id: String(readAny(section, "id") ?? ""),
+      label: String(readAny(section, "title", "label") ?? ""),
+    })).filter((section) => section.id.length > 0);
+    const fields = readArray<ItemField>(cached.item, "fields").map((field, index) => {
+      const value = String(readAny(field, "value") ?? "");
+      const kind = canonicalFieldKind(field);
+      return {
+        id: String(readAny(field, "id") ?? index),
+        sectionId: String(readAny(field, "sectionId") ?? "") || undefined,
+        label: String(readAny(field, "title", "label", "id") ?? "field"),
+        kind,
+        sensitivity: canonicalSensitivity(kind),
+        value: value || undefined,
+      };
+    });
+    const attachments = readArray<ItemFile>(cached.item, "files").map((file, index) => ({
+      id: String(readAny(file, "id", "fieldId") ?? index),
+      name: String(readAny(file.attributes, "name") ?? "attachment"),
+      mediaType: String(readAny(file.attributes, "contentPath", "type") ?? "") || undefined,
+      size: Number(readAny(file.attributes, "size") ?? 0) || undefined,
+    }));
+    return { sections, fields, attachments };
   }
 
   clearCache(): void {
@@ -357,8 +449,8 @@ function toItemSummary(item: RawItem, vault: VaultSummary, rawItemId: string, ap
     vaultName: vault.name,
     title: String(readAny(item, "title") ?? "Untitled item"),
     category: mapOnePasswordCategory(String(readAny(item, "category") ?? "")),
-    createdAt: toIsoString(readAny(item, "createdAt")),
-    updatedAt: toIsoString(readAny(item, "updatedAt")),
+    createdAt: toIsoString(readAny(item, "createdAt")).value,
+    updatedAt: toIsoString(readAny(item, "updatedAt")).value,
     urls,
     usernames,
     tags,
@@ -388,7 +480,7 @@ function toComparableField(field: ItemField): ComparableField[] {
     return [
       {
         label,
-        kind: "secret",
+        kind: ComparableFieldKind.Secret,
         normalizedValueHash: hashValue(value)
       }
     ];
@@ -396,80 +488,102 @@ function toComparableField(field: ItemField): ComparableField[] {
 
   const lowerLabel = label.toLowerCase();
   if (type.includes("url") || lowerLabel.includes("url") || lowerLabel.includes("website")) {
-    return [{ label, kind: "url", normalizedValue: value }];
+    return [{ label, kind: ComparableFieldKind.Url, normalizedValue: value }];
   }
   if (type.includes("email") || lowerLabel.includes("email")) {
-    return [{ label, kind: "email", normalizedValue: value }];
+    return [{ label, kind: ComparableFieldKind.Email, normalizedValue: value }];
   }
   if (lowerLabel.includes("phone") || lowerLabel.includes("mobile")) {
-    return [{ label, kind: "phone", normalizedValue: value }];
+    return [{ label, kind: ComparableFieldKind.Phone, normalizedValue: value }];
   }
   if (isUsernameField(field)) {
-    return [{ label, kind: "username", normalizedValue: value }];
+    return [{ label, kind: ComparableFieldKind.Username, normalizedValue: value }];
   }
   if (type.includes("credit") || lowerLabel.includes("card")) {
-    return [{ label, kind: "card", normalizedValueHash: hashValue(value) }];
+    return [{ label, kind: ComparableFieldKind.Card, normalizedValueHash: hashValue(value) }];
   }
   if (type.includes("text") && value.length <= 128) {
-    return [{ label, kind: "text", normalizedValue: value }];
+    return [{ label, kind: ComparableFieldKind.Text, normalizedValue: value }];
   }
 
   return [];
+}
+
+function canonicalFieldKind(field: ItemField): ItemFieldKind {
+  const type = fieldType(field);
+  const label = String(readAny(field, "title", "label", "id") ?? "").toLowerCase();
+  if (isSignInWithField(field)) return ItemFieldKind.Passkey;
+  if (type.includes("totp")) return ItemFieldKind.Totp;
+  if (isPasswordField(field)) return ItemFieldKind.Password;
+  if (type.includes("email") || label.includes("email")) return ItemFieldKind.Email;
+  if (isUsernameField(field)) return ItemFieldKind.Username;
+  if (type.includes("url") || label.includes("url") || label.includes("website")) return ItemFieldKind.Url;
+  if (type.includes("concealed") || type.includes("secret")) return ItemFieldKind.Secret;
+  if (type.includes("credit") || label.includes("card")) return ItemFieldKind.Card;
+  if (type.includes("text")) return ItemFieldKind.Text;
+  return ItemFieldKind.Unknown;
+}
+
+function canonicalSensitivity(kind: ItemFieldKind): ItemFieldSensitivity {
+  if (kind === ItemFieldKind.Password || kind === ItemFieldKind.Totp || kind === ItemFieldKind.Secret || kind === ItemFieldKind.Card) {
+    return ItemFieldSensitivity.Secret;
+  }
+  return kind === ItemFieldKind.Url || kind === ItemFieldKind.Text ? ItemFieldSensitivity.Public : ItemFieldSensitivity.Private;
 }
 
 export function mapOnePasswordCategory(value: string): ItemCategory {
   const normalized = value.replace(/[\s_-]/g, "").toLowerCase();
   switch (normalized) {
     case "apicredentials":
-      return "api-credential";
+      return ItemCategory.ApiCredential;
     case "bankaccount":
-      return "bank-account";
+      return ItemCategory.BankAccount;
     case "creditcard":
-      return "credit-card";
+      return ItemCategory.CreditCard;
     case "cryptowallet":
-      return "crypto-wallet";
+      return ItemCategory.CryptoWallet;
     case "database":
-      return "database";
+      return ItemCategory.Database;
     case "document":
-      return "document";
+      return ItemCategory.Document;
     case "driverlicense":
-      return "driver-license";
+      return ItemCategory.DriverLicense;
     case "email":
-      return "email";
+      return ItemCategory.Email;
     case "identity":
-      return "identity";
+      return ItemCategory.Identity;
     case "login":
-      return "login";
+      return ItemCategory.Login;
     case "medicalrecord":
-      return "medical-record";
+      return ItemCategory.MedicalRecord;
     case "membership":
-      return "membership";
+      return ItemCategory.Membership;
     case "outdoorlicense":
-      return "outdoor-license";
+      return ItemCategory.OutdoorLicense;
     case "passport":
-      return "passport";
+      return ItemCategory.Passport;
     case "password":
-      return "password";
+      return ItemCategory.Password;
     case "person":
-      return "person";
+      return ItemCategory.Person;
     case "rewards":
-      return "rewards";
+      return ItemCategory.Rewards;
     case "router":
-      return "router";
+      return ItemCategory.Router;
     case "securenote":
-      return "secure-note";
+      return ItemCategory.SecureNote;
     case "server":
-      return "server";
+      return ItemCategory.Server;
     case "sshkey":
-      return "ssh-key";
+      return ItemCategory.SshKey;
     case "socialsecuritynumber":
-      return "social-security-number";
+      return ItemCategory.SocialSecurityNumber;
     case "softwarelicense":
-      return "software-license";
+      return ItemCategory.SoftwareLicense;
     case "unsupported":
-      return "unsupported";
+      return ItemCategory.Unsupported;
     default:
-      return "unknown";
+      return ItemCategory.Unknown;
   }
 }
 
@@ -528,15 +642,19 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort();
 }
 
-function toIsoString(value: unknown): string | undefined {
+interface StringLookup {
+  value?: string;
+}
+
+function toIsoString(value: unknown): StringLookup {
   if (value instanceof Date) {
-    return value.toISOString();
+    return { value: value.toISOString() };
   }
   if (typeof value === "string" || typeof value === "number") {
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+    return Number.isNaN(date.getTime()) ? {} : { value: date.toISOString() };
   }
-  return undefined;
+  return {};
 }
 
 function readAny(source: unknown, ...keys: string[]): unknown {
@@ -550,11 +668,6 @@ function readAny(source: unknown, ...keys: string[]): unknown {
     }
   }
   return undefined;
-}
-
-function readOptionalString(source: unknown, ...keys: string[]): string | undefined {
-  const value = readAny(source, ...keys);
-  return value == null ? undefined : String(value);
 }
 
 function readArray<T>(source: unknown, key: string): T[] {
@@ -581,9 +694,9 @@ function errorMessage(error: unknown): string {
 
 async function withSdkTrace<T>(promise: Promise<T>, label: string): Promise<T> {
   const started = Date.now();
-  let slowLog: ReturnType<typeof setInterval> | undefined;
+  const trace: { slowLog?: ReturnType<typeof setInterval> } = {};
   if (sdkSlowLogMs > 0) {
-    slowLog = setInterval(() => {
+    trace.slowLog = setInterval(() => {
       console.warn(`[1Password SDK] ${label} 已等待 ${Math.round((Date.now() - started) / 1000)} 秒。`);
     }, sdkSlowLogMs);
   }
@@ -591,8 +704,8 @@ async function withSdkTrace<T>(promise: Promise<T>, label: string): Promise<T> {
   try {
     return await promise;
   } finally {
-    if (slowLog) {
-      clearInterval(slowLog);
+    if (trace.slowLog) {
+      clearInterval(trace.slowLog);
     }
   }
 }
@@ -609,8 +722,8 @@ async function openOnePasswordDesktopApp(): Promise<void> {
   }
 }
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
-  if (!value) {
+function readPositiveInteger(value: unknown, fallback: number): number {
+  if (typeof value !== "string" || !value) {
     return fallback;
   }
   const parsed = Number.parseInt(value, 10);
@@ -618,17 +731,20 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
 }
 
 async function collectAsync<T, TInput>(
-  value: AsyncIterable<TInput> | Iterable<TInput>,
+  value: unknown,
   mapper: (input: TInput) => T
 ): Promise<T[]> {
   const out: T[] = [];
-  for await (const item of asAsyncIterable(value)) {
+  for await (const item of asAsyncIterable<TInput>(value)) {
     out.push(mapper(item));
   }
   return out;
 }
 
-async function* asAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {
+async function* asAsyncIterable<T>(value: unknown): AsyncIterable<T> {
+  if (!value || typeof value !== "object" || !(Symbol.asyncIterator in value) && !(Symbol.iterator in value)) {
+    throw new Error("1Password SDK 返回了不可迭代的数据。");
+  }
   for await (const item of value as AsyncIterable<T>) {
     yield item;
   }

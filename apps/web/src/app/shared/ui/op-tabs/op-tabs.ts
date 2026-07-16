@@ -34,7 +34,7 @@ export class OpTabsComponent implements AfterViewInit, OnDestroy {
     private readonly subscriptions: { unsubscribe: () => void }[] = [];
     private readonly resizeObserver?: ResizeObserver;
     private viewReady = false;
-    private pendingFrame: number | undefined;
+    private pendingFrame?: number;
 
     public constructor(private readonly host: ElementRef<HTMLElement>) {
     effect(() => {

@@ -40,7 +40,7 @@ describe("local runtime lock", () => {
     expect(lock.acquired).toBe(true);
     await lock.writeManifest(manifest);
 
-    expect(await readRuntimeManifest(paths)).toEqual(manifest);
+    expect(await readRuntimeManifest(paths)).toEqual({ manifest });
 
     await lock.release();
     expect(await pathExists(paths.lockFile)).toBe(false);

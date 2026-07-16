@@ -5,6 +5,7 @@ import { createApiServer } from "./app.js";
 import { AppMode, defaultWebDistDir, readConfig } from "./config.js";
 import { acquireRuntimeLock, createRuntimeManifest } from "./local-runtime.js";
 import { OnePasswordService } from "./onepassword.js";
+import { createDefaultApplicationServices } from "./application-services.js";
 
 interface CliOptions {
   host: string;
@@ -12,6 +13,11 @@ interface CliOptions {
   mode: AppMode;
   openBrowser: boolean;
   webDistDir: string;
+}
+
+enum LocalStopReason {
+  Requested = "requested",
+  Signal = "signal",
 }
 
 const options = parseCliOptions(process.argv.slice(2));
@@ -38,13 +44,14 @@ const config = {
   webDistDir: options.webDistDir
 };
 
+const onePassword = new OnePasswordService();
 const server = await createApiServer({
   config,
-  onePassword: new OnePasswordService(),
+  services: createDefaultApplicationServices(onePassword),
   lifecycle: {
     shutdown: {
       enabled: true,
-      onShutdown: () => stop("requested")
+      onShutdown: () => stop(LocalStopReason.Requested)
     }
   }
 });
@@ -71,13 +78,13 @@ if (options.openBrowser) {
 }
 
 process.once("SIGINT", () => {
-  void stop("signal").then(() => process.exit(0));
+  void stop(LocalStopReason.Signal).then(() => process.exit(0));
 });
 process.once("SIGTERM", () => {
-  void stop("signal").then(() => process.exit(0));
+  void stop(LocalStopReason.Signal).then(() => process.exit(0));
 });
 
-async function stop(reason: "requested" | "signal"): Promise<void> {
+async function stop(reason: LocalStopReason): Promise<void> {
   if (stopping) {
     return;
   }
@@ -88,30 +95,30 @@ async function stop(reason: "requested" | "signal"): Promise<void> {
 }
 
 function parseCliOptions(args: string[]): CliOptions {
-  const getValue = (name: string): string | undefined => {
+  const getValue = (name: string): string => {
     const flagIndex = args.indexOf(name);
     if (flagIndex >= 0) {
-      return args[flagIndex + 1];
+      return args[flagIndex + 1] ?? "";
     }
     const withEquals = args.find((arg) => arg.startsWith(`${name}=`));
-    return withEquals?.slice(name.length + 1);
+    return withEquals?.slice(name.length + 1) ?? "";
   };
 
   return {
     host: "127.0.0.1",
-    port: Number(getValue("--port") ?? process.env.PORT ?? "0"),
+    port: Number(getValue("--port") || process.env.PORT || "0"),
     mode: readMode(getValue("--mode")),
     openBrowser: args.includes("--open") || process.env.OPEN_BROWSER === "true",
-    webDistDir: resolve(getValue("--web-dist") ?? process.env.WEB_DIST_DIR ?? defaultWebDistDir())
+    webDistDir: resolve(getValue("--web-dist") || process.env.WEB_DIST_DIR || defaultWebDistDir())
   };
 }
 
-function readMode(value: string | undefined): AppMode {
-  const mode = value ?? process.env.APP_MODE;
-  if (mode === "tauri" || mode === "browser-dev" || mode === "browser-serve") {
-    return mode;
-  }
-  return "browser-serve";
+function readMode(value: string): AppMode {
+  const mode = value || process.env.APP_MODE;
+  if (mode === AppMode.Tauri) return AppMode.Tauri;
+  if (mode === AppMode.BrowserDev) return AppMode.BrowserDev;
+  if (mode === AppMode.BrowserServe) return AppMode.BrowserServe;
+  return AppMode.BrowserServe;
 }
 
 function openBrowser(url: string): void {

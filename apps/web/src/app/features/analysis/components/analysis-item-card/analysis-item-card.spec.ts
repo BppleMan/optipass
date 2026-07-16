@@ -15,11 +15,12 @@ describe("AnalysisItemCard", () => {
         await fixture.whenStable();
 
         expect(fixture.nativeElement.textContent).toContain(firstItem.url);
-        expect(fixture.nativeElement.querySelector(".title-row").textContent).toContain(firstItem.title);
+        expect(fixture.nativeElement.querySelector(".title-input").value).toBe(firstItem.title);
         expect(fixture.nativeElement.querySelector(".username-row").textContent).toContain(firstItem.username);
         expect(fixture.nativeElement.querySelectorAll(".field-marker")).toHaveLength(3);
         expect(fixture.nativeElement.querySelector(".username-marker").textContent).toBe("@");
         expect(fixture.nativeElement.querySelector(".url-marker").textContent).toBe("↗");
+        expect(fixture.nativeElement.querySelector(".url-row strong").title).toBe(firstItem.url);
         expect(fixture.nativeElement.querySelector(".url-row").classList).not.toContain("different");
         expect(fixture.nativeElement.querySelectorAll(".credential-row")).toHaveLength(3);
         expect(fixture.nativeElement.textContent).toContain("密码");
@@ -38,6 +39,25 @@ describe("AnalysisItemCard", () => {
             "field-row vault-row",
             "field-row tag-row",
         ]);
+    });
+
+    it("emits a trimmed title when editing finishes", async () => {
+        const currentItem = item("item-1", "https://example.com", "alice");
+        const group = { id: "group-1", skipped: false, items: [currentItem] } as unknown as DuplicateGroupView;
+        const fixture = TestBed.createComponent(AnalysisItemCard);
+        fixture.componentRef.setInput("group", group);
+        fixture.componentRef.setInput("item", currentItem);
+        fixture.componentRef.setInput("decisionItems", []);
+        const titles: string[] = [];
+        fixture.componentInstance.titleChange.subscribe((title) => titles.push(title));
+        await fixture.whenStable();
+
+        const input = fixture.nativeElement.querySelector(".title-input") as HTMLInputElement;
+        input.value = "  Updated title  ";
+        input.dispatchEvent(new Event("change"));
+
+        expect(titles).toEqual(["Updated title"]);
+        expect(input.value).toBe("Updated title");
     });
 
     it("renders removed items with the same disabled vault selector", async () => {
@@ -59,6 +79,8 @@ function item(id: string, url: string, username: string): DuplicateItemView {
     return {
         id,
         title: "Example login",
+        originalTitle: "Example login",
+        titleChanged: false,
         username,
         url,
         category: "login",

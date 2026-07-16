@@ -1,215 +1,149 @@
 import { describe, expect, it } from "vitest";
-import { createActionPlan, createExecutionPlan, validateDecisionItemSet } from "./plan.js";
-import { item } from "./test-helpers.js";
+import {
+    ActionMappingRequest,
+    ActionMappingResult,
+    BackendCapabilities,
+    BackendMutationResult,
+    BackendReadRequest,
+    BackendReadResult,
+    BackendVerificationRequest,
+    BackendVerificationResult,
+    ItemBackend,
+    KeepItemAction,
+    UpdateItemAction,
+} from "./action-model.js";
+import { ItemCategory, ItemDisposition, ItemLifecycleState, ItemProvider, StoreState, VerificationSeverity } from "./domain.js";
+import { InMemoryItemStore } from "./item-store.js";
+import { ActionPlanningService } from "./plan.js";
 
-describe("createExecutionPlan", () => {
-  it("builds one immutable batch plan from an ActionDraft", () => {
-    const items = [item({ id: "vault-a:1", title: "A" }), item({ id: "vault-a:2", title: "A" })];
-    const scan = {
-      scanId: "scan-1",
-      scannedAt: "2026-07-14T00:00:00.000Z",
-      analyzedAt: "2026-07-14T00:00:00.000Z",
-      vaults: [{ id: "vault-a", name: "A" }],
-      items,
-      groups: [{
-        id: "group-1",
-        itemIds: items.map((candidate) => candidate.id),
-        reasons: [],
-        recommendedKeepIds: [items[0].id],
-        recommendedKeepReasons: []
-      }]
-    };
-    const plan = createActionPlan({
-      scanId: scan.scanId,
-      groups: [{
-        groupId: "group-1",
-        items: [{ itemId: items[0].id, keep: true }, { itemId: items[1].id, keep: false }]
-      }]
-    }, scan, false);
+describe("ActionPlanningService", () => {
+    it("按 provider 映射用户意图并返回真实步骤", async () => {
+        const store = createStore();
+        const backend = new FakeBackend();
+        const service = new ActionPlanningService(store, { get: () => backend });
+        const snapshot = store.createSnapshot();
+        const plan = await service.createPlan({
+            storeSnapshotId: snapshot.snapshotId,
+            storeVersion: snapshot.version,
+            groups: [{
+                groupId: "group-1",
+                items: [
+                    { itemId: "mock:test:1", disposition: ItemDisposition.Keep, removeTags: [] },
+                    { itemId: "mock:test:2", disposition: ItemDisposition.Archive, removeTags: [] },
+                ],
+            }],
+        }, [{ id: "group-1", itemIds: ["mock:test:1", "mock:test:2"], reasons: [], recommendedKeepIds: [], recommendedKeepReasons: [] }]);
 
-    expect(plan).toMatchObject({ sourceScanId: "scan-1", writeEnabled: false, requiresExplicitDeleteConfirmation: false });
-    expect(plan.groups).toHaveLength(1);
-    expect(plan.summary).toMatchObject({ keep: 1, archive: 1 });
-  });
-
-  it("plans archive by default for non-kept items", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [
-          { itemId: "vault-a:1", keep: true },
-          { itemId: "vault-a:2", keep: false }
-        ]
-      },
-      [item({ id: "vault-a:1", title: "A" }), item({ id: "vault-a:2", title: "A" })]
-    );
-
-    expect(plan.actions.map((action) => action.type)).toEqual(["keep", "archive"]);
-  });
-
-  it("plans copy-and-archive for cross-vault keeps", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [{ itemId: "vault-a:1", keep: true, targetVaultId: "vault-b" }]
-      },
-      [item({ id: "vault-a:1", title: "A", vaultId: "vault-a" })]
-    );
-
-    expect(plan.actions[0]).toMatchObject({
-      type: "copy-to-vault-and-archive-source",
-      targetVaultId: "vault-b"
+        expect(backend.mappedItemIds).toEqual(["mock:test:1", "mock:test:2"]);
+        expect(backend.mappedSnapshots[0]).toBe(backend.mappedSnapshots[1]);
+        expect(plan.groups[0].steps).toHaveLength(2);
+        expect(plan.groups[0].steps.map((step) => step.sequence)).toEqual([0, 1]);
+        expect(plan.planHash).toMatch(/^[0-9a-f]{64}$/);
+        expect(plan.statistics).toEqual({ groupCount: 1, itemCount: 2, stepCount: 2, mutationStepCount: 0 });
+        expect(plan.blockers).toEqual([]);
     });
-    expect(plan.warnings).toContain("跨保险库迁移会先创建副本，再归档原 item。");
-  });
 
-  it("blocks cross-vault migration for passkey items", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [{ itemId: "vault-a:1", keep: true, targetVaultId: "vault-b" }]
-      },
-      [item({ id: "vault-a:1", title: "Passkey Login", vaultId: "vault-a", hasPasskey: true })]
-    );
-
-    expect(plan.actions[0]).toMatchObject({
-      type: "copy-to-vault-and-archive-source",
-      targetVaultId: "vault-b"
+    it("拒绝过期 Store 版本", async () => {
+        const store = createStore();
+        const service = new ActionPlanningService(store, { get: () => new FakeBackend() });
+        await expect(service.createPlan({
+            storeSnapshotId: store.getSnapshotId(),
+            storeVersion: store.getVersion() - 1,
+            groups: [],
+        }, [])).rejects.toThrow("Item Store 已发生变化");
     });
-    expect(plan.blockers).toContain("含 Passkey 的 item 不支持跨保险库迁移：Passkey Login");
-  });
 
-  it("blocks plans that keep nothing", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [{ itemId: "vault-a:1", keep: false }]
-      },
-      [item({ id: "vault-a:1", title: "A" })]
-    );
-
-    expect(plan.blockers).toEqual(["该组没有选择任何保留项。请至少保留一个 item。"]);
-  });
-
-  it("flags permanent delete plans for explicit confirmation", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [
-          { itemId: "vault-a:1", keep: true },
-          { itemId: "vault-a:2", keep: false, deleteMode: "delete" }
-        ]
-      },
-      [item({ id: "vault-a:1", title: "A" }), item({ id: "vault-a:2", title: "A" })]
-    );
-
-    expect(plan.requiresExplicitDeleteConfirmation).toBe(true);
-  });
-
-  it("normalizes action order independently from decision input order", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [
-          { itemId: "vault-a:delete", keep: false, deleteMode: "delete" },
-          { itemId: "vault-a:archive", keep: false },
-          { itemId: "vault-a:keep", keep: true },
-          { itemId: "vault-a:move", keep: true, targetVaultId: "vault-b" }
-        ]
-      },
-      [
-        item({ id: "vault-a:delete", title: "A", vaultId: "vault-a" }),
-        item({ id: "vault-a:archive", title: "A", vaultId: "vault-a" }),
-        item({ id: "vault-a:keep", title: "A", vaultId: "vault-a" }),
-        item({ id: "vault-a:move", title: "A", vaultId: "vault-a" })
-      ]
-    );
-
-    expect(plan.actions.map((action) => [action.type, action.itemId])).toEqual([
-      ["keep", "vault-a:keep"],
-      ["copy-to-vault-and-archive-source", "vault-a:move"],
-      ["archive", "vault-a:archive"],
-      ["delete", "vault-a:delete"]
-    ]);
-    expect(plan.summary).toEqual({
-      keep: 1,
-      move: 1,
-      archive: 1,
-      delete: 1,
-      tagUpdate: 0,
-      removedTagCount: 0,
-      affectedVaultIds: ["vault-a", "vault-b"]
+    it("允许整组不保留并对永久删除要求显式确认", async () => {
+        const store = createStore();
+        const service = new ActionPlanningService(store, { get: () => new FakeBackend() });
+        const plan = await service.createPlan({
+            storeSnapshotId: store.getSnapshotId(),
+            storeVersion: store.getVersion(),
+            groups: [{ groupId: "group-1", items: [
+                { itemId: "mock:test:1", disposition: ItemDisposition.Archive, removeTags: [] },
+                { itemId: "mock:test:2", disposition: ItemDisposition.Delete, removeTags: [] },
+            ] }],
+        }, [{ id: "group-1", itemIds: ["mock:test:1", "mock:test:2"], reasons: [], recommendedKeepIds: [], recommendedKeepReasons: [] }]);
+        expect(plan.blockers).toEqual([]);
+        expect(plan.requiresExplicitDeleteConfirmation).toBe(true);
     });
-  });
 
-  it("plans tag removal as an update for kept items", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [{ itemId: "vault-a:1", keep: true, removeTags: ["imported", "missing"] }]
-      },
-      [item({ id: "vault-a:1", title: "A", tags: ["imported", "work"] })]
-    );
+    it("保留后端提供的原子移动步骤而不硬编码 1Password 两步迁移", async () => {
+        const store = createStore();
+        const service = new ActionPlanningService(store, { get: () => new AtomicMoveBackend() });
+        const plan = await service.createPlan({
+            storeSnapshotId: store.getSnapshotId(),
+            storeVersion: store.getVersion(),
+            groups: [{
+                groupId: "group-1",
+                items: [{
+                    itemId: "mock:test:1",
+                    disposition: ItemDisposition.Keep,
+                    targetContainerId: "target-vault",
+                    removeTags: [],
+                }],
+            }],
+        }, [{ id: "group-1", itemIds: ["mock:test:1"], reasons: [], recommendedKeepIds: [], recommendedKeepReasons: [] }]);
 
-    expect(plan.actions[0]).toEqual({
-      type: "update-tags",
-      itemId: "vault-a:1",
-      vaultId: "vault-a",
-      removeTags: ["imported"]
+        expect(plan.groups[0].steps).toHaveLength(1);
+        expect(plan.groups[0].items[0].actions[0]).toBeInstanceOf(UpdateItemAction);
     });
-    expect(plan.summary).toMatchObject({ tagUpdate: 1, removedTagCount: 1 });
-  });
-
-  it("folds tag removal into cross-vault migration", () => {
-    const plan = createExecutionPlan(
-      "group-1",
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [{ itemId: "vault-a:1", keep: true, targetVaultId: "vault-b", removeTags: ["imported"] }]
-      },
-      [item({ id: "vault-a:1", title: "A", vaultId: "vault-a", tags: ["imported", "work"] })]
-    );
-
-    expect(plan.actions[0]).toMatchObject({
-      type: "copy-to-vault-and-archive-source",
-      removeTags: ["imported"]
-    });
-    expect(plan.summary).toMatchObject({ move: 1, tagUpdate: 1, removedTagCount: 1 });
-  });
-
-  it("validates that decisions cover exactly one duplicate group", () => {
-    const blockers = validateDecisionItemSet(
-      {
-        scanId: "scan-1",
-        groupId: "group-1",
-        items: [
-          { itemId: "a", keep: true },
-          { itemId: "a", keep: false },
-          { itemId: "x", keep: false }
-        ]
-      },
-      ["a", "b"]
-    );
-
-    expect(blockers).toEqual([
-      "执行请求包含重复 item：a",
-      "执行请求缺少组内 item：b",
-      "执行请求包含不属于该组的 item：x"
-    ]);
-  });
 });
+
+class FakeBackend implements ItemBackend {
+    public readonly mappedItemIds: string[] = [];
+    public readonly mappedSnapshots: ActionMappingRequest["snapshot"][] = [];
+    public getProvider(): ItemProvider { return ItemProvider.Mock; }
+    public getCapabilities(): BackendCapabilities { return { supportsCreate: true, supportsUpdate: true, supportsArchive: true, supportsDelete: true,
+        supportsAtomicContainerChange: true, supportsCopy: true, supportsAttachments: true, supportsPasskeys: true, supportsSecretFields: true }; }
+    public async readAll(_request: BackendReadRequest): Promise<BackendReadResult> { throw new Error("unused"); }
+    public async create(): Promise<BackendMutationResult> { return {}; }
+    public async update(): Promise<BackendMutationResult> { return {}; }
+    public async archive(): Promise<BackendMutationResult> { return {}; }
+    public async delete(): Promise<BackendMutationResult> { return {}; }
+    public async verify(_request: BackendVerificationRequest): Promise<BackendVerificationResult> {
+        return { ok: true, severity: VerificationSeverity.Incomplete, message: "ok" };
+    }
+    public async map(request: ActionMappingRequest): Promise<ActionMappingResult> {
+        this.mappedItemIds.push(request.item.id);
+        this.mappedSnapshots.push(request.snapshot);
+        return { actions: [new KeepItemAction(request.item.id, request.groupId, request.item.id, ItemProvider.Mock, request.startingSequence,
+            { label: request.item.title, detail: "test" })], blockers: [], warnings: [], affectedItemIds: [request.item.id] };
+    }
+    public async simulate(): Promise<BackendMutationResult> { return {}; }
+    public clearSession(): void {}
+}
+
+class AtomicMoveBackend extends FakeBackend {
+    public override async map(request: ActionMappingRequest): Promise<ActionMappingResult> {
+        return {
+            actions: [new UpdateItemAction(
+                "atomic-move",
+                request.groupId,
+                request.item.id,
+                ItemProvider.Mock,
+                request.startingSequence,
+                [],
+                { label: "移动 item", detail: "后端原子修改容器" },
+                { itemId: request.item.id, patch: { container: { ...request.item.container, containerId: "target-vault" } } },
+            )],
+            blockers: [],
+            warnings: [],
+            affectedItemIds: [request.item.id],
+        };
+    }
+}
+
+function createStore(): InMemoryItemStore {
+    const store = new InMemoryItemStore();
+    const container = { provider: ItemProvider.Mock, accountId: "test", containerId: "vault", name: "Vault" };
+    store.replaceAll({
+        snapshotId: "snapshot-1", version: 1, state: StoreState.Ready, createdAt: new Date().toISOString(), sourceProvider: ItemProvider.Mock,
+        containers: [container], items: ["1", "2"].map((id) => ({
+            id: `mock:test:${ id }`, source: { provider: ItemProvider.Mock, accountId: "test", externalItemId: id }, container,
+            revision: 1, lifecycleState: ItemLifecycleState.Active, category: ItemCategory.Login, title: "A", identities: [], urls: [], tags: [],
+            sections: [], fields: [], attachments: [], capabilities: [],
+        })),
+    });
+    return store;
+}

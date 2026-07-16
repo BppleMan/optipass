@@ -1,10 +1,12 @@
 import { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { createApiServer, PasswordService } from "./app.js";
-import { ApiConfig, readConfig } from "./config.js";
+import { createApiServer } from "./app.js";
+import { ApiConfig, AppMode, readConfig } from "./config.js";
 import { createSessionToken } from "./local-runtime.js";
 import { OnePasswordService } from "./onepassword.js";
+import { createDefaultApplicationServices } from "./application-services.js";
+import type { FastifyServerOptions } from "fastify";
 
 export const helperReadyPrefix = "OPTIPASS_READY ";
 
@@ -31,8 +33,8 @@ export interface StartedHelper {
 
 interface StartHelperOptions {
   args?: string[];
-  onePassword?: PasswordService;
-  logger?: false | { level: string };
+  services?: import("./item-services.js").ApplicationServices;
+  logger?: FastifyServerOptions["logger"];
   writeReadyLine?: (line: string) => void;
 }
 
@@ -43,16 +45,17 @@ export async function startTauriHelper(options: StartHelperOptions = {}): Promis
     ...baseConfig,
     host: cli.host,
     port: cli.port,
-    mode: "tauri",
+    mode: AppMode.Tauri,
     sessionToken: cli.token,
     webDistDir: undefined,
     webOrigins: [...new Set([...baseConfig.webOrigins, ...tauriWebOrigins()])]
   };
 
   let stopping = false;
+  const onePassword = new OnePasswordService();
   const server = await createApiServer({
     config,
-    onePassword: options.onePassword ?? new OnePasswordService(),
+    services: options.services ?? createDefaultApplicationServices(onePassword),
     logger: options.logger,
     lifecycle: {
       shutdown: {
@@ -99,18 +102,18 @@ export async function startTauriHelper(options: StartHelperOptions = {}): Promis
 }
 
 export function parseHelperCliOptions(args: string[]): HelperCliOptions {
-  const getValue = (name: string): string | undefined => {
+  const getValue = (name: string): string => {
     const flagIndex = args.indexOf(name);
     if (flagIndex >= 0) {
-      return args[flagIndex + 1];
+      return args[flagIndex + 1] ?? "";
     }
     const withEquals = args.find((arg) => arg.startsWith(`${name}=`));
-    return withEquals?.slice(name.length + 1);
+    return withEquals?.slice(name.length + 1) ?? "";
   };
 
   return {
     host: "127.0.0.1",
-    port: Number(getValue("--port") ?? process.env.PORT ?? "0"),
+    port: Number(getValue("--port") || process.env.PORT || "0"),
     token: getValue("--token") ?? process.env.APP_SESSION_TOKEN ?? createSessionToken()
   };
 }

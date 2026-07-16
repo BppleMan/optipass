@@ -1,6 +1,20 @@
 import { ChangeDetectionStrategy, Component, ElementRef, input, output, QueryList, ViewChildren } from "@angular/core";
 
-export type SegmentedControlIcon = "archive" | "delete" | "keep" | "manual";
+export enum SegmentedControlIcon {
+    Archive = "archive", Delete = "delete", Keep = "keep", Manual = "manual",
+}
+
+export enum SegmentedControlSize {
+    Compact = "compact", Comfortable = "comfortable", Regular = "regular",
+}
+
+enum KeyboardDirection {
+    Previous = "previous", Next = "next", First = "first", Last = "last",
+}
+
+interface KeyboardDirectionLookup {
+    direction?: KeyboardDirection;
+}
 
 export interface SegmentedControlItem {
     value: string;
@@ -27,7 +41,7 @@ export class SegmentedControlComponent {
     public readonly value = input.required<string>();
     public readonly disabled = input(false);
     public readonly ariaLabel = input.required<string>();
-    public readonly size = input<"compact" | "comfortable" | "regular">("compact");
+    public readonly size = input(SegmentedControlSize.Compact, { transform: segmentedControlSize });
     public readonly fullWidth = input(false);
     public readonly valueChange = output<string>();
 
@@ -53,8 +67,8 @@ export class SegmentedControlComponent {
     }
 
     public moveSelection(event: KeyboardEvent, currentIndex: number): void {
-        const direction = keyboardDirection(event.key);
-        if (direction === undefined) {
+        const lookup = keyboardDirection(event.key);
+        if (!lookup.direction) {
             return;
         }
 
@@ -66,39 +80,46 @@ export class SegmentedControlComponent {
             return;
         }
 
-        const nextIndex = nextEnabledIndex(enabledIndexes, currentIndex, direction);
+        const nextIndex = nextEnabledIndex(enabledIndexes, currentIndex, lookup.direction);
         const nextItem = this.items()[nextIndex];
         this.select(nextItem);
         this.buttons.get(nextIndex)?.nativeElement.focus();
     }
 }
 
-function keyboardDirection(key: string): "first" | "last" | -1 | 1 | undefined {
+function segmentedControlSize(value: unknown): SegmentedControlSize {
+    if (value === SegmentedControlSize.Comfortable) return SegmentedControlSize.Comfortable;
+    if (value === SegmentedControlSize.Regular) return SegmentedControlSize.Regular;
+    return SegmentedControlSize.Compact;
+}
+
+function keyboardDirection(key: string): KeyboardDirectionLookup {
     switch (key) {
         case "ArrowLeft":
         case "ArrowUp":
-            return -1;
+            return { direction: KeyboardDirection.Previous };
         case "ArrowRight":
         case "ArrowDown":
-            return 1;
+            return { direction: KeyboardDirection.Next };
         case "Home":
-            return "first";
+            return { direction: KeyboardDirection.First };
         case "End":
-            return "last";
+            return { direction: KeyboardDirection.Last };
         default:
-            return undefined;
+            return {};
     }
 }
 
-function nextEnabledIndex(enabledIndexes: number[], currentIndex: number, direction: "first" | "last" | -1 | 1): number {
-    if (direction === "first") {
+function nextEnabledIndex(enabledIndexes: number[], currentIndex: number, direction: KeyboardDirection): number {
+    if (direction === KeyboardDirection.First) {
         return enabledIndexes[0];
     }
-    if (direction === "last") {
+    if (direction === KeyboardDirection.Last) {
         return enabledIndexes[enabledIndexes.length - 1];
     }
 
     const currentEnabledIndex = enabledIndexes.findIndex((index) => index === currentIndex);
-    const nextOffset = (currentEnabledIndex + direction + enabledIndexes.length) % enabledIndexes.length;
+    const delta = direction === KeyboardDirection.Previous ? -1 : 1;
+    const nextOffset = (currentEnabledIndex + delta + enabledIndexes.length) % enabledIndexes.length;
     return enabledIndexes[nextOffset];
 }

@@ -1,17 +1,22 @@
 import { afterNextRender, AfterViewChecked, ChangeDetectionStrategy, Component, ElementRef, Injector, OnInit, ViewChild } from "@angular/core";
 import { FormsModule } from "@angular/forms";
-import type { DuplicateGroupView, DuplicateItemView, RemoveAction } from "../../core/models/workflow.models";
+import { ItemDisposition } from "@optimize-password/core";
+import { ApplyStatus, RemoveAction, TagRemovalScope, type DuplicateGroupView, type DuplicateItemView } from "../../core/models/workflow.models";
 import { ItemTypeIconComponent } from "../../shared/ui/item-type-icon/item-type-icon";
 import { resolveItemTypeIcon } from "../../shared/library/icon-library";
 import { OpButtonComponent } from "../../shared/ui/op-button/op-button";
 import { OpProgressComponent } from "../../shared/ui/op-progress/op-progress";
-import { SegmentedControlComponent, type SegmentedControlItem } from "../../shared/ui/segmented-control/segmented-control";
+import { SegmentedControlComponent, SegmentedControlIcon, type SegmentedControlItem } from "../../shared/ui/segmented-control/segmented-control";
 import { VaultIconComponent } from "../../shared/ui/vault-icon/vault-icon";
 import { AnalysisEmptyStateComponent } from "./components/analysis-empty-state/analysis-empty-state";
 import { AnalysisItemMatrix } from "./components/analysis-item-matrix/analysis-item-matrix";
-import { WorkflowService } from "./state/workflow.service";
+import { SearchMoveDirection, WorkflowService } from "./state/workflow.service";
 
-type GroupRemovalMode = RemoveAction | 'manual';
+enum GroupRemovalMode {
+  Archive = "archive",
+  Delete = "delete",
+  Manual = "manual",
+}
 
 @Component({
   selector: "op-analysis-page",
@@ -28,20 +33,20 @@ type GroupRemovalMode = RemoveAction | 'manual';
 })
 export class AnalysisPageComponent implements AfterViewChecked, OnInit {
   readonly itemDecisionItems: SegmentedControlItem[] = [
-    { value: 'keep', label: '保留', icon: 'keep', activeColor: '#C3E88D', activeBackground: 'rgba(195, 232, 141, 0.16)' },
-    { value: 'archive', label: '归档（可恢复）', icon: 'archive', activeColor: '#FFCB6B', activeBackground: 'rgba(255, 203, 107, 0.16)' },
-    { value: 'delete', label: '永久删除', icon: 'delete', activeColor: '#FFB8C3', activeBackground: 'rgba(255, 83, 112, 0.16)' },
+    { value: 'keep', label: '保留', icon: SegmentedControlIcon.Keep, activeColor: '#C3E88D', activeBackground: 'rgba(195, 232, 141, 0.16)' },
+    { value: 'archive', label: '归档（可恢复）', icon: SegmentedControlIcon.Archive, activeColor: '#FFCB6B', activeBackground: 'rgba(255, 203, 107, 0.16)' },
+    { value: 'delete', label: '永久删除', icon: SegmentedControlIcon.Delete, activeColor: '#FFB8C3', activeBackground: 'rgba(255, 83, 112, 0.16)' },
   ];
   readonly groupRemovalItems: SegmentedControlItem[] = [
-    { value: 'archive', label: '本组统一归档', icon: 'archive', activeColor: '#FFCB6B', activeBackground: 'rgba(255, 203, 107, 0.16)' },
-    { value: 'delete', label: '本组统一删除', icon: 'delete', activeColor: '#FFB8C3', activeBackground: 'rgba(255, 83, 112, 0.16)' },
-    { value: 'manual', label: '手动处理', icon: 'manual', activeColor: '#82AAFF', activeBackground: 'rgba(130, 170, 255, 0.16)', disabled: true },
+    { value: 'archive', label: '本组统一归档', icon: SegmentedControlIcon.Archive, activeColor: '#FFCB6B', activeBackground: 'rgba(255, 203, 107, 0.16)' },
+    { value: 'delete', label: '本组统一删除', icon: SegmentedControlIcon.Delete, activeColor: '#FFB8C3', activeBackground: 'rgba(255, 83, 112, 0.16)' },
+    { value: 'manual', label: '手动处理', icon: SegmentedControlIcon.Manual, activeColor: '#82AAFF', activeBackground: 'rgba(130, 170, 255, 0.16)', disabled: true },
   ];
-  tagScopePrompt: { groupId: string; itemId: string; tag: string; eligibleCount: number } | undefined;
+  tagScopePrompt?: { groupId: string; itemId: string; tag: string; eligibleCount: number };
 
   @ViewChild('applyOperationList') private readonly applyOperationList?: ElementRef<HTMLElement>;
   @ViewChild("globalSearchSuggestions") private readonly globalSearchSuggestions?: ElementRef<HTMLElement>;
-  private followedOperationId: string | undefined;
+  private followedOperationId?: string;
   private followApplyProgress = true;
 
   constructor(
@@ -55,8 +60,9 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
 
   ngAfterViewChecked(): void {
     const operations = this.wf.operations();
-    const followedOperation = operations.find((operation) => operation.status === "running")
-      ?? [...operations].reverse().find((operation) => operation.status === "done" || operation.status === "failed" || operation.status === "skipped");
+    const followedOperation = operations.find((operation) => operation.status === ApplyStatus.Running)
+      ?? [...operations].reverse().find((operation) => operation.status === ApplyStatus.Done ||
+        operation.status === ApplyStatus.Failed || operation.status === ApplyStatus.Skipped);
     if (!followedOperation) {
       this.followedOperationId = undefined;
       this.followApplyProgress = true;
@@ -77,7 +83,7 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (this.wf.globalSearchAutocompleteOpen()) {
-        this.wf.moveGlobalSearchSuggestion(1);
+        this.wf.moveGlobalSearchSuggestion(SearchMoveDirection.Next);
       } else {
         this.wf.activateGlobalSearchSuggestion(0);
         this.wf.openGlobalSearchAutocomplete();
@@ -87,7 +93,7 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      this.wf.moveGlobalSearchSuggestion(-1);
+      this.wf.moveGlobalSearchSuggestion(SearchMoveDirection.Previous);
       queueMicrotask(() => this.scrollActiveGlobalSearchSuggestionIntoView());
       return;
     }
@@ -128,12 +134,12 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     this.wf.toggleTagRemoval(item.id, tag);
   }
 
-  applyTagScope(scope: 'item' | 'group'): void {
+  applyTagScope(scope: TagRemovalScope): void {
     const prompt = this.tagScopePrompt;
     if (!prompt) {
       return;
     }
-    if (scope === 'group') {
+    if (scope === TagRemovalScope.Group) {
       this.wf.removeTagFromGroup(prompt.groupId, prompt.tag);
     } else {
       this.wf.toggleTagRemoval(prompt.itemId, prompt.tag);
@@ -141,26 +147,31 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
     this.tagScopePrompt = undefined;
   }
 
-  setItemDecision(item: DuplicateItemView, mode: 'keep' | RemoveAction): void {
-    this.wf.updateKeep(item.id, mode === 'keep');
-    if (mode !== 'keep') {
-      this.wf.updateRemoveAction(item.id, mode);
+  setItemDecision(item: DuplicateItemView, disposition: ItemDisposition): void {
+    this.wf.updateKeep(item.id, disposition === ItemDisposition.Keep);
+    if (disposition === ItemDisposition.Archive) {
+      this.wf.updateRemoveAction(item.id, RemoveAction.Archive);
+    } else if (disposition === ItemDisposition.Delete) {
+      this.wf.updateRemoveAction(item.id, RemoveAction.Delete);
     }
   }
 
   onItemDecisionChange(item: DuplicateItemView, value: string): void {
     if (value === 'keep' || value === 'archive' || value === 'delete') {
-      this.setItemDecision(item, value);
+      this.setItemDecision(item, value as ItemDisposition);
     }
   }
 
   groupRemovalMode(group: DuplicateGroupView): GroupRemovalMode {
     const removable = group.items.filter((item) => !item.keep);
     if (removable.length === 0) {
-      return 'manual';
+      return GroupRemovalMode.Manual;
     }
     const first = removable[0].removeAction;
-    return removable.every((item) => item.removeAction === first) ? first : 'manual';
+    if (!removable.every((item) => item.removeAction === first)) {
+      return GroupRemovalMode.Manual;
+    }
+    return first === RemoveAction.Delete ? GroupRemovalMode.Delete : GroupRemovalMode.Archive;
   }
 
   setGroupRemovalMode(group: DuplicateGroupView, mode: RemoveAction): void {
@@ -169,7 +180,7 @@ export class AnalysisPageComponent implements AfterViewChecked, OnInit {
 
   onGroupRemovalChange(group: DuplicateGroupView, value: string): void {
     if (value === 'archive' || value === 'delete') {
-      this.setGroupRemovalMode(group, value);
+      this.setGroupRemovalMode(group, value === 'delete' ? RemoveAction.Delete : RemoveAction.Archive);
     }
   }
 

@@ -1,19 +1,25 @@
 import { computed, Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import {
-  createActionPlanGroup,
+  ActionExecutionStatus,
+  ActionExecutionEventKind,
+  ActionKind,
+  ItemDisposition,
+  ItemProvider,
+  ScanMode,
+  ScanPhase,
   dashboardCategoryDefinitions,
   normalizeLooseText,
   normalizeUrlHost,
   summarizeVaults,
   type DashboardCategory,
   type ActionDraft,
-  type SimilarityGroup,
   type ActionDraftItem,
-  type ActionPlanGroup,
-  type GroupDecision,
+  type ActionPlanDto,
+  type ActionPlanGroupDto,
+  type ActionStepDto,
+  type SimilarityGroup,
   type ItemSummary,
-  type PlanAction,
   type RevealedCredentialField,
   type ScanProgress,
   type ScanProgressEvent,
@@ -27,24 +33,29 @@ import {
   type ActiveScanResponse,
   type AnalysisResultResponse,
   type ActionExecutionEvent,
-  type ActionExecutionStatus,
   type DryRunSpeedMultiplier
 } from '../../../core/services/api.service';
 import {
   type AnalysisFilterChipView,
-  type AnalysisFilterKey,
-  type AnalysisFilterSectionId,
+  AnalysisFilterKey,
+  AnalysisFilterSectionId,
+  AuthState,
   type AnalysisFilterSectionView,
   type AnalysisFilterSummaryView,
   type ApplyOperationGroupView,
   type ApplyOperationRowView,
   type ApplyOperationView,
-  type ApplyStatus,
+  ApplyOperationType,
+  ApplyStatus,
+  CredentialFieldKind,
   type CredentialChipView,
   type DecisionStatsView,
   type DuplicateGroupView,
   type DuplicateItemView,
-  type FilterCredentialKind,
+  type ItemDetailRowView,
+  FilterCredentialKind,
+  ItemDetailFieldKey,
+  PlanPreviewTone,
   type PlanActionPreviewView,
   type PreviewGroupView,
   type RemoveAction,
@@ -59,8 +70,10 @@ const missingYearId = '__missing_year__';
 const scanRecoveryTimeoutMs = 120_000;
 const scanRecoveryPollMs = 500;
 
-type ActionExecutionViewStatus = ActionExecutionStatus | 'ready' | 'starting';
-type ActionExecutionScope = 'plan' | 'group';
+enum ActionExecutionScope {
+  Plan = "plan",
+  Group = "group",
+}
 
 const categoryDisplay: Record<string, { label: string; order: number }> = {
   login: { label: '登录', order: 1 },
@@ -105,7 +118,22 @@ interface AnalysisFilterOptionData {
   count: number;
 }
 
-type GlobalSearchSuggestionKind = "year" | "vault" | "domain";
+enum GlobalSearchSuggestionKind {
+  Year = "year", Vault = "vault", Domain = "domain",
+}
+
+export enum SearchMoveDirection {
+  Previous = -1,
+  Next = 1,
+}
+
+interface OptionalValue<T> {
+  value?: T;
+}
+
+interface ItemSummaryLookup {
+  item?: ItemSummary;
+}
 
 interface GlobalSearchSuggestion {
   id: string;
@@ -157,9 +185,9 @@ const credentialKindMeta: Record<FilterCredentialKind, { label: string; order: n
 };
 
 const globalSearchSuggestionKindLabels: Record<GlobalSearchSuggestionKind, string> = {
-  year: "年份匹配项",
-  vault: "保险库匹配项",
-  domain: "Domain 匹配项",
+  [GlobalSearchSuggestionKind.Year]: "年份匹配项",
+  [GlobalSearchSuggestionKind.Vault]: "保险库匹配项",
+  [GlobalSearchSuggestionKind.Domain]: "Domain 匹配项",
 };
 
 const defaultFilterSectionsOpen: Record<AnalysisFilterSectionId, boolean> = {
@@ -172,16 +200,22 @@ const defaultFilterSectionsOpen: Record<AnalysisFilterSectionId, boolean> = {
 @Injectable({ providedIn: 'root' })
 export class WorkflowService {
   readonly account = signal('');
-  readonly authState = signal<'idle' | 'authorizing' | 'authorized' | 'failed'>('idle');
-  readonly activeScanMode = signal<'live' | 'mock'>('live');
-  readonly scanProgress = signal<ScanProgress | undefined>(undefined);
-  readonly scanSnapshot = signal<ScanSnapshot | undefined>(undefined);
-  readonly scanResult = signal<ScanResult | undefined>(undefined);
+  readonly scanSource = signal(ItemProvider.OnePassword);
+  readonly csvFileName = signal('');
+  private readonly csvContent = signal('');
+  readonly authState = signal(AuthState.Idle);
+  readonly activeScanMode = signal(ScanMode.Live);
+  private readonly scanProgressState = signal<OptionalValue<ScanProgress>>({});
+  readonly scanProgress = computed(() => this.scanProgressState().value);
+  private readonly scanSnapshotState = signal<OptionalValue<ScanSnapshot>>({});
+  readonly scanSnapshot = computed(() => this.scanSnapshotState().value);
+  private readonly scanResultState = signal<OptionalValue<ScanResult>>({});
+  readonly scanResult = computed(() => this.scanResultState().value);
   readonly loading = signal(false);
   readonly analyzing = signal(false);
   readonly analysisPct = signal(0);
-  readonly error = signal<string | undefined>(undefined);
-  readonly status = signal<string | undefined>(undefined);
+  readonly error = signal('');
+  readonly status = signal('');
   readonly decisions = signal<Record<string, ActionDraftItem>>({});
   readonly skippedGroups = signal<Record<string, boolean>>({});
   readonly reveal = signal(false);
@@ -191,7 +225,8 @@ export class WorkflowService {
   readonly analysisFilters = signal<AnalysisFilterState>(emptyAnalysisFilters());
   readonly filterSectionsOpen = signal<Record<AnalysisFilterSectionId, boolean>>(defaultFilterSectionsOpen);
   readonly globalSearchQuery = signal('');
-  readonly globalSearchItemIds = signal<string[] | undefined>(undefined);
+  private readonly globalSearchItemIdsState = signal<OptionalValue<string[]>>({});
+  readonly globalSearchItemIds = computed(() => this.globalSearchItemIdsState().value);
   readonly globalSearchSuggestions = signal<GlobalSearchSuggestion[]>([]);
   readonly globalSearchAutocompleteOpen = signal(false);
   readonly activeGlobalSearchSuggestionIndex = signal(0);
@@ -199,44 +234,59 @@ export class WorkflowService {
   readonly operationGroupErrors = signal<Record<string, string>>({});
   readonly applying = signal(false);
   readonly applyDialogOpen = signal(false);
-  readonly actionExecutionId = signal<string | undefined>(undefined);
-  readonly actionExecutionStatus = signal<ActionExecutionViewStatus | undefined>(undefined);
-  readonly actionExecutionScope = signal<ActionExecutionScope>('plan');
+  private readonly actionExecutionIdState = signal<OptionalValue<string>>({});
+  readonly actionExecutionId = computed(() => this.actionExecutionIdState().value);
+  private readonly actionExecutionStatusState = signal<OptionalValue<ActionExecutionStatus>>({});
+  readonly actionExecutionStatus = computed(() => this.actionExecutionStatusState().value);
+  readonly actionExecutionScope = signal<ActionExecutionScope>(ActionExecutionScope.Plan);
   readonly actionExecutionWriteEnabled = signal(false);
   readonly groupPlanLoading = signal<Record<string, boolean>>({});
   readonly mutationToggleBusy = signal(false);
   readonly dryRunSpeedMultiplier = signal<DryRunSpeedMultiplier>(1);
-  private readonly preparedActionDraft = signal<ActionDraft | undefined>(undefined);
-  private scanAbortController: AbortController | undefined;
+  private readonly preparedActionPlanState = signal<OptionalValue<ActionPlanDto>>({});
+  private readonly preparedActionPlan = computed(() => this.preparedActionPlanState().value);
+  private scanAbortController?: AbortController;
   private globalSearchRequestId = 0;
 
   readonly session = computed(() => this.api.session());
   readonly mutationsEnabled = computed(() => Boolean(this.session()?.enableMutations));
   readonly accountChip = computed(() => this.account().trim());
   readonly scanData = computed(() => this.scanResult() ?? this.scanSnapshot());
-  readonly scanDone = computed(() => this.scanProgress()?.phase === 'completed' || Boolean(this.scanSnapshot()));
-  readonly scanFailed = computed(() => this.scanProgress()?.phase === 'failed' || this.authState() === 'failed');
+  readonly scanDone = computed(() => this.scanProgress()?.phase === ScanPhase.Completed || Boolean(this.scanSnapshot()));
+  readonly scanFailed = computed(() => this.scanProgress()?.phase === ScanPhase.Failed || this.authState() === AuthState.Failed);
   readonly scanRows = computed(() => this.buildScanRows());
   readonly totalItems = computed(() => this.scanProgress()?.totalItems || this.scanData()?.items.length || 0);
   readonly scannedTotal = computed(() => this.scanProgress()?.scannedItems || this.scanData()?.items.length || 0);
   readonly overallPct = computed(() => {
+    if (this.scanDone()) {
+      return 100;
+    }
     const total = this.totalItems();
-    return total ? Math.round((this.scannedTotal() / total) * 100) : 100;
+    if (total <= 0) {
+      return 0;
+    }
+    return Math.min(99, Math.round((this.scannedTotal() / total) * 100));
   });
   readonly authHint = computed(() => {
-    if (this.error() && this.authState() === 'failed') {
+    if (this.error() && this.authState() === AuthState.Failed) {
       return this.error();
     }
-    if (this.authState() === 'authorizing') {
-      if (this.activeScanMode() === 'mock') {
+    if (this.authState() === AuthState.Authorizing) {
+      if (this.activeScanMode() === ScanMode.Mock) {
         return '正在载入本地演示扫描数据…';
+      }
+      if (this.activeScanMode() === ScanMode.Csv) {
+        return this.scanProgress()?.message || '正在读取本地 CSV 文件…';
       }
       return this.scanProgress()?.message || '已向 1Password 请求授权，请在桌面端弹窗中点击「允许」…';
     }
-    if (this.authState() === 'authorized') {
+    if (this.authState() === AuthState.Authorized) {
       const vaultCount = this.scanData()?.vaults.length || this.scanProgress()?.totalVaults || 0;
-      if (this.activeScanMode() === 'mock') {
+      if (this.activeScanMode() === ScanMode.Mock) {
         return `✓ 已载入演示数据 · 正在扫描 ${vaultCount} 个 vault`;
+      }
+      if (this.activeScanMode() === ScanMode.Csv) {
+        return `✓ 已读取 CSV · 共 ${this.totalItems()} 个 item`;
       }
       return `✓ 授权成功 · 已连接 ${vaultCount} 个 vault，正在扫描`;
     }
@@ -340,7 +390,7 @@ export class WorkflowService {
       return;
     }
     this.mutationToggleBusy.set(true);
-    this.error.set(undefined);
+    this.error.set('');
     try {
       await this.api.setMutationsEnabled(enableMutations);
       this.status.set(enableMutations ? '已切换为可写模式。' : '已切换为试写模式。');
@@ -400,24 +450,58 @@ export class WorkflowService {
     }
   }
 
+  public selectScanSource(source: ItemProvider): void {
+    this.scanSource.set(source);
+    if (source !== ItemProvider.Csv) {
+      this.csvFileName.set("");
+      this.csvContent.set("");
+    }
+  }
+
+  public async selectCsvFile(file: File): Promise<void> {
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      throw new Error('请选择 CSV 文件。');
+    }
+    this.csvFileName.set(file.name);
+    this.csvContent.set(await file.text());
+    this.scanSource.set(ItemProvider.Csv);
+  }
+
   async startScan(): Promise<void> {
     await this.loadSession();
     const session = this.session();
     const accountName = this.account().trim();
-    const mode = session?.hasServiceAccountToken || accountName ? 'live' : 'mock';
+    const source = this.scanSource();
+    const mode = source === ItemProvider.Csv
+      ? ScanMode.Csv
+      : session?.hasServiceAccountToken || accountName ? ScanMode.Live : ScanMode.Mock;
     const resolvedAccountName = accountName || session?.accountName || 'dev@lin.dev';
+
+    if (source === ItemProvider.Csv && (!this.csvFileName() || !this.csvContent())) {
+      this.error.set('请选择一份 1Password 导出的 CSV 文件。');
+      return;
+    }
 
     this.resetForScan();
     this.account.set(resolvedAccountName);
     this.activeScanMode.set(mode);
     this.loading.set(true);
-    this.authState.set('authorizing');
+    this.authState.set(AuthState.Authorizing);
     const scanAbortController = new AbortController();
     this.scanAbortController = scanAbortController;
     try {
-      const start = await this.api.startScan({ accountName: resolvedAccountName, mode });
+      const start = await this.api.startScan({
+        accountName: source === ItemProvider.OnePassword ? resolvedAccountName : undefined,
+        mode,
+        provider: source,
+        fileName: source === ItemProvider.Csv ? this.csvFileName() : undefined,
+        csvContent: source === ItemProvider.Csv ? this.csvContent() : undefined,
+      });
+      if (source === ItemProvider.Csv) {
+        this.csvContent.set("");
+      }
       this.activeScanMode.set(start.mode);
-      this.scanProgress.set(start.progress);
+      this.setScanProgress(start.progress);
       try {
         await this.api.streamScanEvents(start.scanId, start.eventsToken, (event) => {
           this.handleScanProgressEvent(event);
@@ -434,15 +518,15 @@ export class WorkflowService {
       if (scanAbortController.signal.aborted) {
         return;
       }
-      if (!this.scanSnapshot() && this.scanProgress()?.phase === 'completed') {
-        this.scanSnapshot.set(await this.api.loadScan());
+      if (!this.scanSnapshot() && this.scanProgress()?.phase === ScanPhase.Completed) {
+        this.setScanSnapshot(await this.api.loadScan());
       }
       if (this.scanSnapshot()) {
-        this.authState.set('authorized');
+        this.authState.set(AuthState.Authorized);
         this.status.set('扫描完成。');
       }
     } catch (error) {
-      this.authState.set('failed');
+      this.authState.set(AuthState.Failed);
       this.error.set(messageFor(error));
     } finally {
       if (this.scanAbortController === scanAbortController) {
@@ -453,7 +537,7 @@ export class WorkflowService {
   }
 
   private async recoverCompletedScanAfterStreamError(): Promise<boolean> {
-    if (this.scanSnapshot() || this.scanProgress()?.phase === 'completed') {
+    if (this.scanSnapshot() || this.scanProgress()?.phase === ScanPhase.Completed) {
       return true;
     }
 
@@ -461,9 +545,9 @@ export class WorkflowService {
     const deadline = Date.now() + scanRecoveryTimeoutMs;
     while (Date.now() <= deadline) {
       try {
-        this.scanSnapshot.set(await this.api.loadScan());
-        this.authState.set('authorized');
-        this.error.set(undefined);
+        this.setScanSnapshot(await this.api.loadScan());
+        this.authState.set(AuthState.Authorized);
+        this.error.set('');
         return true;
       } catch {
         await sleep(scanRecoveryPollMs);
@@ -480,25 +564,30 @@ export class WorkflowService {
     const scanAbortController = new AbortController();
     this.scanAbortController = scanAbortController;
     this.activeScanMode.set(active.mode);
-    this.scanProgress.set(active.progress);
-    this.authState.set(active.progress.totalVaults > 0 || active.progress.vaults.length > 0 ? 'authorized' : 'authorizing');
+    if (active.mode === ScanMode.Csv) {
+      this.scanSource.set(ItemProvider.Csv);
+    } else if (active.mode === ScanMode.Live) {
+      this.scanSource.set(ItemProvider.OnePassword);
+    }
+    this.setScanProgress(active.progress);
+    this.authState.set(active.progress.totalVaults > 0 || active.progress.vaults.length > 0 ? AuthState.Authorized : AuthState.Authorizing);
     this.loading.set(true);
-    this.error.set(undefined);
+    this.error.set('');
     this.status.set('已接入正在运行的扫描任务。');
     try {
       await this.api.streamScanEvents(active.scanId, active.eventsToken, (event) => {
         this.handleScanProgressEvent(event);
       }, { signal: scanAbortController.signal, after: active.eventCount });
-      if (!this.scanSnapshot() && this.scanProgress()?.phase === 'completed') {
-        this.scanSnapshot.set(await this.api.loadScan());
-        this.authState.set('authorized');
+      if (!this.scanSnapshot() && this.scanProgress()?.phase === ScanPhase.Completed) {
+        this.setScanSnapshot(await this.api.loadScan());
+        this.authState.set(AuthState.Authorized);
       }
       if (this.scanSnapshot()) {
         this.status.set('扫描完成。');
       }
     } catch (error) {
       if (!scanAbortController.signal.aborted && !await this.recoverCompletedScanAfterStreamError()) {
-        this.authState.set('failed');
+        this.authState.set(AuthState.Failed);
         this.error.set(messageFor(error));
       }
     } finally {
@@ -510,16 +599,16 @@ export class WorkflowService {
   }
 
   private handleScanProgressEvent(event: ScanProgressEvent): void {
-    this.scanProgress.set(event.progress);
+    this.setScanProgress(event.progress);
     if (event.progress.totalVaults > 0 || event.progress.vaults.length > 0) {
-      this.authState.set('authorized');
+      this.authState.set(AuthState.Authorized);
     }
     if (event.scan) {
-      this.scanSnapshot.set(event.scan);
-      this.authState.set('authorized');
+      this.setScanSnapshot(event.scan);
+      this.authState.set(AuthState.Authorized);
     }
     if (event.type === 'failed') {
-      this.authState.set('failed');
+      this.authState.set(AuthState.Failed);
       this.error.set(event.error || event.progress.error || '扫描失败，请查看本地 API 日志。');
     }
   }
@@ -534,8 +623,8 @@ export class WorkflowService {
 
     this.analyzing.set(true);
     this.analysisPct.set(0);
-    this.error.set(undefined);
-    this.status.set(undefined);
+    this.error.set('');
+    this.status.set('');
     await this.router.navigateByUrl('/analysis');
     const timer = window.setInterval(() => {
       this.analysisPct.set(Math.min(94, this.analysisPct() + 8));
@@ -617,7 +706,7 @@ export class WorkflowService {
     const requestId = ++this.globalSearchRequestId;
     this.globalSearchSuggestions.set(this.searchFilterOptions(keywords));
     if (keywords.length === 0) {
-      this.globalSearchItemIds.set(undefined);
+      this.clearGlobalSearchItemIds();
       this.globalSearchAutocompleteOpen.set(false);
       return;
     }
@@ -627,12 +716,12 @@ export class WorkflowService {
       const itemIds = this.groupViews().flatMap((group) => group.items.map((item) => item.id));
       const response = await this.api.searchItems(keywords, itemIds);
       if (requestId === this.globalSearchRequestId) {
-        this.globalSearchItemIds.set(response.itemIds);
+        this.setGlobalSearchItemIds(response.itemIds);
         this.activeGlobalSearchSuggestionIndex.set(0);
       }
     } catch (error) {
       if (requestId === this.globalSearchRequestId) {
-        this.globalSearchItemIds.set([]);
+        this.setGlobalSearchItemIds([]);
         this.error.set(messageFor(error));
       }
     }
@@ -648,7 +737,7 @@ export class WorkflowService {
     this.globalSearchAutocompleteOpen.set(false);
   }
 
-  public moveGlobalSearchSuggestion(direction: 1 | -1): void {
+  public moveGlobalSearchSuggestion(direction: SearchMoveDirection): void {
     const suggestions = this.scopedGlobalSearchSuggestions();
     if (suggestions.length === 0) {
       return;
@@ -694,7 +783,7 @@ export class WorkflowService {
 
     const skippedGroups = this.skippedGroups();
     this.groupPlanLoading.set({ ...this.groupPlanLoading(), [groupId]: true });
-    this.error.set(undefined);
+    this.error.set('');
     try {
       const response = skippedGroups[groupId]
         ? await this.api.restoreSkippedGroup(result.scanId, groupId)
@@ -715,7 +804,10 @@ export class WorkflowService {
     if (!current) {
       return;
     }
-    this.decisions.set({ ...this.decisions(), [itemId]: { ...current, keep } });
+    const disposition = keep
+      ? ItemDisposition.Keep
+      : current.disposition === ItemDisposition.Keep ? ItemDisposition.Archive : current.disposition;
+    this.decisions.set({ ...this.decisions(), [itemId]: { ...current, disposition } });
   }
 
   updateTargetVault(itemId: string, targetVaultId: string): void {
@@ -723,7 +815,23 @@ export class WorkflowService {
     if (!current) {
       return;
     }
-    this.decisions.set({ ...this.decisions(), [itemId]: { ...current, targetVaultId } });
+    this.decisions.set({ ...this.decisions(), [itemId]: { ...current, targetContainerId: targetVaultId } });
+  }
+
+  updateItemTitle(itemId: string, title: string): void {
+    const current = this.decisions()[itemId];
+    const original = this.scanResult()?.items.find((item) => item.id === itemId)?.title;
+    const normalized = title.trim();
+    if (!current || !original || !normalized) {
+      return;
+    }
+    const next = { ...current };
+    if (normalized === original) {
+      delete next.desiredTitle;
+    } else {
+      next.desiredTitle = normalized;
+    }
+    this.decisions.set({ ...this.decisions(), [itemId]: next });
   }
 
   updateRemoveAction(itemId: string, removeAction: RemoveAction): void {
@@ -731,7 +839,10 @@ export class WorkflowService {
     if (!current) {
       return;
     }
-    this.decisions.set({ ...this.decisions(), [itemId]: { ...current, deleteMode: removeAction } });
+    this.decisions.set({
+      ...this.decisions(),
+      [itemId]: { ...current, disposition: removeAction === "delete" ? ItemDisposition.Delete : ItemDisposition.Archive },
+    });
   }
 
   toggleTagRemoval(itemId: string, tag: string): void {
@@ -762,7 +873,7 @@ export class WorkflowService {
     for (const itemId of group.itemIds) {
       const current = next[itemId];
       const item = itemById.get(itemId);
-      if (!current?.keep || !item?.tags.includes(tag)) {
+      if (current?.disposition !== ItemDisposition.Keep || !item?.tags.includes(tag)) {
         continue;
       }
       next[itemId] = {
@@ -782,8 +893,8 @@ export class WorkflowService {
     const next = { ...this.decisions() };
     for (const itemId of group.itemIds) {
       const current = next[itemId];
-      if (current && !current.keep) {
-        next[itemId] = { ...current, deleteMode: removeAction };
+      if (current && current.disposition !== ItemDisposition.Keep) {
+        next[itemId] = { ...current, disposition: removeAction === "delete" ? ItemDisposition.Delete : ItemDisposition.Archive };
       }
     }
     this.decisions.set(next);
@@ -882,8 +993,25 @@ export class WorkflowService {
   }
 
   groupOperationCount(groupId: string): number {
-    const plan = this.localPlanForGroup(groupId);
-    return plan?.actions.filter((action) => action.type !== 'keep').length ?? 0;
+    const group = this.groups().find((candidate) => candidate.id === groupId);
+    const result = this.scanResult();
+    if (!group || !result) {
+      return 0;
+    }
+    const itemById = new Map(result.items.map((item) => [item.id, item]));
+    return group.itemIds.reduce((count, itemId) => {
+      const item = itemById.get(itemId);
+      const decision = this.decisions()[itemId];
+      if (!item || !decision) {
+        return count;
+      }
+      if (decision.disposition !== ItemDisposition.Keep) {
+        return count + 1;
+      }
+      const moved = Boolean(decision.targetContainerId && decision.targetContainerId !== item.vaultId);
+      const updated = Boolean(decision.desiredTitle && decision.desiredTitle !== item.title) || decision.removeTags.length > 0;
+      return count + (moved ? 2 : updated ? 1 : 0);
+    }, 0);
   }
 
   canApplyGroup(groupId: string): boolean {
@@ -893,79 +1021,94 @@ export class WorkflowService {
       !this.groupPlanLoading()[groupId];
   }
 
-  openGroupExecutionDialog(groupId: string): void {
+  async openGroupExecutionDialog(groupId: string): Promise<void> {
     if (!this.canApplyGroup(groupId)) {
       return;
     }
     const group = this.allPreviewGroups().find((candidate) => candidate.id === groupId);
-    if (!group?.plan) {
+    if (!group) {
       this.error.set('找不到待执行的重复组。');
       return;
     }
-    this.prepareActionExecution([group], 'group');
+    await this.prepareActionExecution([group], ActionExecutionScope.Group);
   }
 
-  applyPlan(): void {
+  async applyPlan(): Promise<void> {
     if (!this.canApply()) {
       return;
     }
-    this.prepareActionExecution(this.visiblePreviewGroups(), 'plan');
+    await this.prepareActionExecution(this.visiblePreviewGroups(), ActionExecutionScope.Plan);
   }
 
   async startPreparedActionExecution(): Promise<void> {
-    const draft = this.preparedActionDraft();
-    if (!draft || this.actionExecutionStatus() !== 'ready' || this.applying()) {
+    const plan = this.preparedActionPlan();
+    if (!plan || this.actionExecutionStatus() !== ActionExecutionStatus.Ready || this.applying()) {
       return;
     }
-    this.error.set(undefined);
+    this.error.set('');
     this.applying.set(true);
-    this.actionExecutionStatus.set('starting');
+    this.setActionExecutionStatus(ActionExecutionStatus.Starting);
     try {
-      const hasDelete = draft.groups.some((group) => group.items.some((item) => !item.keep && item.deleteMode === 'delete'));
+      const hasDelete = plan.groups.some((group) => group.items.some((item) => item.disposition === ItemDisposition.Delete));
       const execution = await this.api.startActionExecution(
-        draft,
+        plan.planId,
+        plan.planHash,
         hasDelete ? deleteConfirmationPhrase : undefined,
         this.dryRunSpeedMultiplier(),
       );
       if (!execution.eventsToken) {
         throw new Error('执行任务缺少进度令牌。');
       }
-      this.actionExecutionId.set(execution.executionId);
-      this.actionExecutionStatus.set(execution.status);
+      this.setActionExecutionId(execution.executionId);
+      this.setActionExecutionStatus(execution.status);
       this.actionExecutionWriteEnabled.set(execution.writeEnabled);
       await this.api.streamActionExecutionEvents(execution.executionId, execution.eventsToken, (event) => this.applyActionExecutionEvent(event));
     } catch (error) {
       const executionError = messageFor(error);
       this.error.set(executionError);
       this.skipPendingOperations('执行未完成。');
-      this.actionExecutionStatus.set('failed');
+      this.setActionExecutionStatus(ActionExecutionStatus.Failed);
       if (isStaleAnalysisError(executionError)) {
         await this.recoverStaleAnalysis(executionError);
       }
     } finally {
       this.applying.set(false);
-      this.preparedActionDraft.set(undefined);
-      this.status.set(this.actionExecutionStatus() === 'failed'
+      this.clearPreparedActionPlan();
+      this.status.set(this.actionExecutionStatus() === ActionExecutionStatus.Failed
         ? this.error() ?? '执行失败。'
         : this.actionExecutionWriteEnabled() ? this.summaryLine() : `试写完成，${this.summaryLine()}`);
     }
   }
 
-  private prepareActionExecution(groups: PreviewGroupView[], scope: ActionExecutionScope): void {
-    const operations = this.buildOperations(groups);
-    if (operations.length === 0) {
-      return;
+  private async prepareActionExecution(groups: PreviewGroupView[], scope: ActionExecutionScope): Promise<void> {
+    this.error.set('');
+    this.loading.set(true);
+    try {
+      const draft = this.actionDraftForGroups(groups);
+      const plan = await this.api.createPlan(draft);
+      if (plan.blockers.length > 0) {
+        throw new Error(plan.blockers.join("\n"));
+      }
+      const planByGroup = new Map(plan.groups.map((group) => [group.groupId, group]));
+      const plannedGroups = groups.map((group) => ({ ...group, plan: planByGroup.get(group.id) }));
+      const operations = this.buildOperations(plannedGroups);
+      if (operations.length === 0) {
+        return;
+      }
+      this.operations.set(operations);
+      this.operationGroupErrors.set({});
+      this.setPreparedActionPlan(plan);
+      this.applying.set(false);
+      this.applyDialogOpen.set(true);
+      this.clearActionExecutionId();
+      this.setActionExecutionStatus(ActionExecutionStatus.Ready);
+      this.actionExecutionScope.set(scope);
+      this.actionExecutionWriteEnabled.set(this.mutationsEnabled() && plan.realExecutionSupported);
+    } catch (error) {
+      this.error.set(messageFor(error));
+    } finally {
+      this.loading.set(false);
     }
-    this.operations.set(operations);
-    this.operationGroupErrors.set({});
-    this.preparedActionDraft.set(this.actionDraftForGroups(groups));
-    this.error.set(undefined);
-    this.applying.set(false);
-    this.applyDialogOpen.set(true);
-    this.actionExecutionId.set(undefined);
-    this.actionExecutionStatus.set('ready');
-    this.actionExecutionScope.set(scope);
-    this.actionExecutionWriteEnabled.set(this.mutationsEnabled());
   }
 
   async pauseActionExecution(): Promise<void> {
@@ -974,16 +1117,16 @@ export class WorkflowService {
       return;
     }
     const snapshot = await this.api.pauseActionExecution(executionId);
-    this.actionExecutionStatus.set(snapshot.status);
+    this.setActionExecutionStatus(snapshot.status);
   }
 
   async resumeActionExecution(): Promise<void> {
     const executionId = this.actionExecutionId();
-    if (!executionId || this.actionExecutionStatus() !== 'paused') {
+    if (!executionId || this.actionExecutionStatus() !== ActionExecutionStatus.Paused) {
       return;
     }
     const snapshot = await this.api.resumeActionExecution(executionId);
-    this.actionExecutionStatus.set(snapshot.status);
+    this.setActionExecutionStatus(snapshot.status);
   }
 
   async stopActionExecution(): Promise<void> {
@@ -992,8 +1135,8 @@ export class WorkflowService {
       return;
     }
     const snapshot = await this.api.stopActionExecution(executionId);
-    if (!['stopped', 'completed', 'failed'].includes(this.actionExecutionStatus() ?? '')) {
-      this.actionExecutionStatus.set(snapshot.status);
+    if (![ActionExecutionStatus.Stopped, ActionExecutionStatus.Completed, ActionExecutionStatus.Failed].includes(this.actionExecutionStatus()!)) {
+      this.setActionExecutionStatus(snapshot.status);
     }
   }
 
@@ -1002,9 +1145,9 @@ export class WorkflowService {
       return;
     }
     this.applyDialogOpen.set(false);
-    if (this.actionExecutionStatus() === 'ready') {
-      this.preparedActionDraft.set(undefined);
-      this.actionExecutionStatus.set(undefined);
+    if (this.actionExecutionStatus() === ActionExecutionStatus.Ready) {
+      this.clearPreparedActionPlan();
+      this.clearActionExecutionStatus();
       this.operations.set([]);
     }
   }
@@ -1017,15 +1160,15 @@ export class WorkflowService {
     await this.rescan();
   }
 
-  itemById(itemId: string): ItemSummary | undefined {
+  itemById(itemId: string) {
     return this.scanResult()?.items.find((item) => item.id === itemId);
   }
 
   private restoreScanSnapshot(scan: ScanSnapshot): void {
-    this.scanSnapshot.set(scan);
-    this.scanProgress.set({
+    this.setScanSnapshot(scan);
+    this.setScanProgress({
       scanId: scan.scanId,
-      phase: 'completed',
+      phase: ScanPhase.Completed,
       startedAt: scan.scannedAt,
       finishedAt: new Date(Date.parse(scan.scannedAt) + (scan.durationMs ?? 0)).toISOString(),
       totalVaults: scan.vaults.length,
@@ -1035,13 +1178,13 @@ export class WorkflowService {
       vaults: summarizeVaults(scan.vaults, scan.items),
       message: '已恢复本地扫描缓存。'
     });
-    this.authState.set('authorized');
-    this.error.set(undefined);
+    this.authState.set(AuthState.Authorized);
+    this.error.set('');
     this.status.set('已恢复本地扫描缓存。');
   }
 
   private restoreAnalysisResult(result: AnalysisResultResponse): void {
-    this.scanResult.set(result);
+    this.setScanResult(result);
     this.restoreScanSnapshot({
       scanId: result.scanId,
       scannedAt: result.scannedAt,
@@ -1060,8 +1203,8 @@ export class WorkflowService {
   }
 
   private replaceAnalysisResult(result: AnalysisResultResponse): void {
-    this.scanResult.set(result);
-    this.scanSnapshot.set({
+    this.setScanResult(result);
+    this.setScanSnapshot({
       scanId: result.scanId,
       scannedAt: result.scannedAt,
       durationMs: result.durationMs,
@@ -1071,34 +1214,25 @@ export class WorkflowService {
     this.skippedGroups.set(skippedGroupMap(result.skippedGroupIds));
   }
 
-  private localPlanForGroup(groupId: string): ActionPlanGroup | undefined {
-    const group = this.groups().find((candidate) => candidate.id === groupId);
-    const result = this.scanResult();
-    if (!group || !result || this.skippedGroups()[group.id]) {
-      return undefined;
-    }
-    return this.createLocalPlan(group, result.items);
-  }
-
   private clearGlobalSearch(): void {
     this.globalSearchRequestId += 1;
     this.globalSearchQuery.set('');
-    this.globalSearchItemIds.set(undefined);
+    this.clearGlobalSearchItemIds();
     this.globalSearchSuggestions.set([]);
     this.globalSearchAutocompleteOpen.set(false);
     this.activeGlobalSearchSuggestionIndex.set(0);
   }
 
   private resetForScan(): void {
-    this.authState.set('idle');
-    this.scanProgress.set(undefined);
-    this.scanSnapshot.set(undefined);
-    this.scanResult.set(undefined);
+    this.authState.set(AuthState.Idle);
+    this.clearScanProgress();
+    this.clearScanSnapshot();
+    this.clearScanResult();
     this.loading.set(false);
     this.analyzing.set(false);
     this.analysisPct.set(0);
-    this.error.set(undefined);
-    this.status.set(undefined);
+    this.error.set('');
+    this.status.set('');
     this.decisions.set({});
     this.skippedGroups.set({});
     this.reveal.set(false);
@@ -1111,8 +1245,8 @@ export class WorkflowService {
     this.operations.set([]);
     this.operationGroupErrors.set({});
     this.applying.set(false);
-    this.preparedActionDraft.set(undefined);
-    this.actionExecutionStatus.set(undefined);
+    this.clearPreparedActionPlan();
+    this.clearActionExecutionStatus();
     this.applyDialogOpen.set(false);
     this.groupPlanLoading.set({});
   }
@@ -1131,9 +1265,8 @@ export class WorkflowService {
           : item.id === fallbackKeepId;
         decisions[item.id] = {
           itemId: item.id,
-          keep,
-          targetVaultId: item.vaultId,
-          deleteMode: 'archive',
+          disposition: keep ? ItemDisposition.Keep : ItemDisposition.Archive,
+          targetContainerId: item.vaultId,
           removeTags: []
         };
       }
@@ -1143,27 +1276,10 @@ export class WorkflowService {
 
   private async recoverStaleAnalysis(originalError: string): Promise<void> {
     try {
-      const previousDecisions = this.decisions();
       const result = await this.api.loadAnalysis();
-      const defaults = this.defaultDecisions(result);
-      const vaultIds = new Set(result.vaults.map((vault) => vault.id));
-      const decisions = Object.fromEntries(Object.entries(defaults).map(([itemId, fallback]) => {
-        const previous = previousDecisions[itemId];
-        if (!previous) {
-          return [itemId, fallback];
-        }
-        return [itemId, {
-          ...previous,
-          itemId,
-          targetVaultId: previous.targetVaultId && vaultIds.has(previous.targetVaultId)
-            ? previous.targetVaultId
-            : fallback.targetVaultId,
-          removeTags: [...(previous.removeTags ?? [])]
-        } satisfies ActionDraftItem];
-      }));
       this.replaceAnalysisResult(result);
-      this.decisions.set(decisions);
-      this.error.set('执行未开始：分析结果已自动同步，未执行 item 的处置意图已保留。请重新点击应用计划。');
+      this.decisions.set(this.defaultDecisions(result));
+      this.error.set('执行未开始：Item Store 已变化，旧处置计划已失效。分析结果和默认决策已重新建立，请重新确认后应用。');
     } catch (recoveryError) {
       this.error.set(`${originalError}\n自动同步失败：${messageFor(recoveryError)}`);
     }
@@ -1185,7 +1301,7 @@ export class WorkflowService {
     const scanned = this.scannedItemsForVault(vault);
     const pct = total ? Math.min(100, Math.round((scanned / total) * 100)) : 0;
     const done = this.scanDone() || (total > 0 && scanned >= total);
-    const started = scanned > 0 || this.authState() === 'authorized';
+    const started = scanned > 0 || this.authState() === AuthState.Authorized;
     return {
       id: vault.id,
       iconIndex: index,
@@ -1279,11 +1395,11 @@ export class WorkflowService {
     };
     const search = this.globalSearchQuery().trim();
     const chips: AnalysisFilterChipView[] = [
-      ...(search ? [{ key: 'search' as const, id: search, label: `搜索：${search}` }] : []),
-      ...filters.years.map((id) => ({ key: 'year' as const, id, label: labels.years.get(id) ?? id })),
-      ...filters.vaultIds.map((id) => ({ key: 'vault' as const, id, label: labels.vaultIds.get(id) ?? id })),
-      ...filters.domains.map((id) => ({ key: 'domain' as const, id, label: labels.domains.get(id) ?? id })),
-      ...filters.credentialKinds.map((id) => ({ key: 'credential' as const, id, label: labels.credentialKinds.get(id) ?? id }))
+      ...(search ? [{ key: AnalysisFilterKey.Search, id: search, label: `搜索：${search}` }] : []),
+      ...filters.years.map((id) => ({ key: AnalysisFilterKey.Year, id, label: labels.years.get(id) ?? id })),
+      ...filters.vaultIds.map((id) => ({ key: AnalysisFilterKey.Vault, id, label: labels.vaultIds.get(id) ?? id })),
+      ...filters.domains.map((id) => ({ key: AnalysisFilterKey.Domain, id, label: labels.domains.get(id) ?? id })),
+      ...filters.credentialKinds.map((id) => ({ key: AnalysisFilterKey.Credential, id, label: labels.credentialKinds.get(id) ?? id }))
     ];
 
     return {
@@ -1337,9 +1453,9 @@ export class WorkflowService {
     }
     const groups = this.groupViews();
     const optionGroups: Array<{ kind: GlobalSearchSuggestionKind; options: AnalysisFilterOptionData[] }> = [
-      { kind: "year", options: yearOptions(groups) },
-      { kind: "vault", options: vaultOptions(groups) },
-      { kind: "domain", options: domainOptions(groups) },
+      { kind: GlobalSearchSuggestionKind.Year, options: yearOptions(groups) },
+      { kind: GlobalSearchSuggestionKind.Vault, options: vaultOptions(groups) },
+      { kind: GlobalSearchSuggestionKind.Domain, options: domainOptions(groups) },
     ];
     return optionGroups.flatMap(({ kind, options }) => options
       .filter((option) => keywords.some((keyword) => normalizeLooseText(option.label).includes(keyword)))
@@ -1371,18 +1487,19 @@ export class WorkflowService {
   private toItemView(group: SimilarityGroup, item: ItemSummary, vaults: VaultSummary[], skipped: boolean): DuplicateItemView {
     const decision = this.decisions()[item.id] ?? {
       itemId: item.id,
-      keep: false,
-      targetVaultId: item.vaultId,
-      deleteMode: 'archive',
+      disposition: ItemDisposition.Archive,
+      targetContainerId: item.vaultId,
       removeTags: []
     };
     const removeAction = removeActionFromDecision(decision);
     const username = item.usernames.find(Boolean) ?? '（无 username）';
     const url = item.urls[0] || '—';
-    const credChips = credentialChips(item, Boolean(this.visibleSecretItems()[item.id]), this.revealedCredentials()[item.id]);
+    const credChips = credentialChips(item, Boolean(this.visibleSecretItems()[item.id]), this.revealedCredentials()[item.id] ?? []);
     return {
       id: item.id,
-      title: item.title,
+      title: decision.desiredTitle ?? item.title,
+      originalTitle: item.title,
+      titleChanged: Boolean(decision.desiredTitle && decision.desiredTitle !== item.title),
       username,
       url,
       category: item.category,
@@ -1390,11 +1507,11 @@ export class WorkflowService {
       updated: itemUpdatedDate(item),
       vaultId: item.vaultId,
       vaultName: item.vaultName,
-      keep: decision.keep,
-      notKeep: !decision.keep,
-      targetVault: decision.targetVaultId || item.vaultId,
+      keep: decision.disposition === ItemDisposition.Keep,
+      notKeep: decision.disposition !== ItemDisposition.Keep,
+      targetVault: decision.targetContainerId || item.vaultId,
       removeAction,
-      rowBg: decision.keep && !skipped ? 'rgba(130,170,255,0.04)' : 'transparent',
+      rowBg: decision.disposition === ItemDisposition.Keep && !skipped ? 'rgba(130,170,255,0.04)' : 'transparent',
       secretVisible: Boolean(this.visibleSecretItems()[item.id]),
       credentialSignature: credentialCompareValue(item),
       credChips,
@@ -1430,12 +1547,12 @@ export class WorkflowService {
         if (!item || !decision) {
           continue;
         }
-        if (decision.keep) {
+        if (decision.disposition === ItemDisposition.Keep) {
           stats.keep += 1;
-          if ((decision.targetVaultId || item.vaultId) !== item.vaultId) {
+          if ((decision.targetContainerId || item.vaultId) !== item.vaultId) {
             stats.move += 1;
           }
-        } else if (decision.deleteMode === 'delete') {
+        } else if (decision.disposition === ItemDisposition.Delete) {
           stats.delete += 1;
         } else {
           stats.archive += 1;
@@ -1465,15 +1582,14 @@ export class WorkflowService {
             )]
           };
         }
-        const plan = this.createLocalPlan(group, result.items);
         return {
           ...groupView,
           id: group.id,
-          plan,
-          actions: this.planActionPreviewRows(plan)
+          plan: undefined,
+          actions: []
         };
       })
-      .filter((group) => group.skipped || (group.actions.length > 0 && group.plan && group.plan.actions.some((action) => action.type !== 'keep')));
+      .filter((group) => group.skipped || this.groupOperationCount(group.id) > 0);
     return previewGroups;
   }
 
@@ -1490,7 +1606,7 @@ export class WorkflowService {
       opLabel: "跳过",
       targetLabel: "",
       detail: "",
-      tone: "skip",
+      tone: PlanPreviewTone.Skip,
       removedTags: [],
       retainedTags: [],
       color: "#78909C",
@@ -1500,51 +1616,7 @@ export class WorkflowService {
   }
 
   private countPlanOperations(groups: PreviewGroupView[]): number {
-    return groups.reduce((total, group) => {
-      const actions = group.plan?.actions ?? [];
-      return total + actions.filter((action) => action.type !== 'keep').length;
-    }, 0);
-  }
-
-  private createLocalPlan(group: SimilarityGroup, items: ItemSummary[]): ActionPlanGroup {
-    return createActionPlanGroup(group.id, this.groupDecision(group, items), items);
-  }
-
-  private planActionPreviewRows(plan: ActionPlanGroup): PlanActionPreviewView[] {
-    const result = this.scanResult();
-    if (!result) {
-      return [];
-    }
-    const itemById = new Map(result.items.map((item) => [item.id, item]));
-    return plan.actions.map((action) => describePlanAction(action, itemById.get(action.itemId), result.vaults));
-  }
-
-  private groupDecision(group: SimilarityGroup, items: ItemSummary[]): GroupDecision {
-    const itemById = new Map(items.map((item) => [item.id, item]));
-    return {
-      scanId: this.scanResult()?.scanId ?? '',
-      groupId: group.id,
-      items: group.itemIds.map((itemId) => {
-        const item = itemById.get(itemId);
-        const decision = this.decisions()[itemId];
-        return {
-          itemId,
-          keep: decision?.keep ?? false,
-          targetVaultId: decision?.targetVaultId || item?.vaultId,
-          deleteMode: decision?.deleteMode ?? 'archive',
-          removeTags: decision?.removeTags ?? []
-        };
-      })
-    };
-  }
-
-  private groupDecisionById(groupId: string): GroupDecision | undefined {
-    const result = this.scanResult();
-    const group = this.groups().find((candidate) => candidate.id === groupId);
-    if (!result || !group) {
-      return undefined;
-    }
-    return this.groupDecision(group, result.items);
+    return groups.reduce((total, group) => total + this.groupOperationCount(group.id), 0);
   }
 
   private buildOperations(groups: PreviewGroupView[]): ApplyOperationView[] {
@@ -1553,126 +1625,113 @@ export class WorkflowService {
       if (!plan) {
         return [];
       }
-      return plan.actions
-        .filter((action) => action.type !== 'keep')
-        .map((action) => this.toApplyOperation(group, action));
+      return plan.steps
+        .filter((step) => step.kind !== ActionKind.Keep)
+        .map((step) => this.toApplyOperation(group, step));
     });
   }
 
   private actionDraftForGroups(groups: PreviewGroupView[]): ActionDraft {
-    const scanId = this.scanResult()?.scanId ?? '';
+    const result = this.scanResult();
+    if (!result) {
+      throw new Error("当前分析结果不存在。");
+    }
     return {
-      scanId,
+      storeSnapshotId: result.scanId,
+      storeVersion: result.storeVersion,
       groups: groups.map((group) => {
-        const draft = this.groupDecisionById(group.id);
-        if (!draft) {
+        const similarityGroup = result.groups.find((candidate) => candidate.id === group.id);
+        if (!similarityGroup) {
           throw new Error(`找不到待执行的重复组：${ group.id }`);
         }
-        return { groupId: draft.groupId, items: draft.items };
+        return {
+          groupId: group.id,
+          items: similarityGroup.itemIds.map((itemId) => {
+            const decision = this.decisions()[itemId];
+            if (!decision) {
+              throw new Error(`找不到 item 的处置决策：${ itemId }`);
+            }
+            return { ...decision, removeTags: [...decision.removeTags] };
+          }),
+        };
       }),
     };
   }
 
   private applyActionExecutionEvent(event: ActionExecutionEvent): void {
-    this.actionExecutionStatus.set(event.status);
-    if (event.type === 'action-started' && event.action && event.groupId) {
+    this.setActionExecutionStatus(event.status);
+    if (event.type === ActionExecutionEventKind.StepStarted && event.actionId) {
       this.operations.set(this.operations().map((operation) =>
-        operation.groupId === event.groupId && operation.itemId === event.action?.itemId && operation.sourceAction === event.action.type
-          ? { ...operation, status: 'running' as ApplyStatus }
+        operation.actionId === event.actionId
+          ? { ...operation, status: ApplyStatus.Running }
           : operation
       ));
-    } else if ((event.type === 'action-completed' || event.type === 'action-failed') && event.result && event.groupId) {
-      const result = event.result;
-      this.operations.set(this.operations().map((operation) => {
-        if (operation.groupId !== event.groupId || operation.itemId !== result.itemId || operation.sourceAction !== result.action) {
-          return operation;
-        }
-        if (result.skipped) {
-          return { ...operation, status: 'skipped' as ApplyStatus, error: result.error };
-        }
-        return {
-          ...operation,
-          status: result.ok ? ('done' as ApplyStatus) : ('failed' as ApplyStatus),
-          dryRun: !event.writeEnabled,
-          error: result.error
-        };
-      }));
+    } else if ((event.type === ActionExecutionEventKind.StepCompleted || event.type === ActionExecutionEventKind.StepFailed) && event.actionId) {
+      this.operations.set(this.operations().map((operation) => operation.actionId === event.actionId
+        ? {
+            ...operation,
+            status: event.type === ActionExecutionEventKind.StepCompleted ? ApplyStatus.Done : ApplyStatus.Failed,
+            dryRun: !event.writeEnabled,
+            error: event.type === ActionExecutionEventKind.StepFailed ? event.error ?? event.message : undefined,
+          }
+        : operation));
     }
-    if (event.type === 'analysis-updated' && event.response && event.writeEnabled) {
-      this.removeCompletedGroups(event.response.completedGroupIds);
+    if (event.type === ActionExecutionEventKind.AnalysisUpdated && event.response && event.writeEnabled) {
+      this.replaceAnalysisResult(event.response.analysis);
+      this.decisions.set(this.defaultDecisions(event.response.analysis));
     }
-    if (event.type === 'stopped' || event.type === 'failed') {
-      this.skipPendingOperations(event.type === 'stopped' ? '执行已停止。' : '执行失败，未继续处理。');
+    if (event.type === ActionExecutionEventKind.Stopped || event.type === ActionExecutionEventKind.Failed) {
+      this.skipPendingOperations(event.type === ActionExecutionEventKind.Stopped ? "执行已停止。" : "执行失败，未继续处理。");
     }
-    if (event.type === 'failed') {
-      this.error.set(event.error ?? '执行失败。');
+    if (event.type === ActionExecutionEventKind.Failed) {
+      this.error.set(event.error ?? "执行失败。");
       if (event.groupId) {
-        this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? '执行失败。' });
+        this.operationGroupErrors.set({ ...this.operationGroupErrors(), [event.groupId]: event.error ?? "执行失败。" });
       }
     }
   }
 
-  private removeCompletedGroups(completedGroupIds: string[]): void {
-    if (completedGroupIds.length === 0) {
-      return;
-    }
-    const result = this.scanResult();
-    if (!result) {
-      return;
-    }
-    const completed = new Set(completedGroupIds);
-    const groups = result.groups.filter((group) => !completed.has(group.id));
-    const remainingItemIds = new Set(groups.flatMap((group) => group.itemIds));
-    this.scanResult.set({ ...result, groups });
-    this.decisions.set(Object.fromEntries(
-      Object.entries(this.decisions()).filter(([itemId]) => remainingItemIds.has(itemId))
-    ));
-  }
-
-  private toApplyOperation(group: PreviewGroupView, action: Exclude<PlanAction, { type: 'keep' }>): ApplyOperationView {
-    const item = this.itemById(action.itemId);
-    const title = item?.title || action.itemId;
+  private toApplyOperation(group: PreviewGroupView, step: ActionStepDto): ApplyOperationView {
+    const item = this.itemById(step.sourceItemId);
+    const title = item?.title || step.sourceItemId;
     const groupLabel = `${group.username} @ ${group.site}`;
-    if (action.type === 'copy-to-vault-and-archive-source') {
-      const targetName = vaultName(this.scanResult()?.vaults ?? [], action.targetVaultId);
-      return {
-        id: `op-${group.id}-${action.type}-${action.itemId}`,
-        groupId: group.id,
-        groupLabel,
-        itemId: action.itemId,
-        type: 'move',
-        sourceAction: action.type,
-        label: `迁移「${title}」：${item?.vaultName ?? action.vaultId} → ${targetName}${action.removeTags.length > 0 ? `，同时${removedTagsLabel(action.removeTags)}` : ''}`,
-        status: 'pending'
-      };
-    }
-    if (action.type === 'update-tags') {
-      return {
-        id: `op-${group.id}-${action.type}-${action.itemId}`,
-        groupId: group.id,
-        groupLabel,
-        itemId: action.itemId,
-        type: 'tags',
-        sourceAction: action.type,
-        label: `更新「${title}」：${removedTagsLabel(action.removeTags)}`,
-        status: 'pending'
-      };
-    }
+    const operationType = step.kind === ActionKind.Create
+      ? ApplyOperationType.Move
+      : step.kind === ActionKind.Update ? ApplyOperationType.Title
+        : step.kind === ActionKind.Delete ? ApplyOperationType.Delete : ApplyOperationType.Archive;
     return {
-      id: `op-${group.id}-${action.type}-${action.itemId}`,
+      id: `op-${step.actionId}`,
+      actionId: step.actionId,
       groupId: group.id,
       groupLabel,
-      itemId: action.itemId,
-      type: action.type,
-      sourceAction: action.type,
-      label: `${action.type === 'delete' ? '删除' : '归档'}「${title}」（${item?.vaultName ?? action.vaultId}）`,
-      status: 'pending'
+      itemId: step.sourceItemId,
+      type: operationType,
+      sourceAction: step.kind,
+      label: step.detail || step.label || title,
+      status: ApplyStatus.Pending,
     };
   }
 
   private skipPendingOperations(error = '前序操作失败，已跳过。'): void {
-    this.operations.set(this.operations().map((operation) => operation.status === 'pending' ? { ...operation, status: 'skipped', error } : operation));
+    this.operations.set(this.operations().map((operation) => operation.status === ApplyStatus.Pending
+      ? { ...operation, status: ApplyStatus.Skipped, error }
+      : operation));
   }
+
+  public setScanProgress(value: ScanProgress): void { this.scanProgressState.set({ value }); }
+  private clearScanProgress(): void { this.scanProgressState.set({}); }
+  private setScanSnapshot(value: ScanSnapshot): void { this.scanSnapshotState.set({ value }); }
+  private clearScanSnapshot(): void { this.scanSnapshotState.set({}); }
+  public setScanResult(value: ScanResult): void { this.scanResultState.set({ value }); }
+  private clearScanResult(): void { this.scanResultState.set({}); }
+  private setGlobalSearchItemIds(value: string[]): void { this.globalSearchItemIdsState.set({ value }); }
+  private clearGlobalSearchItemIds(): void { this.globalSearchItemIdsState.set({}); }
+  private setActionExecutionId(value: string): void { this.actionExecutionIdState.set({ value }); }
+  private clearActionExecutionId(): void { this.actionExecutionIdState.set({}); }
+  private setActionExecutionStatus(value: ActionExecutionStatus): void { this.actionExecutionStatusState.set({ value }); }
+  private clearActionExecutionStatus(): void { this.actionExecutionStatusState.set({}); }
+  private setPreparedActionPlan(value: ActionPlanDto): void { this.preparedActionPlanState.set({ value }); }
+  private clearPreparedActionPlan(): void { this.preparedActionPlanState.set({}); }
 }
 
 function emptyAnalysisFilters(): AnalysisFilterState {
@@ -1686,40 +1745,40 @@ function emptyAnalysisFilters(): AnalysisFilterState {
 
 function sectionIdForFilterKey(key: AnalysisFilterKey): AnalysisFilterSectionId {
   switch (key) {
-    case 'year':
-      return 'years';
-    case 'vault':
-      return 'vaults';
-    case 'domain':
-      return 'domains';
-    case 'credential':
-      return 'credentials';
-    case 'search':
+    case AnalysisFilterKey.Year:
+      return AnalysisFilterSectionId.Years;
+    case AnalysisFilterKey.Vault:
+      return AnalysisFilterSectionId.Vaults;
+    case AnalysisFilterKey.Domain:
+      return AnalysisFilterSectionId.Domains;
+    case AnalysisFilterKey.Credential:
+      return AnalysisFilterSectionId.Credentials;
+    case AnalysisFilterKey.Search:
       throw new Error('全局搜索不属于分类筛选。');
   }
 }
 
 function selectedFilterValues(filters: AnalysisFilterState, sectionId: AnalysisFilterSectionId): string[] {
   switch (sectionId) {
-    case 'years':
+    case AnalysisFilterSectionId.Years:
       return filters.years;
-    case 'vaults':
+    case AnalysisFilterSectionId.Vaults:
       return filters.vaultIds;
-    case 'domains':
+    case AnalysisFilterSectionId.Domains:
       return filters.domains;
-    case 'credentials':
+    case AnalysisFilterSectionId.Credentials:
       return filters.credentialKinds;
   }
 }
 
 function sectionIdForGlobalSearchKind(kind: GlobalSearchSuggestionKind): AnalysisFilterSectionId {
   switch (kind) {
-    case "year":
-      return "years";
-    case "vault":
-      return "vaults";
-    case "domain":
-      return "domains";
+    case GlobalSearchSuggestionKind.Year:
+      return AnalysisFilterSectionId.Years;
+    case GlobalSearchSuggestionKind.Vault:
+      return AnalysisFilterSectionId.Vaults;
+    case GlobalSearchSuggestionKind.Domain:
+      return AnalysisFilterSectionId.Domains;
   }
 }
 
@@ -1778,13 +1837,13 @@ function groupCredentialKinds(items: ItemSummary[]): FilterCredentialKind[] {
   const kinds = new Set<FilterCredentialKind>();
   for (const item of items) {
     if (item.hasPassword) {
-      kinds.add('password');
+      kinds.add(FilterCredentialKind.Password);
     }
     if (item.hasTotp) {
-      kinds.add('totp');
+      kinds.add(FilterCredentialKind.Totp);
     }
     if (item.hasPasskey) {
-      kinds.add('passkey');
+      kinds.add(FilterCredentialKind.Passkey);
     }
   }
   return groupCredentialKindsFromValues(Array.from(kinds));
@@ -1854,11 +1913,11 @@ function uniqueSortedStrings(values: string[]): string[] {
   return Array.from(new Set(values)).sort();
 }
 
-function readStoredAccountName(): string | undefined {
+function readStoredAccountName(): string {
   if (typeof localStorage === 'undefined') {
-    return undefined;
+    return '';
   }
-  return localStorage.getItem(accountNameStorageKey) ?? undefined;
+  return localStorage.getItem(accountNameStorageKey) ?? '';
 }
 
 function summarizeScanVaults(vaults: VaultSummary[], items: ItemSummary[]): VaultScanSummary[] {
@@ -1913,8 +1972,8 @@ function groupSite(items: ItemSummary[]): string {
   }
 }
 
-function credentialChips(item: ItemSummary, reveal: boolean, revealedFields: RevealedCredentialField[] | undefined): CredentialChipView[] {
-  if (reveal && revealedFields) {
+function credentialChips(item: ItemSummary, reveal: boolean, revealedFields: RevealedCredentialField[] = []): CredentialChipView[] {
+  if (reveal && revealedFields.length > 0) {
     return revealedFields.map((field) => credentialChip(
       field.label,
       credentialKind(field.label, field.fieldType),
@@ -1930,17 +1989,17 @@ function credentialChips(item: ItemSummary, reveal: boolean, revealedFields: Rev
       return credentialChip(field.label, kind, reveal ? '读取中…' : maskedCredentialValue(kind));
     });
 
-  if (item.hasPassword && !chips.some((chip) => chip.kind === 'password')) {
-    chips.push(credentialChip('密码', 'password', reveal ? '读取中…' : '••••••••••'));
+  if (item.hasPassword && !chips.some((chip) => chip.kind === CredentialFieldKind.Password)) {
+    chips.push(credentialChip('密码', CredentialFieldKind.Password, reveal ? '读取中…' : '••••••••••'));
   }
-  if (item.hasTotp && !chips.some((chip) => chip.kind === 'totp')) {
-    chips.push(credentialChip('一次性密码', 'totp', reveal ? '读取中…' : '••••••'));
+  if (item.hasTotp && !chips.some((chip) => chip.kind === CredentialFieldKind.Totp)) {
+    chips.push(credentialChip('一次性密码', CredentialFieldKind.Totp, reveal ? '读取中…' : '••••••'));
   }
-  if (item.hasPasskey && !chips.some((chip) => chip.kind === 'passkey')) {
-    chips.push(credentialChip('Passkey', 'passkey', '已创建'));
+  if (item.hasPasskey && !chips.some((chip) => chip.kind === CredentialFieldKind.Passkey)) {
+    chips.push(credentialChip('Passkey', CredentialFieldKind.Passkey, '已创建'));
   }
   if (chips.length === 0) {
-    chips.push(credentialChip('缺失', 'missing', '（无凭据）', true));
+    chips.push(credentialChip('缺失', CredentialFieldKind.Missing, '（无凭据）', true));
   }
   return chips;
 }
@@ -1948,18 +2007,18 @@ function credentialChips(item: ItemSummary, reveal: boolean, revealedFields: Rev
 function credentialKind(label: string, fieldType = ''): CredentialChipView['kind'] {
   const value = `${label} ${fieldType}`.toLowerCase();
   if (fieldType === 'error' || fieldType === 'empty') {
-    return 'missing';
+    return CredentialFieldKind.Missing;
   }
   if (/totp|\botp\b|one.?time|一次性|验证码/.test(value)) {
-    return 'totp';
+    return CredentialFieldKind.Totp;
   }
   if (/passkey|webauthn|sign.?in.?with/.test(value)) {
-    return 'passkey';
+    return CredentialFieldKind.Passkey;
   }
   if (/password|concealed|密码/.test(value)) {
-    return 'password';
+    return CredentialFieldKind.Password;
   }
-  return 'secret';
+  return CredentialFieldKind.Secret;
 }
 
 function credentialChip(label: string, kind: CredentialChipView['kind'], text: string, error = false): CredentialChipView {
@@ -2012,140 +2071,15 @@ function credentialCompareValue(item: ItemSummary): string {
   ].join('\u0000');
 }
 
-function describePlanAction(action: PlanAction, item: ItemSummary | undefined, vaults: VaultSummary[]): PlanActionPreviewView {
-  const title = item?.title || action.itemId;
-  const username = item?.usernames.find(Boolean) ?? '（无 username）';
-  const url = item?.urls[0] || '—';
-  const created = item?.createdAt ? item.createdAt.slice(0, 10) : '—';
-  const updated = item ? itemUpdatedDate(item) : '-';
-  const vault = item?.vaultName || vaultName(vaults, action.vaultId);
-  const removedTags = 'removeTags' in action ? action.removeTags : [];
-  const retainedTags = item?.tags.filter((tag) => !removedTags.includes(tag)) ?? [];
-  if (action.type === 'update-tags') {
-    return {
-      id: `${action.type}:${action.itemId}`,
-      itemId: action.itemId,
-      title,
-      username,
-      url,
-      created,
-      updated,
-      vaultName: vault,
-      opLabel: '标签',
-      targetLabel: `移除 ${removedTags.length} 个`,
-      detail: `保留在 ${vault}，更新标签`,
-      tone: 'tags',
-      removedTags,
-      retainedTags,
-      color: '#c792ea',
-      bg: 'rgba(199,146,234,0.1)',
-      border: 'rgba(199,146,234,0.38)'
-    };
-  }
-  if (action.type === 'keep') {
-    const targetVaultName = vaultName(vaults, action.targetVaultId);
-    const moved = action.targetVaultId !== action.vaultId;
-    return {
-      id: `${action.type}:${action.itemId}`,
-      itemId: action.itemId,
-      title,
-      username,
-      url,
-      created,
-      updated,
-      vaultName: vault,
-      opLabel: moved ? '迁移保留' : '保留',
-      targetLabel: moved ? targetVaultName : vault,
-      detail: moved ? `保留并迁移至 ${targetVaultName}` : `保留在 ${vault}`,
-      tone: moved ? 'move' : 'keep',
-      removedTags,
-      retainedTags,
-      color: moved ? '#82aaff' : '#c3e88d',
-      bg: moved ? 'rgba(130,170,255,0.1)' : 'rgba(195,232,141,0.08)',
-      border: moved ? 'rgba(130,170,255,0.36)' : 'rgba(195,232,141,0.32)'
-    };
-  }
-  if (action.type === 'copy-to-vault-and-archive-source') {
-    const targetVaultName = vaultName(vaults, action.targetVaultId);
-    return {
-      id: `${action.type}:${action.itemId}`,
-      itemId: action.itemId,
-      title,
-      username,
-      url,
-      created,
-      updated,
-      vaultName: vault,
-      opLabel: '迁移',
-      targetLabel: targetVaultName,
-      detail: `复制到 ${targetVaultName}，成功后归档原 item`,
-      tone: 'move',
-      removedTags,
-      retainedTags,
-      color: '#82aaff',
-      bg: 'rgba(130,170,255,0.1)',
-      border: 'rgba(130,170,255,0.36)'
-    };
-  }
-  if (action.type === 'delete') {
-    return {
-      id: `${action.type}:${action.itemId}`,
-      itemId: action.itemId,
-      title,
-      username,
-      url,
-      created,
-      updated,
-      vaultName: vault,
-      opLabel: '删除',
-      targetLabel: '永久删除',
-      detail: '从 1Password 永久删除，不进入归档',
-      tone: 'delete',
-      removedTags,
-      retainedTags,
-      color: '#ff5370',
-      bg: 'rgba(255,83,112,0.1)',
-      border: 'rgba(255,83,112,0.42)'
-    };
-  }
-  return {
-    id: `${action.type}:${action.itemId}`,
-    itemId: action.itemId,
-    title,
-    username,
-    url,
-    created,
-    updated,
-    vaultName: vault,
-    opLabel: '归档',
-    targetLabel: '归档',
-    detail: '移动到 1Password 归档，可恢复',
-    tone: 'archive',
-    removedTags,
-    retainedTags,
-    color: '#ffcb6b',
-    bg: 'rgba(255,203,107,0.09)',
-    border: 'rgba(255,203,107,0.34)'
-  };
-}
-
-function removedTagsLabel(tags: string[]): string {
-  return `移除标签${tags.map((tag) => `「${tag}」`).join('、')}`;
-}
-
-function itemDetailRows(item: ItemSummary): Array<{ key: 'updated' | 'created' | 'tags'; label: string; value: string }> {
-  const rows: Array<{ key: 'updated' | 'created' | 'tags'; label: string; value: string }> = [
-    { key: 'updated', label: '更新时间', value: itemUpdatedDate(item) },
-    { key: 'created', label: '创建时间', value: item.createdAt ? item.createdAt.slice(0, 10) : '—' }
+function itemDetailRows(item: ItemSummary): ItemDetailRowView[] {
+  const rows: ItemDetailRowView[] = [
+    { key: ItemDetailFieldKey.Updated, label: '更新时间', value: itemUpdatedDate(item) },
+    { key: ItemDetailFieldKey.Created, label: '创建时间', value: item.createdAt ? item.createdAt.slice(0, 10) : '—' }
   ];
   if (item.tags.length > 0) {
-    rows.push({ key: 'tags', label: '标签', value: item.tags.join(', ') });
+    rows.push({ key: ItemDetailFieldKey.Tags, label: '标签', value: item.tags.join(', ') });
   }
   return rows;
-}
-
-function vaultName(vaults: VaultSummary[], vaultId: string): string {
-  return vaults.find((vault) => vault.id === vaultId)?.name ?? vaultId;
 }
 
 function skippedGroupMap(groupIds: string[]): Record<string, boolean> {
@@ -2183,14 +2117,15 @@ function buildOperationGroups(operations: ApplyOperationRowView[], errors: Recor
   }
   return Array.from(groups, ([id, groupOperations]) => {
     const error = errors[id];
-    const status = error ? "failed" : operationGroupStatus(groupOperations);
+    const status = error ? ApplyStatus.Failed : operationGroupStatus(groupOperations);
     return {
       id,
       label: groupOperations[0]?.groupLabel ?? id,
       status,
       statusText: error ? "校验失败" : operationGroupStatusText(status, groupOperations),
       statusColor: operationGroupStatusColor(status),
-      completed: groupOperations.filter((operation) => operation.status === "done" || operation.status === "failed" || operation.status === "skipped").length,
+      completed: groupOperations.filter((operation) => operation.status === ApplyStatus.Done || operation.status === ApplyStatus.Failed ||
+        operation.status === ApplyStatus.Skipped).length,
       total: groupOperations.length,
       error,
       operations: groupOperations,
@@ -2199,45 +2134,45 @@ function buildOperationGroups(operations: ApplyOperationRowView[], errors: Recor
 }
 
 function operationGroupStatus(operations: ApplyOperationRowView[]): ApplyStatus {
-  if (operations.some((operation) => operation.status === "failed")) {
-    return "failed";
+  if (operations.some((operation) => operation.status === ApplyStatus.Failed)) {
+    return ApplyStatus.Failed;
   }
-  if (operations.some((operation) => operation.status === "running")) {
-    return "running";
+  if (operations.some((operation) => operation.status === ApplyStatus.Running)) {
+    return ApplyStatus.Running;
   }
-  if (operations.some((operation) => operation.status === "pending")) {
-    return "pending";
+  if (operations.some((operation) => operation.status === ApplyStatus.Pending)) {
+    return ApplyStatus.Pending;
   }
-  if (operations.some((operation) => operation.status === "skipped")) {
-    return "skipped";
+  if (operations.some((operation) => operation.status === ApplyStatus.Skipped)) {
+    return ApplyStatus.Skipped;
   }
-  return "done";
+  return ApplyStatus.Done;
 }
 
 function operationGroupStatusText(status: ApplyStatus, operations: ApplyOperationRowView[]): string {
-  if (status === "failed") {
+  if (status === ApplyStatus.Failed) {
     return "执行失败";
   }
-  if (status === "running") {
+  if (status === ApplyStatus.Running) {
     return "执行中";
   }
-  if (status === "pending") {
+  if (status === ApplyStatus.Pending) {
     return "等待执行";
   }
-  if (status === "skipped") {
-    return operations.every((operation) => operation.status === "skipped") ? "已跳过" : "部分跳过";
+  if (status === ApplyStatus.Skipped) {
+    return operations.every((operation) => operation.status === ApplyStatus.Skipped) ? "已跳过" : "部分跳过";
   }
   return operations.some((operation) => operation.dryRun) ? "试写完成" : "执行成功";
 }
 
 function operationGroupStatusColor(status: ApplyStatus): string {
-  if (status === "done") {
+  if (status === ApplyStatus.Done) {
     return "#C3E88D";
   }
-  if (status === "failed") {
+  if (status === ApplyStatus.Failed) {
     return "#FF5370";
   }
-  if (status === "running") {
+  if (status === ApplyStatus.Running) {
     return "#82AAFF";
   }
   return "#727272";

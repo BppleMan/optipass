@@ -3,7 +3,15 @@
 
 <section class="field-row title-row">
     <span class="field-marker title-marker" aria-hidden="true">•</span>
-    <strong>{{ currentItem.title }}</strong>
+    <input
+        type="text"
+        class="title-input"
+        [value]="currentItem.title"
+        [disabled]="currentGroup.skipped || !currentItem.keep"
+        [attr.aria-label]="'修改 ' + currentItem.originalTitle + ' 的标题'"
+        [attr.title]="currentItem.titleChanged ? '标题将在应用计划时修改' : '编辑标题'"
+        (change)="commitTitle($event)"
+    />
 </section>
 
 <section class="field-row username-row">
@@ -13,7 +21,7 @@
 
 <section class="field-row url-row">
     <span class="field-marker url-marker" aria-hidden="true">↗</span>
-    <strong>{{ currentItem.url || '—' }}</strong>
+    <strong [attr.title]="currentItem.url || null">{{ currentItem.url || '—' }}</strong>
 </section>
 
 @for (credential of credentialSlots(); track credential.kind) {
@@ -97,8 +105,8 @@
                             <div class="tag-scope-prompt">
                                 <strong>移除“{{ tag }}”</strong>
                                 <div>
-                                    <button type="button" (click)="tagScopeApplied.emit('item')">仅此 item</button>
-                                    <button type="button" (click)="tagScopeApplied.emit('group')">本组 {{ tagPrompt()?.eligibleCount }} 项</button>
+                                    <button type="button" (click)="tagScopeApplied.emit(TagRemovalScope.Item)">仅此 item</button>
+                                    <button type="button" (click)="tagScopeApplied.emit(TagRemovalScope.Group)">本组 {{ tagPrompt()?.eligibleCount }} 项</button>
                                 </div>
                             </div>
                         }

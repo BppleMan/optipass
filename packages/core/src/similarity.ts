@@ -3,6 +3,7 @@ import {
   RecommendedKeepReason,
   SimilarityGroup,
   SimilarityReason,
+  SimilarityRule,
 } from "./model.js";
 import {
   normalizeSimilarityIdentity,
@@ -105,14 +106,14 @@ function similarityReasons(
   const reasons: SimilarityReason[] = [];
   if (hasIntersection(left.accountIdentities, right.accountIdentities)) {
     reasons.push({
-      rule: "account-identity-url",
+      rule: SimilarityRule.AccountIdentityUrl,
       label: "账号身份相同且 URL 相似",
       itemIds,
     });
   }
   if (left.accountIdentities.size === 0 && right.accountIdentities.size === 0 && left.title && left.title === right.title) {
     reasons.push({
-      rule: "title-url",
+      rule: SimilarityRule.TitleUrl,
       label: "标题相同且 URL 相似",
       itemIds,
     });

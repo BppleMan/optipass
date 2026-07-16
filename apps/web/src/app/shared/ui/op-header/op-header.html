@@ -11,9 +11,9 @@
         <div
             class="account-chip"
             [class.empty]="!accountChip()"
-            [class.authorizing]="accountAuthorizationState() === 'authorizing'"
-            [class.authorized]="accountAuthorizationState() === 'authorized'"
-            [class.failed]="accountAuthorizationState() === 'failed'"
+            [class.authorizing]="accountAuthorizationState() === AuthState.Authorizing"
+            [class.authorized]="accountAuthorizationState() === AuthState.Authorized"
+            [class.failed]="accountAuthorizationState() === AuthState.Failed"
             [attr.title]="accountAuthorizationLabel()"
         >
             @if (accountChip()) {

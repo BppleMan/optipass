@@ -1,75 +1,62 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { extname, join, normalize, relative, resolve } from "node:path";
 import cors from "@fastify/cors";
-import Fastify, { FastifyInstance, FastifyRequest } from "fastify";
+import Fastify, { FastifyInstance, FastifyRequest, FastifyServerOptions } from "fastify";
 import {
-  ActionDraft,
-  ActionDraftGroup,
-  ActionPlan,
-  ActionPlanGroup,
-  createActionPlan,
-  createExecutionPlan,
-  findSimilarityGroups,
-  GroupDecision,
-  ItemSummary,
+  ActionDraft as CanonicalActionDraft,
+  ActionExecutionEventKind,
+  ActionExecutionStatus as CanonicalActionExecutionStatus,
+  ActionKind,
+  ActionPlan as CanonicalActionPlan,
+  ActionPlanDto,
+  ActionStepStatus,
+  DryRunSpeedMultiplier,
+  ExecutionMode,
+  CanonicalItem,
+  ItemDisposition,
+  ItemProvider,
   normalizeLooseText,
   normalizeUrlHost,
-  PlanAction,
   RevealedCredentialField,
   RevealCredentialsResponse,
   ScanProgress,
   ScanProgressEvent,
+  ScanMode,
+  ScanPhase,
+  ScanProgressEventType,
   ScanSnapshot,
   ScanResult,
+  StoreState,
   summarizeVaults,
-  validateDecisionItemSet
+  toActionPlanDto
 } from "@optimize-password/core";
 import { z, ZodError } from "zod";
 import { ApiConfig, AppMode } from "./config.js";
-import { createMockScanResult } from "./mock-data.js";
-
-export interface PasswordService {
-  scan(options: {
-    scanId?: string;
-    serviceAccountToken?: string;
-    accountName?: string;
-    onProgress?: (event: ScanProgressEvent) => void;
-  }): Promise<ScanSnapshot>;
-  revealCredentials(appItemId: string): Promise<RevealedCredentialField[]>;
-  archive(vaultId: string, onePasswordItemId: string): Promise<void>;
-  delete(vaultId: string, onePasswordItemId: string): Promise<void>;
-  removeTags(appItemId: string, removeTags: string[]): Promise<void>;
-  copyToVaultAndArchiveSource(appItemId: string, targetVaultId: string, removeTags?: string[]): Promise<CopyToVaultResult>;
-  listItemStates(vaultId: string): Promise<ItemStateSnapshot>;
-  clearCache(): void;
-}
+import { ActionExecutionControl, ActionExecutionEvent as CanonicalExecutionEvent } from "./action-execution-service.js";
 
 export interface CreateApiServerOptions {
   config: ApiConfig;
-  onePassword: PasswordService;
-  logger?: boolean | { level: string };
+  services: import("./item-services.js").ApplicationServices;
+  logger?: FastifyServerOptions["logger"];
   lifecycle?: ApiLifecycleOptions;
 }
 
 export interface ApiLifecycleOptions {
   shutdown?: {
     enabled: boolean;
-    onShutdown?: (reason: "requested" | "idle") => void | Promise<void>;
+    onShutdown?: (reason: ApiShutdownReason) => Promise<void>;
   };
 }
 
-type ScanMode = "live" | "mock";
-type DryRunSpeedMultiplier = 1 | 5 | 10;
+export enum ApiShutdownReason {
+  Requested = "requested",
+  Idle = "idle",
+}
+
 const permanentDeleteConfirmationPhrase = "永久删除";
 const revealExpiresInSeconds = 30;
-type DecisionBody = GroupDecision & {
-  confirmPermanentDelete?: boolean;
-  permanentDeleteConfirmationPhrase?: string;
-  confirmedDryRunKey?: string;
-  dryRun?: boolean;
-};
 
 interface ScanStartResponse {
   scanId: string;
@@ -82,39 +69,6 @@ interface ActiveScanResponse extends ScanStartResponse {
   eventCount: number;
 }
 
-export interface ItemStateSnapshot {
-  activeIds: string[];
-  archivedIds: string[];
-}
-
-export interface CopyToVaultResult {
-  createdItemId: string;
-}
-
-interface ExecuteActionResult {
-  itemId: string;
-  action: PlanAction["type"];
-  ok: boolean;
-  error?: string;
-  skipped?: boolean;
-  createdItemId?: string;
-  targetVaultId?: string;
-  dryRun?: boolean;
-}
-
-interface VerificationResult {
-  itemId?: string;
-  vaultId: string;
-  action?: PlanAction["type"];
-  ok: boolean;
-  severity: "critical" | "incomplete";
-  message: string;
-}
-
-interface ExecutionVerification {
-  ok: boolean;
-  results: VerificationResult[];
-}
 
 interface ScanJob {
   scanId: string;
@@ -127,79 +81,20 @@ interface ScanJob {
   cancelled: boolean;
 }
 
-interface ExecutionStartResponse {
-  executionId: string;
-  eventsToken: string;
-  dryRun: boolean;
-  totalOperations: number;
-}
-
-interface ExecutionProgressEvent {
-  type: "started" | "action-started" | "action" | "completed" | "failed";
-  sequence: number;
-  executionId: string;
-  dryRun: boolean;
-  totalOperations: number;
-  completedOperations: number;
-  action?: {
-    itemId: string;
-    type: string;
-  };
-  result?: ExecuteActionResult;
-  response?: Record<string, unknown>;
-  error?: string;
-}
-
-interface ExecutionJob {
-  executionId: string;
-  eventsToken: string;
-  events: ExecutionProgressEvent[];
-  subscribers: Set<(event: ExecutionProgressEvent) => void>;
-  done: boolean;
-}
-
-type ActionExecutionStatus =
-  | "running"
-  | "pause-requested"
-  | "paused"
-  | "stop-requested"
-  | "stopped"
-  | "completed"
-  | "failed";
-
-interface ActionPlanQueueEntry {
-  entryId: string;
-  groupId: string;
-  groupIndex: number;
-  actionIndex: number;
-  action: PlanAction;
-  status: "pending" | "running" | "completed" | "failed" | "cancelled";
-  result?: ExecuteActionResult;
-}
-
-interface ActionEffect {
-  groupId: string;
-  sourceItemId: string;
-  createdItemId?: string;
-  actionType: PlanAction["type"];
-  wroteToOnePassword: boolean;
-  succeeded: boolean;
-}
 
 interface ActionExecutionEvent {
-  type: string;
+  type: ActionExecutionEventKind;
   sequence: number;
   executionId: string;
-  status: ActionExecutionStatus;
+  status: CanonicalActionExecutionStatus;
   writeEnabled: boolean;
   totalGroups: number;
   totalOperations: number;
   completedOperations: number;
   groupId?: string;
-  entryId?: string;
-  action?: { itemId: string; type: PlanAction["type"] };
-  result?: ExecuteActionResult;
-  progress?: ScanProgress;
+  actionId?: string;
+  stepStatus?: ActionStepStatus;
+  message?: string;
   response?: Record<string, unknown>;
   error?: string;
 }
@@ -209,27 +104,45 @@ interface ActionExecutionJob {
   tabId: string;
   eventsToken: string;
   dryRunSpeedMultiplier: DryRunSpeedMultiplier;
-  draft: ActionDraft;
-  plan: ActionPlan;
-  queue: ActionPlanQueueEntry[];
-  cursor: number;
-  status: ActionExecutionStatus;
-  pauseRequested: boolean;
-  stopRequested: boolean;
-  runningAction: boolean;
-  results: ExecuteActionResult[];
-  effects: ActionEffect[];
-  completedGroupIds: Set<string>;
+  mode: ExecutionMode;
+  draft: CanonicalActionDraft;
+  plan: CanonicalActionPlan;
+  planDto: ActionPlanDto;
+  status: CanonicalActionExecutionStatus;
+  control: ActionExecutionControl;
+  completedOperations: number;
   events: ActionExecutionEvent[];
   subscribers: Set<(event: ActionExecutionEvent) => void>;
-  resumeWaiters: Set<() => void>;
   done: boolean;
 }
 
 interface TabAnalysisState {
   analysis?: ScanResult;
-  dryRunKey?: string;
   skippedGroups: string[];
+}
+
+interface ApiRuntimeState {
+  scan?: ScanSnapshot;
+  accountName?: string;
+  mutationScanId?: string;
+  idleTimer?: NodeJS.Timeout;
+}
+
+interface TabAnalysisLookup {
+  state?: TabAnalysisState;
+}
+
+interface CsvScanSource {
+  fileName?: string;
+  content?: string;
+}
+
+interface LiveScanSource {
+  accountName?: string;
+}
+
+interface StaticFileLookup {
+  path?: string;
 }
 
 interface AnalysisResultResponse extends ScanResult {
@@ -240,19 +153,20 @@ interface ItemSearchResponse {
   itemIds: string[];
 }
 
+interface CachedActionPlan {
+  tabId: string;
+  plan: CanonicalActionPlan;
+}
+
 export async function createApiServer(options: CreateApiServerOptions): Promise<FastifyInstance> {
-  const { config, onePassword } = options;
+  const { config, services } = options;
   const mode = sessionMode(config);
   const canShutdown = Boolean(options.lifecycle?.shutdown?.enabled);
   let enableMutations = config.enableMutations;
-  let latestScan: ScanSnapshot | undefined;
-  let latestScanMode: ScanMode | undefined;
-  let latestScanAccountName: string | undefined;
-  let activeMutationScanId: string | undefined;
-  let idleTimer: NodeJS.Timeout | undefined;
+  const runtime: ApiRuntimeState = {};
   const scanJobs = new Map<string, ScanJob>();
-  const executionJobs = new Map<string, ExecutionJob>();
   const actionExecutionJobs = new Map<string, ActionExecutionJob>();
+  const actionPlans = new Map<string, CachedActionPlan>();
   const tabStates = new Map<string, TabAnalysisState>();
 
   function tabStateFor(request: FastifyRequest): TabAnalysisState {
@@ -265,11 +179,12 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     return state;
   }
 
-  function optionalTabAnalysisState(request: FastifyRequest): TabAnalysisState | undefined {
-    return tabStates.get(tabIdFor(request));
+  function optionalTabAnalysisState(request: FastifyRequest): TabAnalysisLookup {
+    return { state: tabStates.get(tabIdFor(request)) };
   }
 
   const server = Fastify({
+    bodyLimit: 5_500_000,
     logger: options.logger ?? {
       level: process.env.LOG_LEVEL || "info"
     }
@@ -319,7 +234,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const token = request.headers["x-session-token"];
-    if (token === config.sessionToken || isAuthorizedEventStream(request.url, scanJobs, executionJobs, actionExecutionJobs)) {
+    if (token === config.sessionToken || isAuthorizedEventStream(request.url, scanJobs, actionExecutionJobs)) {
       return;
     }
 
@@ -331,13 +246,13 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       token: config.sessionToken,
       mode,
       accountName: config.accountName,
-      resumeAccountName: latestScanAccountName,
+      resumeAccountName: runtime.accountName,
       apiBaseUrl: `http://${config.host}:${config.port}`,
       enableMutations,
       hasServiceAccountToken: Boolean(config.serviceAccountToken),
       supportsDesktopAuth: true,
-      idleShutdownMs: config.idleShutdownMs ?? null,
-      capabilities: sessionCapabilities(mode, canShutdown, Boolean(config.webDistDir), config.idleShutdownMs)
+      idleShutdownMs: config.idleShutdownMs ?? 0,
+      capabilities: sessionCapabilities(mode, canShutdown, Boolean(config.webDistDir), config.idleShutdownMs ?? 0)
     };
   }
 
@@ -353,7 +268,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
   server.post("/api/session/heartbeat", async () => ({
     ok: true,
-    idleShutdownMs: config.idleShutdownMs ?? null
+    idleShutdownMs: config.idleShutdownMs ?? 0
   }));
 
   server.post("/api/session/shutdown", async (_request, reply) => {
@@ -367,55 +282,50 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       });
     }
 
-    scheduleShutdown("requested");
+    scheduleShutdown(ApiShutdownReason.Requested);
     return { ok: true };
   });
 
   server.get("/api/scan", async () => {
-    if (!latestScan) {
+    if (!runtime.scan) {
       throw new ClientInputError("还没有扫描结果，请先运行一次扫描。");
     }
-    return redactScanSnapshotForClient(latestScan);
+    return redactScanSnapshotForClient(runtime.scan);
   });
 
   server.post("/api/items/search", async (request): Promise<ItemSearchResponse> => {
     const body = itemSearchBodySchema.parse(request.body);
-    if (!latestScan) {
+    const store = services.itemRepository.getStore();
+    if (store.getState() === StoreState.Empty) {
       throw new ClientInputError("还没有扫描结果，请先运行一次扫描。");
     }
     const searchableItemIds = new Set(body.itemIds);
-    return buildItemSearchResponse(latestScan.items.filter((item) => searchableItemIds.has(item.id)), body.keywords);
+    return buildItemSearchResponse(store.listActive().filter((item) => searchableItemIds.has(item.id)), body.keywords);
   });
 
   server.get("/api/analysis", async (request) => {
-    const state = optionalTabAnalysisState(request);
-    if (!state?.analysis) {
+    const lookup = optionalTabAnalysisState(request);
+    if (!lookup.state?.analysis) {
       throw new ClientInputError("还没有分析结果，请先完成扫描并手动运行分析。");
     }
-    return analysisResultResponse(state, currentAnalysisForGlobalScan(state.analysis, latestScan));
+    return analysisResultResponse(lookup.state, currentAnalysisForGlobalScan(lookup.state.analysis, runtime));
   });
 
   server.post("/api/scan/clear", async (request, reply) => {
-    if (activeMutationScanId) {
+    if (runtime.mutationScanId) {
       return reply.code(409).send({
         error: "冲突",
         message: "当前已有执行任务正在运行，请等待完成后再清空扫描结果。"
       });
     }
 
-    latestScan = undefined;
-    latestScanMode = undefined;
-    latestScanAccountName = undefined;
-    tabStates.delete(tabIdFor(request));
-    cancelScanJobs(scanJobs);
-    scanJobs.clear();
-    onePassword.clearCache();
+    resetGlobalScanState();
 
     return { ok: true };
   });
 
-  server.post("/api/scan", async (request, reply): Promise<ScanStartResponse | unknown> => {
-    if (activeMutationScanId || hasActiveScanJob()) {
+  server.post("/api/scan", async (request, reply) => {
+    if (runtime.mutationScanId || hasActiveScanJob() || hasActiveActionExecution()) {
       return reply.code(409).send({
         error: "冲突",
         message: "当前已有执行任务正在运行，请等待完成后再重新扫描。"
@@ -423,25 +333,31 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     }
 
     const body = scanBodySchema.parse(request.body ?? {});
-    const scanId = createScanId();
-    resetTabAnalysisState(tabStateFor(request));
-
-    const job = createScanJob(scanId, body.mode);
-    scanJobs.set(scanId, job);
-
-    if (body.mode === "mock") {
-      void runMockScanJob(job);
-      return { scanId, mode: body.mode, progress: job.progress, eventsToken: job.eventsToken };
-    }
-
+    const provider = body.provider ?? providerForScanMode(body.mode);
+    const scanMode = scanModeForProvider(provider);
     const accountName = body.accountName || config.accountName;
-    if (!config.serviceAccountToken && !accountName) {
-      scanJobs.delete(scanId);
+    if (provider === ItemProvider.OnePassword && !config.serviceAccountToken && !accountName) {
       throw new ClientInputError("官方 1Password SDK 的 Desktop App 授权需要账户名或 account_uuid 来定位账户。它不是密码或 token；请在页面顶部填写，或用 OP_ACCOUNT_NAME 设置默认值。");
     }
 
-    void runLiveScanJob(job, accountName);
-    return { scanId, mode: body.mode, progress: job.progress, eventsToken: job.eventsToken };
+    resetGlobalScanState();
+    const scanId = createScanId();
+
+    const job = createScanJob(scanId, scanMode);
+    scanJobs.set(scanId, job);
+
+    if (provider === ItemProvider.Mock) {
+      void runMockScanJob(job);
+      return { scanId, mode: scanMode, progress: job.progress, eventsToken: job.eventsToken };
+    }
+
+    if (provider === ItemProvider.Csv) {
+      void runCsvScanJob(job, { fileName: body.fileName, content: body.csvContent });
+      return { scanId, mode: scanMode, progress: job.progress, eventsToken: job.eventsToken };
+    }
+
+    void runLiveScanJob(job, { accountName });
+    return { scanId, mode: scanMode, progress: job.progress, eventsToken: job.eventsToken };
   });
 
   server.get("/api/scan/active", async (): Promise<ActiveScanResponse> => {
@@ -508,7 +424,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         return;
       }
       reply.raw.write(toSseMessage(event));
-      if (event.type === "completed" || event.type === "failed") {
+      if (event.type === ScanProgressEventType.Completed || event.type === ScanProgressEventType.Failed) {
         reply.raw.end();
         cleanup();
       }
@@ -521,10 +437,9 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
   server.post("/api/analyze", async (request) => {
     const body = analyzeBodySchema.parse(request.body ?? {});
-    const scan = currentScanSnapshotFor(body.scanId, latestScan);
+    currentScanSnapshotFor(body.scanId, runtime);
     const state = tabStateFor(request);
-    state.analysis = analyzeScan(scan);
-    state.dryRunKey = undefined;
+    state.analysis = services.workspaces.analyze(tabIdFor(request), services.itemRepository.getStore()).analysis;
     state.skippedGroups = [];
     return analysisResultResponse(state, state.analysis);
   });
@@ -532,14 +447,12 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/items/:itemId/reveal", async (request): Promise<RevealCredentialsResponse> => {
     const params = itemParamsSchema.parse(request.params);
     const body = revealBodySchema.parse(request.body ?? {});
-    const scan = currentScanSnapshotFor(body.scanId, latestScan);
+    const scan = currentScanSnapshotFor(body.scanId, runtime);
     if (!scan.items.some((item) => item.id === params.itemId)) {
       throw new ClientInputError(`找不到项目：${params.itemId}`);
     }
 
-    const fields = latestScanMode === "mock"
-      ? mockRevealCredentials(params.itemId)
-      : await onePassword.revealCredentials(params.itemId);
+    const fields = canonicalRevealCredentials(params.itemId, services);
 
     return {
       scanId: scan.scanId,
@@ -550,16 +463,23 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   });
 
   server.post("/api/plan", async (request) => {
-    const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
+    const draft = actionDraftSchema.parse(request.body) as CanonicalActionDraft;
     const state = tabStateFor(request);
-    currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
-    assertGroupIsNotSkipped(state, decision.groupId);
-    const plan = createPlanFromLatestScan(decision, state.analysis);
-    return plan;
+    const analysis = currentAnalysisFor(draft.storeSnapshotId, state);
+    for (const group of draft.groups) {
+      assertGroupIsNotSkipped(state, group.groupId);
+    }
+    const plan = await services.planning.createPlan(draft, analysis.groups);
+    const tabId = tabIdFor(request);
+    for (const [planId, cached] of actionPlans) {
+      if (cached.tabId === tabId) actionPlans.delete(planId);
+    }
+    actionPlans.set(plan.planId, { tabId, plan });
+    return toClientActionPlan(plan, services);
   });
 
   server.post("/api/groups/:groupId/skip", async (request, reply) => {
-    if (activeMutationScanId) {
+    if (runtime.mutationScanId) {
       return reply.code(409).send({
         error: "冲突",
         message: "当前已有执行任务正在运行，请等待完成后再跳过重复组。"
@@ -569,7 +489,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     const params = groupParamsSchema.parse(request.params);
     const body = skipGroupBodySchema.parse(request.body ?? {});
     const state = tabStateFor(request);
-    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
+    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state), runtime);
     const skippedGroup = scan.groups.find((group) => group.id === params.groupId);
     if (!skippedGroup) {
       throw new ClientInputError(`找不到重复组：${params.groupId}`);
@@ -578,7 +498,6 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (!state.skippedGroups.includes(params.groupId)) {
       state.skippedGroups.push(params.groupId);
     }
-    state.dryRunKey = undefined;
 
     return {
       skippedGroupId: params.groupId,
@@ -588,7 +507,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   });
 
   server.post("/api/groups/:groupId/restore", async (request, reply) => {
-    if (activeMutationScanId) {
+    if (runtime.mutationScanId) {
       return reply.code(409).send({
         error: "冲突",
         message: "当前已有执行任务正在运行，请等待完成后再取消跳过标记。"
@@ -598,13 +517,12 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     const params = groupParamsSchema.parse(request.params);
     const body = skipGroupBodySchema.parse(request.body ?? {});
     const state = tabStateFor(request);
-    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
+    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state), runtime);
     if (!state.skippedGroups.includes(params.groupId)) {
       throw new ClientInputError(`该重复组未被标记跳过：${params.groupId}`);
     }
 
     state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== params.groupId);
-    state.dryRunKey = undefined;
     return {
       skippedGroupId: params.groupId,
       restorableSkippedGroupCount: state.skippedGroups.length,
@@ -613,7 +531,7 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   });
 
   server.post("/api/groups/restore-skipped", async (request, reply) => {
-    if (activeMutationScanId) {
+    if (runtime.mutationScanId) {
       return reply.code(409).send({
         error: "冲突",
         message: "当前已有执行任务正在运行，请等待完成后再恢复跳过的重复组。"
@@ -622,12 +540,11 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 
     const body = restoreSkippedBodySchema.parse(request.body ?? {});
     const state = tabStateFor(request);
-    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state.analysis), latestScan);
+    const scan = currentAnalysisForGlobalScan(currentAnalysisFor(body.scanId, state), runtime);
     const restoredGroupId = state.skippedGroups.pop();
     if (!restoredGroupId) {
       throw new ClientInputError("没有可恢复的已跳过重复组。");
     }
-    state.dryRunKey = undefined;
 
     return {
       restoredGroupId,
@@ -639,25 +556,41 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/action-executions/start", async (request, reply) => {
     const body = actionExecutionStartSchema.parse(request.body);
     const state = tabStateFor(request);
-    const analysis = currentAnalysisForGlobalScan(currentAnalysisFor(body.draft.scanId, state.analysis), latestScan);
-    if (activeMutationScanId || hasActiveScanJob() || activeActionExecution()) {
+    const cached = actionPlans.get(body.planId);
+    if (!cached || cached.tabId !== tabIdFor(request) || cached.plan.planHash !== body.planHash) {
+      throw new ClientInputError("ActionPlan 不存在、已失效或不属于当前 tab，请重新生成计划。");
+    }
+    const plan = cached.plan;
+    currentAnalysisFor(plan.storeSnapshotId, state);
+    for (const group of plan.groups) {
+      assertGroupIsNotSkipped(state, group.groupId);
+    }
+    const store = services.itemRepository.getStore();
+    if (store.getState() !== StoreState.Ready || store.getSnapshotId() !== plan.storeSnapshotId ||
+      store.getVersion() !== plan.storeVersion) {
+      actionPlans.delete(plan.planId);
+      throw new ClientInputError("ActionPlan 对应的 Item Store 已发生变化，请重新生成计划。");
+    }
+    if (runtime.mutationScanId || hasActiveScanJob() || hasActiveActionExecution()) {
       return reply.code(409).send({ error: "冲突", message: "当前已有扫描或执行任务正在运行。" });
     }
 
-    const writeEnabled = latestScanMode !== "mock" && enableMutations;
-    const plan = createActionPlan(body.draft, analysis, writeEnabled);
-    const targetVaultBlockers = body.draft.groups.flatMap((group) => validateTargetVaults(group, analysis));
-    plan.blockers = Array.from(new Set([...plan.blockers, ...targetVaultBlockers]));
     if (plan.blockers.length > 0) {
-      return reply.code(422).send({ error: "计划不可执行", message: plan.blockers.join("\n"), plan });
+      return reply.code(422).send({ error: "计划不可执行", message: plan.blockers.join("\n"), plan: toClientActionPlan(plan, services) });
     }
     if (plan.requiresExplicitDeleteConfirmation && body.permanentDeleteConfirmationPhrase !== permanentDeleteConfirmationPhrase) {
       return reply.code(422).send({ error: "需要确认", message: `永久删除需要输入“${permanentDeleteConfirmationPhrase}”确认。` });
     }
 
-    const job = createActionExecutionJob(randomUUID(), tabIdFor(request), body.draft, plan, body.dryRunSpeedMultiplier);
+    const mode = enableMutations ? ExecutionMode.Real : ExecutionMode.DryRun;
+    if (mode === ExecutionMode.Real && !realExecutionSupported(plan, services)) {
+      return reply.code(422).send({ error: "计划不可执行", message: "当前扫描源不支持真实写回。", plan: toClientActionPlan(plan, services) });
+    }
+    const draft = draftFromPlan(plan);
+    const job = createActionExecutionJob(randomUUID(), tabIdFor(request), draft, plan, body.dryRunSpeedMultiplier, mode, services);
     actionExecutionJobs.set(job.executionId, job);
-    activeMutationScanId = body.draft.scanId;
+    actionPlans.delete(plan.planId);
+    runtime.mutationScanId = plan.storeSnapshotId;
     void runActionExecution(job, state);
     return actionExecutionSnapshot(job, true);
   });
@@ -673,12 +606,10 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     if (terminalActionExecution(job.status)) {
       return reply.code(409).send({ error: "任务已结束", message: "已结束的执行任务不能暂停。" });
     }
-    if (job.status !== "paused" && !job.pauseRequested) {
-      job.pauseRequested = true;
-      job.status = "pause-requested";
-      if (!job.runningAction) {
-        enterPaused(job);
-      }
+    if (job.status !== CanonicalActionExecutionStatus.Paused) {
+      job.control.pause();
+      job.status = CanonicalActionExecutionStatus.Paused;
+      emitActionExecutionEvent(job, { type: ActionExecutionEventKind.Paused, message: "执行已暂停。" });
     }
     return actionExecutionSnapshot(job);
   });
@@ -686,31 +617,22 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
   server.post("/api/action-executions/:executionId/resume", async (request, reply) => {
     const params = actionExecutionParamsSchema.parse(request.params);
     const job = actionExecutionFor(params.executionId);
-    if (job.status !== "paused") {
+    if (job.status !== CanonicalActionExecutionStatus.Paused) {
       return reply.code(409).send({ error: "无法继续", message: "只有已暂停的执行任务可以继续。" });
     }
-    job.pauseRequested = false;
-    job.status = "running";
-    emitActionExecutionEvent(job, { type: "resumed" });
-    for (const resume of job.resumeWaiters) {
-      resume();
-    }
-    job.resumeWaiters.clear();
+    job.control.resume();
+    job.status = CanonicalActionExecutionStatus.Running;
+    emitActionExecutionEvent(job, { type: ActionExecutionEventKind.Resumed, message: "继续执行。" });
     return actionExecutionSnapshot(job);
   });
 
   server.post("/api/action-executions/:executionId/stop", async (request) => {
     const params = actionExecutionParamsSchema.parse(request.params);
     const job = actionExecutionFor(params.executionId);
-    if (!terminalActionExecution(job.status) && !job.stopRequested) {
-      job.stopRequested = true;
-      job.pauseRequested = false;
-      job.status = "stop-requested";
-      emitActionExecutionEvent(job, { type: "stop-requested" });
-      for (const resume of job.resumeWaiters) {
-        resume();
-      }
-      job.resumeWaiters.clear();
+    if (!terminalActionExecution(job.status) && !job.control.isStopRequested()) {
+      job.control.stop();
+      job.status = CanonicalActionExecutionStatus.StopRequested;
+      emitActionExecutionEvent(job, { type: ActionExecutionEventKind.StopRequested, message: "正在停止执行。" });
     }
     return actionExecutionSnapshot(job);
   });
@@ -749,7 +671,8 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
         return;
       }
       reply.raw.write(toSseMessage(event));
-      if (event.type === "stopped" || event.type === "completed" || event.type === "failed") {
+      if (event.type === ActionExecutionEventKind.Stopped || event.type === ActionExecutionEventKind.Completed ||
+        event.type === ActionExecutionEventKind.Failed) {
         reply.raw.end();
         cleanup();
       }
@@ -758,544 +681,78 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     request.raw.on("close", cleanup);
     reply.raw.on("close", cleanup);
   });
-
-  server.post("/api/execute/start", async (request, reply): Promise<ExecutionStartResponse | unknown> => {
-    const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
-    const state = tabStateFor(request);
-    currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
-    assertGroupIsNotSkipped(state, decision.groupId);
-    const plan = createPlanFromLatestScan(decision, state.analysis);
-
-    if (activeMutationScanId) {
-      return reply.code(409).send({
-        error: "冲突",
-        message: "当前已有执行任务正在运行，请等待完成后再继续。"
-      });
-    }
-    if (hasActiveScanJob()) {
-      return reply.code(409).send({
-        error: "冲突",
-        message: "当前仍有扫描任务运行中，请等待扫描完成并重新分析后再执行。"
-      });
-    }
-
-    const executionId = randomUUID();
-    const dryRun = latestScanMode === "mock" || !enableMutations;
-    const job = createExecutionJob(executionId);
-    executionJobs.set(executionId, job);
-    activeMutationScanId = decision.scanId;
-    void runExecutionJob(job, state, decision, plan, dryRun);
-
-    return {
-      executionId,
-      eventsToken: job.eventsToken,
-      dryRun,
-      totalOperations: plan.actions.filter((action) => action.type !== "keep").length
-    };
-  });
-
-  server.get("/api/execute/events", async (request, reply) => {
-    const query = executionEventsQuerySchema.parse(request.query ?? {});
-    const job = executionJobs.get(query.executionId);
-    if (!job || job.eventsToken !== query.eventsToken) {
-      throw new ClientInputError("执行事件令牌无效，请重新开始应用计划。");
-    }
-
-    reply.hijack();
-    reply.raw.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-store",
-      "connection": "keep-alive",
-      "x-content-type-options": "nosniff",
-      "x-frame-options": "DENY",
-      "referrer-policy": "no-referrer",
-      "content-security-policy": securityPolicy(),
-      ...corsHeadersFor(request.headers.origin, config.webOrigins)
-    });
-
-    const eventOffset = Math.max(query.after, lastEventSequence(request.headers["last-event-id"]));
-    for (const event of job.events.slice(eventOffset)) {
-      reply.raw.write(toSseMessage(event));
-    }
-
-    if (job.done) {
-      reply.raw.end();
-      return;
-    }
-
-    const keepAlive = setInterval(() => {
-      if (!reply.raw.destroyed) {
-        reply.raw.write(": keep-alive\n\n");
-      }
-    }, 15_000);
-    keepAlive.unref();
-
-    const cleanup = (): void => {
-      clearInterval(keepAlive);
-      job.subscribers.delete(subscriber);
-    };
-    const subscriber = (event: ExecutionProgressEvent): void => {
-      if (reply.raw.destroyed) {
-        cleanup();
-        return;
-      }
-      reply.raw.write(toSseMessage(event));
-      if (event.type === "completed" || event.type === "failed") {
-        reply.raw.end();
-        cleanup();
-      }
-    };
-
-    job.subscribers.add(subscriber);
-    request.raw.on("close", cleanup);
-    reply.raw.on("close", cleanup);
-  });
-
-  server.post("/api/execute", async (request) => {
-    const decision = decisionSchema.parse(request.body) satisfies DecisionBody;
-    const state = tabStateFor(request);
-    currentAnalysisForGlobalScan(currentAnalysisFor(decision.scanId, state.analysis), latestScan);
-    assertGroupIsNotSkipped(state, decision.groupId);
-    const plan = createPlanFromLatestScan(decision, state.analysis);
-
-    if (plan.blockers.length > 0) {
-      return { plan, results: [], blocked: true };
-    }
-    if (decision.dryRun || latestScanMode === "mock" || !enableMutations) {
-      const shouldAdvanceMockScan = !decision.dryRun && latestScanMode === "mock";
-      if (shouldAdvanceMockScan) {
-        state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
-        state.dryRunKey = undefined;
-        state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== decision.groupId);
-      } else if (decision.dryRun || latestScanMode === "live") {
-        state.dryRunKey = dryRunKeyFor(decision, plan.actions);
-      }
-
-      return {
-        plan,
-        results: plan.actions.map((action) => ({
-          itemId: action.itemId,
-          action: action.type,
-          ok: true,
-          dryRun: true
-        })),
-        dryRun: true,
-        dryRunKey: decision.dryRun || (!enableMutations && latestScanMode === "live") ? state.dryRunKey : undefined,
-        completedGroupId: shouldAdvanceMockScan ? decision.groupId : undefined,
-        scan: shouldAdvanceMockScan && state.analysis ? analysisResultResponse(state, state.analysis) : undefined
-      };
-    }
-
-    const requiredDryRunKey = dryRunKeyFor(decision, plan.actions);
-    if (decision.confirmedDryRunKey !== requiredDryRunKey || state.dryRunKey !== requiredDryRunKey) {
-      return {
-        plan,
-        results: [],
-        blocked: true,
-        error: "执行真实变更前，请先成功试运行当前计划。"
-      };
-    }
-
-    if (
-      plan.requiresExplicitDeleteConfirmation &&
-      decision.permanentDeleteConfirmationPhrase !== permanentDeleteConfirmationPhrase
-    ) {
-      return {
-        plan,
-        results: [],
-        blocked: true,
-        error: `永久删除需要输入“${permanentDeleteConfirmationPhrase}”确认。`
-      };
-    }
-
-    if (activeMutationScanId) {
-      return {
-        plan,
-        results: [],
-        blocked: true,
-        error: "当前已有执行任务正在运行，请等待完成后重新扫描再继续。"
-      };
-    }
-    if (hasActiveScanJob()) {
-      return {
-        plan,
-        results: [],
-        blocked: true,
-        error: "当前仍有扫描任务运行中，请等待扫描完成并重新分析后再执行真实变更。"
-      };
-    }
-
-    activeMutationScanId = decision.scanId;
-    try {
-      const involvedVaultIds = planAffectedVaultIds(plan.actions);
-      const beforeStates = await snapshotVaultStates(involvedVaultIds, onePassword);
-      const results = await executePlanActions(plan.actions, state.analysis!, onePassword);
-      const hasFailure = results.some((result) => !result.ok);
-      const hasMutation = results.some((result) => result.ok && result.action !== "keep");
-      if (hasFailure) {
-        latestScan = undefined;
-        latestScanMode = undefined;
-        latestScanAccountName = undefined;
-        resetTabAnalysisState(state);
-        return { plan, results, scanInvalidated: true };
-      }
-
-      const verification = await verifyExecutedPlan(plan.actions, state.analysis!, results, beforeStates, involvedVaultIds, onePassword);
-      if (!verification.ok) {
-        latestScan = undefined;
-        latestScanMode = undefined;
-        latestScanAccountName = undefined;
-        resetTabAnalysisState(state);
-        return { plan, results, verification, scanInvalidated: true };
-      }
-
-      state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
-      state.dryRunKey = undefined;
-      state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== decision.groupId);
-      return {
-        plan,
-        results,
-        verification,
-        completedGroupId: decision.groupId,
-        scan: analysisResultResponse(state, state.analysis),
-        scanInvalidated: false,
-        mutated: hasMutation
-      };
-    } finally {
-      activeMutationScanId = undefined;
-    }
-  });
-
-  async function runExecutionJob(
-    job: ExecutionJob,
-    state: TabAnalysisState,
-    decision: DecisionBody,
-    plan: ReturnType<typeof createPlanFromLatestScan>,
-    dryRun: boolean
-  ): Promise<void> {
-    const totalOperations = plan.actions.filter((action) => action.type !== "keep").length;
-    let completedOperations = 0;
-    const emitActionStarted = (action: PlanAction): void => {
-      if (action.type === "keep") {
-        return;
-      }
-      emitExecutionEvent(job, {
-        type: "action-started",
-        executionId: job.executionId,
-        dryRun,
-        totalOperations,
-        completedOperations,
-        action: {
-          itemId: action.itemId,
-          type: action.type
-        }
-      });
-    };
-    const emitAction = (result: ExecuteActionResult): void => {
-      if (result.action === "keep") {
-        return;
-      }
-      completedOperations += 1;
-      emitExecutionEvent(job, {
-        type: "action",
-        executionId: job.executionId,
-        dryRun,
-        totalOperations,
-        completedOperations,
-        result
-      });
-    };
-
-    emitExecutionEvent(job, {
-      type: "started",
-      executionId: job.executionId,
-      dryRun,
-      totalOperations,
-      completedOperations
-    });
-
-    try {
-      if (plan.blockers.length > 0) {
-        emitExecutionEvent(job, {
-          type: "completed",
-          executionId: job.executionId,
-          dryRun,
-          totalOperations,
-          completedOperations,
-          response: { plan, results: [], blocked: true }
-        });
-        return;
-      }
-
-      if (dryRun) {
-        const results = plan.actions.map((action) => ({
-          itemId: action.itemId,
-          action: action.type,
-          ok: true,
-          dryRun: true
-        }));
-        for (let index = 0; index < results.length; index += 1) {
-          emitActionStarted(plan.actions[index]);
-          const result = results[index];
-          emitAction(result);
-        }
-        emitExecutionEvent(job, {
-          type: "completed",
-          executionId: job.executionId,
-          dryRun,
-          totalOperations,
-          completedOperations,
-          response: { plan, results, dryRun: true }
-        });
-        return;
-      }
-
-      if (
-        plan.requiresExplicitDeleteConfirmation &&
-        decision.permanentDeleteConfirmationPhrase !== permanentDeleteConfirmationPhrase
-      ) {
-        emitExecutionEvent(job, {
-          type: "completed",
-          executionId: job.executionId,
-          dryRun,
-          totalOperations,
-          completedOperations,
-          response: {
-            plan,
-            results: [],
-            blocked: true,
-            error: `永久删除需要输入“${permanentDeleteConfirmationPhrase}”确认。`
-          }
-        });
-        return;
-      }
-
-      const involvedVaultIds = planAffectedVaultIds(plan.actions);
-      const beforeStates = await snapshotVaultStates(involvedVaultIds, onePassword);
-      const results = await executePlanActions(plan.actions, state.analysis!, onePassword, emitAction, emitActionStarted);
-      const hasFailure = results.some((result) => !result.ok);
-      const hasMutation = results.some((result) => result.ok && result.action !== "keep");
-      if (hasFailure) {
-        latestScan = undefined;
-        latestScanMode = undefined;
-        latestScanAccountName = undefined;
-        resetTabAnalysisState(state);
-        emitExecutionEvent(job, {
-          type: "completed",
-          executionId: job.executionId,
-          dryRun,
-          totalOperations,
-          completedOperations,
-          response: { plan, results, scanInvalidated: true }
-        });
-        return;
-      }
-
-      const verification = await verifyExecutedPlan(plan.actions, state.analysis!, results, beforeStates, involvedVaultIds, onePassword);
-      if (!verification.ok) {
-        latestScan = undefined;
-        latestScanMode = undefined;
-        latestScanAccountName = undefined;
-        resetTabAnalysisState(state);
-        emitExecutionEvent(job, {
-          type: "completed",
-          executionId: job.executionId,
-          dryRun,
-          totalOperations,
-          completedOperations,
-          response: { plan, results, verification, scanInvalidated: true }
-        });
-        return;
-      }
-
-      state.analysis = removeCompletedGroup(state.analysis!, decision.groupId);
-      state.dryRunKey = undefined;
-      state.skippedGroups = state.skippedGroups.filter((groupId) => groupId !== decision.groupId);
-      emitExecutionEvent(job, {
-        type: "completed",
-        executionId: job.executionId,
-        dryRun,
-        totalOperations,
-        completedOperations,
-        response: {
-          plan,
-          results,
-          verification,
-          completedGroupId: decision.groupId,
-          scan: analysisResultResponse(state, state.analysis),
-          scanInvalidated: false,
-          mutated: hasMutation
-        }
-      });
-    } catch (error) {
-      emitExecutionEvent(job, {
-        type: "failed",
-        executionId: job.executionId,
-        dryRun,
-        totalOperations,
-        completedOperations,
-        error: errorMessage(error)
-      });
-    } finally {
-      activeMutationScanId = undefined;
-    }
-  }
 
   async function runActionExecution(job: ActionExecutionJob, state: TabAnalysisState): Promise<void> {
-    emitActionExecutionEvent(job, { type: "started" });
-    let executionError: string | undefined;
     try {
-      for (const group of job.plan.groups) {
-        if (job.stopRequested) {
-          break;
+      const result = await services.execution.execute({
+        executionId: job.executionId,
+        plan: job.plan,
+        mode: job.mode,
+        dryRunSpeedMultiplier: job.dryRunSpeedMultiplier,
+        control: job.control,
+        onEvent: (event) => handleCanonicalExecutionEvent(job, event),
+      });
+      job.status = result.status;
+      if (job.mode === ExecutionMode.Real) {
+        services.workspaces.refreshAll(services.itemRepository.getStore());
+        for (const [tabId, tabState] of tabStates) {
+          const lookup = services.workspaces.tryGet(tabId);
+          if (!lookup.found || !lookup.workspace) continue;
+          tabState.analysis = lookup.workspace.analysis;
+          tabState.skippedGroups = lookup.workspace.skippedGroupIds;
         }
-        await waitWhilePaused(job);
-        if (job.stopRequested) {
-          break;
-        }
-
-        emitActionExecutionEvent(job, { type: "group-started", groupId: group.groupId });
-        const involvedVaultIds = planAffectedVaultIds(group.actions);
-        const beforeStates = job.plan.writeEnabled
-          ? await snapshotVaultStates(involvedVaultIds, onePassword)
-          : new Map<string, ItemStateSnapshot>();
-        const groupResults: ExecuteActionResult[] = group.actions
-          .filter((action) => action.type === "keep")
-          .map((action) => ({ itemId: action.itemId, action: action.type, ok: true, dryRun: !job.plan.writeEnabled }));
-
-        for (const entry of job.queue.filter((candidate) => candidate.groupId === group.groupId)) {
-          if (job.stopRequested) {
-            break;
-          }
-          await waitWhilePaused(job);
-          if (job.stopRequested) {
-            break;
-          }
-
-          job.runningAction = true;
-          job.status = "running";
-          job.cursor = job.queue.indexOf(entry);
-          entry.status = "running";
-          emitActionExecutionEvent(job, {
-            type: "action-started",
-            groupId: group.groupId,
-            entryId: entry.entryId,
-            action: { itemId: entry.action.itemId, type: entry.action.type }
-          });
-          const result = await executeActionPlanEntry(entry.action, state.analysis!, onePassword, job.plan.writeEnabled);
-          job.runningAction = false;
-          entry.result = result;
-          entry.status = result.ok ? "completed" : "failed";
-          job.results.push(result);
-          groupResults.push(result);
-          const createdItemId = entry.action.type === "copy-to-vault-and-archive-source" && result.createdItemId
-            ? `${entry.action.targetVaultId}:${result.createdItemId}`
-            : result.createdItemId;
-          job.effects.push({
-            groupId: group.groupId,
-            sourceItemId: entry.action.itemId,
-            createdItemId,
-            actionType: entry.action.type,
-            wroteToOnePassword: job.plan.writeEnabled && result.ok,
-            succeeded: result.ok
-          });
-          emitActionExecutionEvent(job, {
-            type: result.ok ? "action-completed" : "action-failed",
-            groupId: group.groupId,
-            entryId: entry.entryId,
-            result
-          });
-          if (!result.ok) {
-            executionError = result.error ?? "执行操作失败。";
-            break;
-          }
-          await waitForDryRunPacing(job);
-          if (job.pauseRequested) {
-            enterPaused(job);
-          }
-        }
-
-        await waitWhilePaused(job);
-        if (executionError || job.stopRequested) {
-          break;
-        }
-        emitActionExecutionEvent(job, { type: "group-verifying", groupId: group.groupId });
-        if (job.plan.writeEnabled) {
-          const verification = await verifyExecutedPlan(group.actions, state.analysis!, groupResults, beforeStates, involvedVaultIds, onePassword);
-          if (!verification.ok) {
-            executionError = verification.results.find((result) => !result.ok)?.message ?? "执行后核验失败。";
-            break;
-          }
-        }
-        job.completedGroupIds.add(group.groupId);
-        emitActionExecutionEvent(job, { type: "group-completed", groupId: group.groupId });
+        const workspace = services.workspaces.getRequired(job.tabId);
+        runtime.scan = scanSnapshotFromAnalysis(workspace.analysis);
       }
-    } catch (error) {
-      executionError = errorMessage(error);
-    }
-
-    for (const entry of job.queue) {
-      if (entry.status === "pending") {
-        entry.status = "cancelled";
-      }
-    }
-    try {
-      const update = updateAnalysisAfterActionExecution(job, state);
-      emitActionExecutionEvent(job, { type: "analysis-updated", response: update });
-      job.status = job.stopRequested ? "stopped" : executionError ? "failed" : "completed";
+      const responseAnalysis = job.mode === ExecutionMode.Real ? state.analysis! : result.analysis;
+      const responseState: TabAnalysisState = {
+        analysis: responseAnalysis,
+        skippedGroups: state.skippedGroups.filter((groupId) => responseAnalysis.groups.some((group) => group.id === groupId)),
+      };
+      const response = {
+        analysis: analysisResultResponse(responseState, responseAnalysis),
+        storeVersion: result.storeVersion,
+        itemIdMappings: result.itemIdMappings,
+        dryRun: job.mode === ExecutionMode.DryRun,
+      };
+      emitActionExecutionEvent(job, { type: ActionExecutionEventKind.AnalysisUpdated, response });
       emitActionExecutionEvent(job, {
-        type: job.status,
-        error: executionError,
-        response: update
+        type: terminalExecutionEventKind(job.status),
+        response,
+        error: result.succeeded || result.status === CanonicalActionExecutionStatus.Stopped ? undefined : "执行失败。",
       });
     } catch (error) {
-      job.status = "failed";
-      emitActionExecutionEvent(job, { type: "failed", error: errorMessage(error) });
+      job.status = CanonicalActionExecutionStatus.Failed;
+      emitActionExecutionEvent(job, { type: ActionExecutionEventKind.Failed, error: errorMessage(error) });
     } finally {
       job.done = true;
-      activeMutationScanId = undefined;
+      runtime.mutationScanId = undefined;
     }
   }
 
-  function updateAnalysisAfterActionExecution(job: ActionExecutionJob, state: TabAnalysisState): Record<string, unknown> {
-    if (!state.analysis) {
-      throw new ClientInputError("当前分析结果已过期，请重新扫描并重新分析后再继续。");
+  function handleCanonicalExecutionEvent(job: ActionExecutionJob, event: CanonicalExecutionEvent): void {
+    if (event.kind === ActionExecutionEventKind.Completed || event.kind === ActionExecutionEventKind.Failed ||
+      event.kind === ActionExecutionEventKind.Stopped) {
+      return;
     }
-
-    const completedGroupIds = job.plan.writeEnabled
-      ? Array.from(job.completedGroupIds)
-      : [];
-    const completedGroupIdSet = new Set(completedGroupIds);
-    const analysis = completedGroupIds.length > 0
-      ? {
-          ...state.analysis,
-          groups: state.analysis.groups.filter((group) => !completedGroupIdSet.has(group.id))
-        }
-      : state.analysis;
-    state.analysis = analysis;
-    state.dryRunKey = undefined;
-    state.skippedGroups = state.skippedGroups.filter((groupId) => analysis.groups.some((group) => group.id === groupId));
-    const remainingGroupIds = new Set(analysis.groups.map((group) => group.id));
-    const draft = {
-      scanId: analysis.scanId,
-      groups: job.draft.groups
-        .filter((group) => remainingGroupIds.has(group.groupId))
-        .map((group) => ({
-          groupId: group.groupId,
-          items: group.items.map((item) => ({ ...item, removeTags: [...(item.removeTags ?? [])] }))
-        }))
-    } satisfies ActionDraft;
-    return {
-      draft,
-      completedGroupIds,
-      results: job.results,
-      effects: job.effects,
-      cancelledOperations: job.queue.filter((entry) => entry.status === "cancelled").length
-    };
+    if (event.kind === ActionExecutionEventKind.StepCompleted) {
+      job.completedOperations += 1;
+    }
+    const step = event.actionId
+      ? job.planDto.groups.flatMap((group) => group.steps).find((candidate) => candidate.actionId === event.actionId)
+      : undefined;
+    emitActionExecutionEvent(job, {
+      type: event.kind,
+      actionId: event.actionId,
+      groupId: step?.groupId,
+      stepStatus: event.status,
+      message: event.message,
+      error: event.kind === ActionExecutionEventKind.StepFailed ? event.message : undefined,
+    });
   }
 
-  function activeActionExecution(): ActionExecutionJob | undefined {
-    return Array.from(actionExecutionJobs.values()).find((job) => !job.done);
+  function hasActiveActionExecution(): boolean {
+    return Array.from(actionExecutionJobs.values()).some((job) => !job.done);
   }
 
   function actionExecutionFor(executionId: string): ActionExecutionJob {
@@ -1306,85 +763,106 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
     return job;
   }
 
-  function runMockScanJob(job: ScanJob): void {
-    const mockResult = createMockScanResult();
-    const snapshot: ScanSnapshot = {
-      scanId: job.scanId,
-      scannedAt: mockResult.scannedAt,
-      vaults: mockResult.vaults,
-      items: []
-    };
-
-    if (job.cancelled) {
-      return;
+  async function runMockScanJob(job: ScanJob): Promise<void> {
+    try {
+      const storeSnapshot = await services.synchronization.synchronize(ItemProvider.Mock, "mock", undefined, undefined,
+        (message, scannedItems) => {
+          if (job.cancelled) return;
+          job.progress = { ...job.progress, scannedItems, totalItems: Math.max(job.progress.totalItems, scannedItems), message };
+          emitScanEvent(job, { type: ScanProgressEventType.Progress, progress: job.progress });
+        });
+      if (job.cancelled) return;
+      const canonicalAnalysis = services.analysis.analyze(services.itemRepository.getStore());
+      const snapshot = scanSnapshotFromAnalysis(canonicalAnalysis);
+      snapshot.scannedAt = storeSnapshot.createdAt;
+      runtime.scan = snapshot;
+      runtime.accountName = undefined;
+      job.progress = progressFor(job.scanId, ScanPhase.Completed, snapshot.vaults, snapshot.items, snapshot.items.length,
+        snapshot.vaults.length, "扫描完成，等待手动分析。");
+      emitScanEvent(job, { type: ScanProgressEventType.Completed, progress: job.progress, scan: redactScanSnapshotForClient(snapshot) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      job.progress = { ...job.progress, phase: ScanPhase.Failed, message, error: message };
+      emitScanEvent(job, { type: ScanProgressEventType.Failed, progress: job.progress, error: message });
     }
-    job.progress = progressFor(job.scanId, "scanning", snapshot.vaults, snapshot.items, mockResult.items.length, 0, "正在读取演示数据。");
-    emitScanEvent(job, { type: "progress", progress: job.progress });
-
-    for (const item of mockResult.items) {
-      if (job.cancelled) {
-        return;
-      }
-      snapshot.items.push(item);
-      job.progress = progressFor(job.scanId, "scanning", snapshot.vaults, snapshot.items, mockResult.items.length, 0, "正在读取演示数据。");
-      emitScanEvent(job, { type: "progress", progress: job.progress });
-    }
-
-    if (job.cancelled) {
-      return;
-    }
-    snapshot.durationMs = Math.max(0, Date.now() - Date.parse(job.progress.startedAt ?? snapshot.scannedAt));
-    latestScan = snapshot;
-    latestScanMode = "mock";
-    latestScanAccountName = undefined;
-    job.progress = progressFor(job.scanId, "completed", snapshot.vaults, snapshot.items, mockResult.items.length, snapshot.vaults.length, "扫描完成，等待手动分析。");
-    emitScanEvent(job, {
-      type: "completed",
-      progress: job.progress,
-      scan: redactScanSnapshotForClient(snapshot)
-    });
   }
 
-  async function runLiveScanJob(job: ScanJob, accountName: string | undefined): Promise<void> {
+  async function runCsvScanJob(job: ScanJob, source: CsvScanSource): Promise<void> {
     try {
-      const scan = await onePassword.scan({
-        scanId: job.scanId,
-        serviceAccountToken: config.serviceAccountToken,
-        accountName,
-        onProgress: (event) => {
+      const { fileName, content: csvContent } = source;
+      if (!fileName || !csvContent) {
+        throw new ClientInputError("请选择一份 1Password 导出的 CSV 文件。");
+      }
+      const snapshot = await services.synchronization.synchronize(
+        ItemProvider.Csv,
+        fileName,
+        undefined,
+        undefined,
+        (message, scannedItems) => {
           if (job.cancelled) {
             return;
           }
-          logScanProgress(server, event);
-          emitScanEvent(job, redactScanProgressEvent(event));
-        }
-      });
+          job.progress = {
+            ...job.progress,
+            scannedItems,
+            totalItems: Math.max(job.progress.totalItems, scannedItems),
+            message,
+          };
+          emitScanEvent(job, { type: ScanProgressEventType.Progress, progress: job.progress });
+        },
+        fileName,
+        csvContent,
+      );
       if (job.cancelled) {
         return;
       }
+      const analysis = services.analysis.analyze(services.itemRepository.getStore());
       const normalizedScan: ScanSnapshot = {
-        ...scan,
-        scanId: job.scanId
+        scanId: analysis.scanId,
+        scannedAt: snapshot.createdAt,
+        vaults: analysis.vaults,
+        items: analysis.items,
       };
-      latestScan = normalizedScan;
-      latestScanMode = "live";
-      latestScanAccountName = config.serviceAccountToken ? undefined : accountName;
-      if (!job.done) {
-        job.progress = progressFor(
-          job.scanId,
-          "completed",
-          normalizedScan.vaults,
-          normalizedScan.items,
-          normalizedScan.items.length,
-          normalizedScan.vaults.length,
-          "扫描完成，等待手动分析。"
-        );
-        emitScanEvent(job, {
-          type: "completed",
-          progress: job.progress,
-          scan: redactScanSnapshotForClient(normalizedScan)
-        });
+      runtime.scan = normalizedScan;
+      runtime.accountName = undefined;
+      job.progress = progressFor(job.scanId, ScanPhase.Completed, normalizedScan.vaults, normalizedScan.items,
+        normalizedScan.items.length, normalizedScan.vaults.length, "CSV 扫描完成，等待手动分析。");
+      emitScanEvent(job, { type: ScanProgressEventType.Completed, progress: job.progress, scan: redactScanSnapshotForClient(normalizedScan) });
+    } catch (error) {
+      if (job.cancelled) {
+        return;
       }
+      const message = error instanceof Error ? error.message : String(error);
+      job.progress = { ...job.progress, phase: ScanPhase.Failed, message, error: message };
+      emitScanEvent(job, { type: ScanProgressEventType.Failed, progress: job.progress, error: message });
+    }
+  }
+
+  async function runLiveScanJob(job: ScanJob, source: LiveScanSource): Promise<void> {
+    try {
+      const { accountName } = source;
+      const snapshot = await services.synchronization.synchronize(
+        ItemProvider.OnePassword,
+        accountName || "default",
+        accountName,
+        config.serviceAccountToken,
+        (message, scannedItems, sourceProgress) => {
+          if (job.cancelled) return;
+          job.progress = sourceProgress
+            ? { ...sourceProgress, scanId: job.scanId, message }
+            : { ...job.progress, scannedItems, totalItems: Math.max(job.progress.totalItems, scannedItems), message };
+          emitScanEvent(job, { type: ScanProgressEventType.Progress, progress: job.progress });
+        }
+      );
+      if (job.cancelled) return;
+      const canonicalAnalysis = services.analysis.analyze(services.itemRepository.getStore());
+      const normalizedScan = scanSnapshotFromAnalysis(canonicalAnalysis);
+      normalizedScan.scannedAt = snapshot.createdAt;
+      runtime.scan = normalizedScan;
+      runtime.accountName = config.serviceAccountToken ? undefined : accountName;
+      job.progress = progressFor(job.scanId, ScanPhase.Completed, normalizedScan.vaults, normalizedScan.items,
+        normalizedScan.items.length, normalizedScan.vaults.length, "扫描完成，等待手动分析。");
+      emitScanEvent(job, { type: ScanProgressEventType.Completed, progress: job.progress, scan: redactScanSnapshotForClient(normalizedScan) });
     } catch (error) {
       if (job.cancelled) {
         return;
@@ -1400,25 +878,41 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       );
       job.progress = {
         ...job.progress,
-        phase: "failed",
+        phase: ScanPhase.Failed,
         message,
         error: message
       };
       emitScanEvent(job, {
-        type: "failed",
+        type: ScanProgressEventType.Failed,
         progress: job.progress,
         error: message
       });
     }
   }
 
-  await registerStaticUi(server, config.webDistDir);
+  await registerStaticUi(server, config.webDistDir ?? "");
+  server.addHook("onClose", async () => {
+    services.synchronization.clear();
+    services.workspaces.clear();
+  });
   refreshIdleTimer();
 
   return server;
 
   function hasActiveWork(): boolean {
-    return Boolean(activeMutationScanId) || hasActiveScanJob() || Boolean(activeActionExecution());
+    return Boolean(runtime.mutationScanId) || hasActiveScanJob() || hasActiveActionExecution();
+  }
+
+  function resetGlobalScanState(): void {
+    runtime.scan = undefined;
+    runtime.accountName = undefined;
+    tabStates.clear();
+    cancelScanJobs(scanJobs);
+    scanJobs.clear();
+    actionPlans.clear();
+    actionExecutionJobs.clear();
+    services.synchronization.clear();
+    services.workspaces.clear();
   }
 
   function hasActiveScanJob(): boolean {
@@ -1430,23 +924,23 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
       return;
     }
 
-    if (idleTimer) {
-      clearTimeout(idleTimer);
+    if (runtime.idleTimer) {
+      clearTimeout(runtime.idleTimer);
     }
-    idleTimer = setTimeout(() => {
+    runtime.idleTimer = setTimeout(() => {
       if (hasActiveWork()) {
         refreshIdleTimer();
         return;
       }
-      scheduleShutdown("idle");
+      scheduleShutdown(ApiShutdownReason.Idle);
     }, config.idleShutdownMs);
-    idleTimer.unref();
+    runtime.idleTimer.unref();
   }
 
-  function scheduleShutdown(reason: "requested" | "idle"): void {
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = undefined;
+  function scheduleShutdown(reason: ApiShutdownReason): void {
+    if (runtime.idleTimer) {
+      clearTimeout(runtime.idleTimer);
+      runtime.idleTimer = undefined;
     }
 
     setImmediate(() => {
@@ -1462,14 +956,14 @@ export async function createApiServer(options: CreateApiServerOptions): Promise<
 }
 
 function sessionMode(config: ApiConfig): AppMode {
-  return config.mode ?? "browser-dev";
+  return config.mode ?? AppMode.BrowserDev;
 }
 
 function sessionCapabilities(
   mode: AppMode,
   canShutdown: boolean,
   hasStaticUi: boolean,
-  idleShutdownMs: number | undefined
+  idleShutdownMs: number
 ) {
   return {
     staticUi: mode !== "browser-dev" && hasStaticUi,
@@ -1483,17 +977,26 @@ function sessionCapabilities(
 
 const scanBodySchema = z.object({
   accountName: z.string().min(1).optional(),
-  mode: z.enum(["live", "mock"]).default("live")
+  mode: z.nativeEnum(ScanMode).default(ScanMode.Live),
+  provider: z.enum([ItemProvider.OnePassword, ItemProvider.Csv, ItemProvider.Mock]).optional(),
+  fileName: z.string().trim().min(1).max(255).optional(),
+  csvContent: z.string().max(5_000_000).optional()
 });
+
+function providerForScanMode(mode: ScanMode): ItemProvider {
+  if (mode === ScanMode.Csv) return ItemProvider.Csv;
+  if (mode === ScanMode.Mock) return ItemProvider.Mock;
+  return ItemProvider.OnePassword;
+}
+
+function scanModeForProvider(provider: ItemProvider): ScanMode {
+  if (provider === ItemProvider.Csv) return ScanMode.Csv;
+  if (provider === ItemProvider.Mock) return ScanMode.Mock;
+  return ScanMode.Live;
+}
 
 const scanEventsQuerySchema = z.object({
   scanId: z.string().min(1),
-  eventsToken: z.string().min(1),
-  after: z.coerce.number().int().min(0).default(0)
-});
-
-const executionEventsQuerySchema = z.object({
-  executionId: z.string().min(1),
   eventsToken: z.string().min(1),
   after: z.coerce.number().int().min(0).default(0)
 });
@@ -1543,47 +1046,43 @@ function tabIdFor(request: FastifyRequest): string {
 
 function resetTabAnalysisState(state: TabAnalysisState): void {
   state.analysis = undefined;
-  state.dryRunKey = undefined;
   state.skippedGroups = [];
 }
 
-const decisionSchema = z.object({
-  scanId: z.string().min(1),
-  groupId: z.string(),
-  confirmPermanentDelete: z.boolean().optional(),
-  permanentDeleteConfirmationPhrase: z.string().optional(),
-  confirmedDryRunKey: z.string().optional(),
-  dryRun: z.boolean().optional(),
-  items: z.array(
-    z.object({
-      itemId: z.string(),
-      keep: z.boolean(),
-      targetVaultId: z.string().optional(),
-      deleteMode: z.enum(["archive", "delete"]).optional(),
-      removeTags: z.array(z.string().min(1)).optional()
-    })
-  )
-});
-
 const actionDraftItemSchema = z.object({
   itemId: z.string().min(1),
-  keep: z.boolean(),
-  targetVaultId: z.string().optional(),
-  deleteMode: z.enum(["archive", "delete"]).optional(),
+  disposition: z.nativeEnum(ItemDisposition),
+  desiredTitle: z.string().trim().min(1).optional(),
+  targetContainerId: z.string().optional(),
   removeTags: z.array(z.string().min(1)).default([])
 });
 
-const actionExecutionStartSchema = z.object({
-  draft: z.object({
-    scanId: z.string().min(1),
-    groups: z.array(z.object({
-      groupId: z.string().min(1),
-      items: z.array(actionDraftItemSchema)
-    })).min(1)
-  }),
-  permanentDeleteConfirmationPhrase: z.string().optional(),
-  dryRunSpeedMultiplier: z.union([z.literal(1), z.literal(5), z.literal(10)]).default(1)
+const actionDraftSchema = z.object({
+  storeSnapshotId: z.string().min(1),
+  storeVersion: z.number().int().min(1),
+  groups: z.array(z.object({
+    groupId: z.string().min(1),
+    items: z.array(actionDraftItemSchema).min(2)
+  })).min(1)
 });
+
+const actionExecutionStartSchema = z.object({
+  planId: z.string().min(1),
+  planHash: z.string().regex(/^[0-9a-f]{64}$/),
+  permanentDeleteConfirmationPhrase: z.string().optional(),
+  dryRunSpeedMultiplier: z.nativeEnum(DryRunSpeedMultiplier).default(DryRunSpeedMultiplier.One)
+});
+
+function draftFromPlan(plan: CanonicalActionPlan): CanonicalActionDraft {
+  return {
+    storeSnapshotId: plan.storeSnapshotId,
+    storeVersion: plan.storeVersion,
+    groups: plan.groups.map((group) => ({
+      groupId: group.groupId,
+      items: group.items.map((item) => ({ ...item.intent, removeTags: [...item.intent.removeTags] })),
+    })),
+  };
+}
 
 function createScanId(): string {
   return randomUUID();
@@ -1593,14 +1092,14 @@ function createScanJob(scanId: string, mode: ScanMode): ScanJob {
   const startedAt = new Date().toISOString();
   const progress: ScanProgress = {
     scanId,
-    phase: "scanning",
+    phase: ScanPhase.Scanning,
     startedAt,
     totalVaults: 0,
     scannedVaults: 0,
     totalItems: 0,
     scannedItems: 0,
     vaults: [],
-    message: mode === "mock" ? "正在准备演示数据。" : "正在等待 1Password 授权。"
+    message: mode === ScanMode.Mock ? "正在准备演示数据。" : mode === ScanMode.Csv ? "正在读取 CSV 文件。" : "正在等待 1Password 授权。"
   };
   const job: ScanJob = {
     scanId,
@@ -1612,56 +1111,33 @@ function createScanJob(scanId: string, mode: ScanMode): ScanJob {
     done: false,
     cancelled: false
   };
-  emitScanEvent(job, { type: "started", progress });
+  emitScanEvent(job, { type: ScanProgressEventType.Started, progress });
   return job;
-}
-
-function createExecutionJob(executionId: string): ExecutionJob {
-  return {
-    executionId,
-    eventsToken: randomUUID(),
-    events: [],
-    subscribers: new Set(),
-    done: false
-  };
 }
 
 function createActionExecutionJob(
   executionId: string,
   tabId: string,
-  draft: ActionDraft,
-  plan: ActionPlan,
-  dryRunSpeedMultiplier: DryRunSpeedMultiplier
+  draft: CanonicalActionDraft,
+  plan: CanonicalActionPlan,
+  dryRunSpeedMultiplier: DryRunSpeedMultiplier,
+  mode: ExecutionMode,
+  services: import("./item-services.js").ApplicationServices
 ): ActionExecutionJob {
-  const queue = plan.groups.flatMap((group, groupIndex) => group.actions
-    .filter((action) => action.type !== "keep")
-    .map((action, actionIndex) => ({
-      entryId: randomUUID(),
-      groupId: group.groupId,
-      groupIndex,
-      actionIndex,
-      action,
-      status: "pending" as const
-    })));
   return {
     executionId,
     tabId,
     eventsToken: randomUUID(),
     dryRunSpeedMultiplier,
+    mode,
     draft,
     plan,
-    queue,
-    cursor: 0,
-    status: "running",
-    pauseRequested: false,
-    stopRequested: false,
-    runningAction: false,
-    results: [],
-    effects: [],
-    completedGroupIds: new Set(),
+    planDto: toClientActionPlan(plan, services),
+    status: CanonicalActionExecutionStatus.Running,
+    control: new ActionExecutionControl(),
+    completedOperations: 0,
     events: [],
     subscribers: new Set(),
-    resumeWaiters: new Set(),
     done: false
   };
 }
@@ -1671,25 +1147,25 @@ function actionExecutionSnapshot(job: ActionExecutionJob, includeCredentials = f
     executionId: job.executionId,
     eventsToken: includeCredentials ? job.eventsToken : undefined,
     status: job.status,
-    writeEnabled: job.plan.writeEnabled,
+    writeEnabled: job.mode === ExecutionMode.Real,
     dryRunSpeedMultiplier: job.dryRunSpeedMultiplier,
-    totalGroups: job.plan.groups.length,
-    totalOperations: job.queue.length,
-    completedOperations: job.queue.filter((entry) => entry.status === "completed").length,
-    cancelledOperations: job.queue.filter((entry) => entry.status === "cancelled").length,
-    plan: job.plan,
+    totalGroups: job.planDto.statistics.groupCount,
+    totalOperations: job.planDto.statistics.mutationStepCount,
+    completedOperations: job.completedOperations,
+    cancelledOperations: 0,
+    plan: job.planDto,
     draft: job.draft
   };
 }
 
-function emitActionExecutionEvent(job: ActionExecutionJob, event: Partial<ActionExecutionEvent> & { type: string }): void {
+function emitActionExecutionEvent(job: ActionExecutionJob, event: Partial<ActionExecutionEvent> & { type: ActionExecutionEventKind }): void {
   const sequenced: ActionExecutionEvent = {
     executionId: job.executionId,
     status: job.status,
-    writeEnabled: job.plan.writeEnabled,
-    totalGroups: job.plan.groups.length,
-    totalOperations: job.queue.length,
-    completedOperations: job.queue.filter((entry) => entry.status === "completed").length,
+    writeEnabled: job.mode === ExecutionMode.Real,
+    totalGroups: job.planDto.statistics.groupCount,
+    totalOperations: job.planDto.statistics.mutationStepCount,
+    completedOperations: job.completedOperations,
     sequence: job.events.length + 1,
     ...event
   };
@@ -1699,44 +1175,15 @@ function emitActionExecutionEvent(job: ActionExecutionJob, event: Partial<Action
   }
 }
 
-function enterPaused(job: ActionExecutionJob): void {
-  if (job.stopRequested || job.status === "paused") {
-    return;
-  }
-  job.status = "paused";
-  emitActionExecutionEvent(job, { type: "paused" });
+function terminalActionExecution(status: CanonicalActionExecutionStatus): boolean {
+  return status === CanonicalActionExecutionStatus.Stopped || status === CanonicalActionExecutionStatus.Completed ||
+    status === CanonicalActionExecutionStatus.Failed;
 }
 
-async function waitWhilePaused(job: ActionExecutionJob): Promise<void> {
-  if (job.pauseRequested && !job.stopRequested) {
-    enterPaused(job);
-  }
-  if (job.status !== "paused") {
-    return;
-  }
-  await new Promise<void>((resolve) => job.resumeWaiters.add(resolve));
-}
-
-const dryRunActionDelayMs: Record<DryRunSpeedMultiplier, number> = {
-  1: 0,
-  5: 100,
-  10: 200
-};
-
-async function waitForDryRunPacing(job: ActionExecutionJob): Promise<void> {
-  if (job.plan.writeEnabled || job.stopRequested || job.pauseRequested) {
-    return;
-  }
-  let remainingMs = dryRunActionDelayMs[job.dryRunSpeedMultiplier];
-  while (remainingMs > 0 && !job.stopRequested && !job.pauseRequested) {
-    const sliceMs = Math.min(remainingMs, 25);
-    await sleep(sliceMs);
-    remainingMs -= sliceMs;
-  }
-}
-
-function terminalActionExecution(status: ActionExecutionStatus): boolean {
-  return status === "stopped" || status === "completed" || status === "failed";
+function terminalExecutionEventKind(status: CanonicalActionExecutionStatus): ActionExecutionEventKind {
+  if (status === CanonicalActionExecutionStatus.Completed) return ActionExecutionEventKind.Completed;
+  if (status === CanonicalActionExecutionStatus.Stopped) return ActionExecutionEventKind.Stopped;
+  return ActionExecutionEventKind.Failed;
 }
 
 function cancelScanJobs(scanJobs: Map<string, ScanJob>): void {
@@ -1747,11 +1194,11 @@ function cancelScanJobs(scanJobs: Map<string, ScanJob>): void {
 
     job.cancelled = true;
     emitScanEvent(job, {
-      type: "failed",
+      type: ScanProgressEventType.Failed,
       error: "扫描已取消。",
       progress: {
         ...job.progress,
-        phase: "failed",
+        phase: ScanPhase.Failed,
         message: "扫描已取消。",
         error: "扫描已取消。"
       }
@@ -1760,7 +1207,7 @@ function cancelScanJobs(scanJobs: Map<string, ScanJob>): void {
 }
 
 function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
-  const terminal = event.type === "completed" || event.type === "failed";
+  const terminal = event.type === ScanProgressEventType.Completed || event.type === ScanProgressEventType.Failed;
   const normalizedEvent: ScanProgressEvent = {
     ...event,
     progress: {
@@ -1779,24 +1226,9 @@ function emitScanEvent(job: ScanJob, event: ScanProgressEvent): void {
   }
 }
 
-function emitExecutionEvent(job: ExecutionJob, event: Omit<ExecutionProgressEvent, "sequence">): void {
-  const sequencedEvent: ExecutionProgressEvent = {
-    ...event,
-    sequence: job.events.length + 1
-  };
-  job.events.push(sequencedEvent);
-  for (const subscriber of job.subscribers) {
-    subscriber(sequencedEvent);
-  }
-  if (sequencedEvent.type === "completed" || sequencedEvent.type === "failed") {
-    job.done = true;
-  }
-}
-
 function isAuthorizedEventStream(
   url: string,
   scanJobs: Map<string, ScanJob>,
-  executionJobs: Map<string, ExecutionJob>,
   actionExecutionJobs: Map<string, ActionExecutionJob>
 ): boolean {
   const parsed = new URL(url, "http://127.0.0.1");
@@ -1809,10 +1241,6 @@ function isAuthorizedEventStream(
     const scanId = parsed.searchParams.get("scanId");
     return scanId !== null && scanJobs.get(scanId)?.eventsToken === eventsToken;
   }
-  if (parsed.pathname === "/api/execute/events") {
-    const executionId = parsed.searchParams.get("executionId");
-    return executionId !== null && executionJobs.get(executionId)?.eventsToken === eventsToken;
-  }
   const actionExecutionMatch = parsed.pathname.match(/^\/api\/action-executions\/([^/]+)\/events$/);
   if (actionExecutionMatch) {
     return actionExecutionJobs.get(decodeURIComponent(actionExecutionMatch[1]))?.eventsToken === eventsToken;
@@ -1820,8 +1248,8 @@ function isAuthorizedEventStream(
   return false;
 }
 
-function corsHeadersFor(origin: string | undefined, allowedOrigins: string[]): Record<string, string> {
-  if (!origin) {
+function corsHeadersFor(origin: unknown, allowedOrigins: string[]): Record<string, string> {
+  if (typeof origin !== "string" || !origin) {
     return {};
   }
   if (!allowedOrigins.includes(origin)) {
@@ -1832,32 +1260,6 @@ function corsHeadersFor(origin: string | undefined, allowedOrigins: string[]): R
     "access-control-allow-origin": origin,
     vary: "Origin"
   };
-}
-
-function logScanProgress(server: FastifyInstance, event: ScanProgressEvent): void {
-  const message = event.progress.message ?? event.error;
-  if (!message) {
-    return;
-  }
-
-  const logPayload = {
-    scanId: event.progress.scanId,
-    eventType: event.type,
-    phase: event.progress.phase,
-    totalVaults: event.progress.totalVaults,
-    scannedVaults: event.progress.scannedVaults,
-    totalItems: event.progress.totalItems,
-    scannedItems: event.progress.scannedItems,
-    message,
-    error: event.error ?? event.progress.error
-  };
-  if (event.type === "failed" || event.progress.error || /无法|跳过|超过|失败/.test(message)) {
-    server.log.warn(logPayload, "scan progress");
-    return;
-  }
-  if (/连接|唤起|授权|保险库列表|项目列表|项目详情|已发现|已读取|扫描完成/.test(message)) {
-    server.log.info(logPayload, "scan progress");
-  }
 }
 
 function progressFor(
@@ -1881,502 +1283,67 @@ function progressFor(
   };
 }
 
-function redactScanProgressEvent(event: ScanProgressEvent): ScanProgressEvent {
-  return {
-    ...event,
-    scan: event.scan ? redactScanSnapshotForClient(event.scan) : undefined
-  };
-}
-
 function toSseMessage(event: { type: string; sequence?: number }): string {
   const id = event.sequence ? `id: ${event.sequence}\n` : "";
   return `${id}event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
-function lastEventSequence(value: string | string[] | undefined): number {
+function lastEventSequence(value: unknown): number {
   const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string") {
+    return 0;
+  }
   const sequence = Number.parseInt(raw ?? "0", 10);
   return Number.isFinite(sequence) && sequence > 0 ? sequence : 0;
 }
 
-function analyzeScan(scan: ScanSnapshot): ScanResult {
-  return {
-    ...scan,
-    analyzedAt: new Date().toISOString(),
-    groups: findSimilarityGroups(scan.items)
-  };
+function canonicalRevealCredentials(
+  itemId: string,
+  services: import("./item-services.js").ApplicationServices
+): RevealedCredentialField[] {
+  const item = services.itemRepository.getStore().getRequired(itemId);
+  return item.fields
+    .filter((field) => field.value !== undefined)
+    .map((field) => ({ label: field.label, value: field.value!, fieldType: field.kind }));
 }
 
-function mockRevealCredentials(itemId: string): RevealedCredentialField[] {
-  return [
-    {
-      label: "凭据材料",
-      value: `mock-secret-for-${itemId.split(":").at(-1) ?? "item"}`,
-      fieldType: "mock-concealed"
-    }
-  ];
-}
-
-function createPlanFromLatestScan(decision: GroupDecision, latestScan: ScanResult | undefined) {
-  const scan = currentAnalysisFor(decision.scanId, latestScan);
-
-  const group = scan.groups.find((candidate) => candidate.id === decision.groupId);
-  if (!group) {
-    throw new ClientInputError(`找不到重复组：${decision.groupId}`);
-  }
-
-  const consistencyBlockers = validateDecisionItemSet(decision, group.itemIds);
-  const planDecision = {
-    ...decision,
-    items: decision.items.filter((item) => group.itemIds.includes(item.itemId))
-  };
-  const plan = createExecutionPlan(decision.groupId, planDecision, scan.items);
-  const targetVaultBlockers = validateTargetVaults(decision, scan);
-  return {
-    ...plan,
-    blockers: Array.from(new Set([...plan.blockers, ...consistencyBlockers, ...targetVaultBlockers]))
-  };
-}
-
-function currentScanSnapshotFor(scanId: string, latestScan: ScanSnapshot | undefined): ScanSnapshot {
-  if (!latestScan) {
+function currentScanSnapshotFor(scanId: string, runtime: ApiRuntimeState): ScanSnapshot {
+  if (!runtime.scan) {
     throw new ClientInputError("请先运行扫描。");
   }
 
-  if (scanId !== latestScan.scanId) {
+  if (scanId !== runtime.scan.scanId) {
     throw new ClientInputError("当前扫描结果已过期，请重新扫描后再继续。");
   }
 
-  return latestScan;
+  return runtime.scan;
 }
 
-function currentAnalysisFor(scanId: string, latestAnalysis: ScanResult | undefined): ScanResult {
-  if (!latestAnalysis) {
+function currentAnalysisFor(scanId: string, state: TabAnalysisState): ScanResult {
+  if (!state.analysis) {
     throw new ClientInputError("请先完成扫描并手动运行分析。");
   }
 
-  if (scanId !== latestAnalysis.scanId) {
+  if (scanId !== state.analysis.scanId) {
     throw new ClientInputError("当前分析结果已过期，请重新扫描并重新分析后再继续。");
   }
 
-  return latestAnalysis;
+  return state.analysis;
 }
 
-function currentAnalysisForGlobalScan(analysis: ScanResult, latestScan: ScanSnapshot | undefined): ScanResult {
-  if (!latestScan) {
+function currentAnalysisForGlobalScan(analysis: ScanResult, runtime: ApiRuntimeState): ScanResult {
+  if (!runtime.scan) {
     throw new ClientInputError("当前扫描结果已过期，请重新扫描并重新分析后再继续。");
   }
 
-  if (analysis.scanId !== latestScan.scanId) {
+  if (analysis.scanId !== runtime.scan.scanId) {
     throw new ClientInputError("当前分析结果已过期，请基于最新扫描重新分析后再继续。");
   }
 
   return analysis;
 }
 
-function validateTargetVaults(decision: ActionDraftGroup, scan: ScanResult): string[] {
-  const vaultIds = new Set(scan.vaults.map((vault) => vault.id));
-  const blockers: string[] = [];
-
-  for (const itemDecision of decision.items) {
-    if (!itemDecision.keep || !itemDecision.targetVaultId) {
-      continue;
-    }
-    if (!vaultIds.has(itemDecision.targetVaultId)) {
-      blockers.push(`目标保险库不存在或不可访问：${itemDecision.targetVaultId}`);
-    }
-  }
-
-  return blockers;
-}
-
 class ClientInputError extends Error {
-}
-
-async function executePlanActions(
-  actions: PlanAction[],
-  latestScan: ScanResult,
-  onePassword: PasswordService,
-  onResult?: (result: ExecuteActionResult) => void,
-  onActionStarted?: (action: PlanAction) => void
-): Promise<ExecuteActionResult[]> {
-  const itemById = new Map(latestScan.items.map((item) => [item.id, item]));
-  const results: ExecuteActionResult[] = [];
-  const append = (result: ExecuteActionResult): void => {
-    results.push(result);
-    onResult?.(result);
-  };
-
-  for (let index = 0; index < actions.length; index += 1) {
-    const action = actions[index];
-    onActionStarted?.(action);
-    if (action.type === "keep") {
-      append({ itemId: action.itemId, action: action.type, ok: true });
-      continue;
-    }
-
-    const item = itemById.get(action.itemId);
-    if (!item) {
-      append({ itemId: action.itemId, action: action.type, ok: false, error: "找不到要处理的项目。" });
-      for (const result of skippedResults(actions.slice(index + 1))) {
-        append(result);
-      }
-      break;
-    }
-
-    try {
-      if (action.type === "update-tags") {
-        await onePassword.removeTags(item.id, action.removeTags);
-      } else if (action.type === "archive") {
-        await onePassword.archive(item.vaultId, item.onePasswordItemId);
-      } else if (action.type === "delete") {
-        await onePassword.delete(item.vaultId, item.onePasswordItemId);
-      } else if (action.type === "copy-to-vault-and-archive-source") {
-        const copyResult = await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId, action.removeTags);
-        append({
-          itemId: action.itemId,
-          action: action.type,
-          ok: true,
-          createdItemId: copyResult.createdItemId,
-          targetVaultId: action.targetVaultId
-        });
-        continue;
-      }
-      append({ itemId: action.itemId, action: action.type, ok: true });
-    } catch (error) {
-      append({
-        itemId: action.itemId,
-        action: action.type,
-        ok: false,
-        error: mutationActionError(action, error)
-      });
-      for (const result of skippedResults(actions.slice(index + 1))) {
-        append(result);
-      }
-      break;
-    }
-  }
-
-  return results;
-}
-
-async function executeActionPlanEntry(
-  action: PlanAction,
-  scan: ScanResult,
-  onePassword: PasswordService,
-  writeEnabled: boolean
-): Promise<ExecuteActionResult> {
-  const item = scan.items.find((candidate) => candidate.id === action.itemId);
-  if (!item) {
-    return { itemId: action.itemId, action: action.type, ok: false, error: "找不到要处理的项目。" };
-  }
-  if (!writeEnabled) {
-    return { itemId: action.itemId, action: action.type, ok: true, dryRun: true };
-  }
-  try {
-    if (action.type === "update-tags") {
-      await onePassword.removeTags(item.id, action.removeTags);
-    } else if (action.type === "archive") {
-      await onePassword.archive(item.vaultId, item.onePasswordItemId);
-    } else if (action.type === "delete") {
-      await onePassword.delete(item.vaultId, item.onePasswordItemId);
-    } else if (action.type === "copy-to-vault-and-archive-source") {
-      const copy = await onePassword.copyToVaultAndArchiveSource(item.id, action.targetVaultId, action.removeTags);
-      return {
-        itemId: action.itemId,
-        action: action.type,
-        ok: true,
-        createdItemId: copy.createdItemId,
-        targetVaultId: action.targetVaultId
-      };
-    }
-    return { itemId: action.itemId, action: action.type, ok: true };
-  } catch (error) {
-    return { itemId: action.itemId, action: action.type, ok: false, error: mutationActionError(action, error) };
-  }
-}
-
-function skippedResults(actions: PlanAction[]): ExecuteActionResult[] {
-  return actions.map((action) => ({
-    itemId: action.itemId,
-    action: action.type,
-    ok: false,
-    skipped: true,
-    error: "由于前一个操作失败，已跳过。"
-  }));
-}
-
-function planAffectedVaultIds(actions: PlanAction[]): string[] {
-  const vaultIds = new Set<string>();
-  for (const action of actions) {
-    vaultIds.add(action.vaultId);
-    if (action.type === "copy-to-vault-and-archive-source") {
-      vaultIds.add(action.targetVaultId);
-    }
-  }
-  return Array.from(vaultIds).sort();
-}
-
-async function snapshotVaultStates(vaultIds: string[], onePassword: PasswordService): Promise<Map<string, ItemStateSnapshot>> {
-  const states = new Map<string, ItemStateSnapshot>();
-  for (const vaultId of vaultIds) {
-    states.set(vaultId, await onePassword.listItemStates(vaultId));
-  }
-  return states;
-}
-
-async function verifyExecutedPlan(
-  actions: PlanAction[],
-  latestScan: ScanResult,
-  results: ExecuteActionResult[],
-  beforeStates: Map<string, ItemStateSnapshot>,
-  involvedVaultIds: string[],
-  onePassword: PasswordService
-): Promise<ExecutionVerification> {
-  let latestVerification: ExecutionVerification = { ok: false, results: [] };
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (attempt > 0) {
-      await sleep(300);
-    }
-    let afterStates: Map<string, ItemStateSnapshot>;
-    try {
-      afterStates = await snapshotVaultStates(involvedVaultIds, onePassword);
-    } catch (error) {
-      latestVerification = {
-        ok: false,
-        results: involvedVaultIds.map((vaultId) => ({
-          vaultId,
-          ok: false,
-          severity: "incomplete",
-          message: `执行后校验失败：无法读取保险库 ${vaultId} 的 item 状态：${errorMessage(error)}`
-        }))
-      };
-      continue;
-    }
-    latestVerification = verifyPlanAgainstSnapshots(actions, latestScan, results, beforeStates, afterStates);
-    if (latestVerification.ok) {
-      return latestVerification;
-    }
-  }
-  return latestVerification;
-}
-
-function verifyPlanAgainstSnapshots(
-  actions: PlanAction[],
-  latestScan: ScanResult,
-  results: ExecuteActionResult[],
-  beforeStates: Map<string, ItemStateSnapshot>,
-  afterStates: Map<string, ItemStateSnapshot>
-): ExecutionVerification {
-  const itemById = new Map(latestScan.items.map((item) => [item.id, item]));
-  const resultByItemId = new Map(results.map((result) => [result.itemId, result]));
-  const failures: VerificationResult[] = [];
-  const allowedTransitions = new Map<string, Map<string, ItemState>>();
-
-  const allow = (vaultId: string, itemId: string, state: ItemState): void => {
-    let vaultTransitions = allowedTransitions.get(vaultId);
-    if (!vaultTransitions) {
-      vaultTransitions = new Map<string, ItemState>();
-      allowedTransitions.set(vaultId, vaultTransitions);
-    }
-    vaultTransitions.set(itemId, state);
-  };
-
-  for (const action of actions) {
-    const item = itemById.get(action.itemId);
-    if (!item) {
-      failures.push({
-        itemId: action.itemId,
-        vaultId: action.vaultId,
-        action: action.type,
-        ok: false,
-        severity: "critical",
-        message: "执行后校验失败：找不到计划内 item 的扫描材料。"
-      });
-      continue;
-    }
-
-    const sourceItemId = item.onePasswordItemId;
-    const sourceAfter = stateOf(afterStates.get(item.vaultId), sourceItemId);
-    if (action.type === "keep") {
-      allow(item.vaultId, sourceItemId, "active");
-      if (sourceAfter !== "active") {
-        failures.push({
-          itemId: sourceItemId,
-          vaultId: item.vaultId,
-          action: action.type,
-          ok: false,
-          severity: "critical",
-          message: `执行后校验失败：保留项 ${item.title} 已不在原保险库的活跃列表中。`
-        });
-      }
-      continue;
-    }
-
-    if (action.type === "update-tags") {
-      allow(item.vaultId, sourceItemId, "active");
-      if (sourceAfter !== "active") {
-        failures.push({
-          itemId: sourceItemId,
-          vaultId: item.vaultId,
-          action: action.type,
-          ok: false,
-          severity: "critical",
-          message: `执行后校验失败：标签更新项 ${item.title} 已不在原保险库的活跃列表中。`
-        });
-      }
-      continue;
-    }
-
-    if (action.type === "archive") {
-      allow(item.vaultId, sourceItemId, "archived");
-      if (sourceAfter !== "archived") {
-        failures.push({
-          itemId: sourceItemId,
-          vaultId: item.vaultId,
-          action: action.type,
-          ok: false,
-          severity: sourceAfter === "missing" ? "critical" : "incomplete",
-          message: sourceAfter === "missing"
-            ? `执行后校验失败：归档项 ${item.title} 未出现在归档列表中，且已不在活跃列表中。`
-            : `执行后校验失败：归档项 ${item.title} 仍在活跃列表中。`
-        });
-      }
-      continue;
-    }
-
-    if (action.type === "delete") {
-      allow(item.vaultId, sourceItemId, "missing");
-      if (sourceAfter !== "missing") {
-        failures.push({
-          itemId: sourceItemId,
-          vaultId: item.vaultId,
-          action: action.type,
-          ok: false,
-          severity: "incomplete",
-          message: `执行后校验失败：删除项 ${item.title} 仍存在于 ${sourceAfter === "active" ? "活跃" : "归档"} 列表中。`
-        });
-      }
-      continue;
-    }
-
-    if (action.type === "copy-to-vault-and-archive-source") {
-      const result = resultByItemId.get(action.itemId);
-      const createdItemId = result?.createdItemId;
-      allow(item.vaultId, sourceItemId, "archived");
-      if (createdItemId) {
-        allow(action.targetVaultId, createdItemId, "active");
-      }
-      if (sourceAfter !== "archived") {
-        failures.push({
-          itemId: sourceItemId,
-          vaultId: item.vaultId,
-          action: action.type,
-          ok: false,
-          severity: sourceAfter === "missing" ? "critical" : "incomplete",
-          message: sourceAfter === "missing"
-            ? `执行后校验失败：迁移源 ${item.title} 未归档且已不在原保险库中。`
-            : `执行后校验失败：迁移源 ${item.title} 仍在原保险库活跃列表中。`
-        });
-      }
-      if (!createdItemId) {
-        failures.push({
-          itemId: action.itemId,
-          vaultId: action.targetVaultId,
-          action: action.type,
-          ok: false,
-          severity: "critical",
-          message: `执行后校验失败：迁移目标 ${item.title} 缺少新建 item id。`
-        });
-      } else if (stateOf(afterStates.get(action.targetVaultId), createdItemId) !== "active") {
-        failures.push({
-          itemId: createdItemId,
-          vaultId: action.targetVaultId,
-          action: action.type,
-          ok: false,
-          severity: "critical",
-          message: `执行后校验失败：迁移目标 ${item.title} 未出现在目标保险库活跃列表中。`
-        });
-      }
-    }
-  }
-
-  failures.push(...verifyVaultDiffs(beforeStates, afterStates, allowedTransitions));
-  return {
-    ok: failures.length === 0,
-    results: failures
-  };
-}
-
-type ItemState = "active" | "archived" | "missing";
-
-function verifyVaultDiffs(
-  beforeStates: Map<string, ItemStateSnapshot>,
-  afterStates: Map<string, ItemStateSnapshot>,
-  allowedTransitions: Map<string, Map<string, ItemState>>
-): VerificationResult[] {
-  const failures: VerificationResult[] = [];
-  const vaultIds = new Set([...beforeStates.keys(), ...afterStates.keys()]);
-  for (const vaultId of vaultIds) {
-    const before = beforeStates.get(vaultId);
-    const after = afterStates.get(vaultId);
-    const itemIds = new Set([
-      ...(before?.activeIds ?? []),
-      ...(before?.archivedIds ?? []),
-      ...(after?.activeIds ?? []),
-      ...(after?.archivedIds ?? [])
-    ]);
-    const allowed = allowedTransitions.get(vaultId) ?? new Map<string, ItemState>();
-    for (const itemId of itemIds) {
-      const beforeState = stateOf(before, itemId);
-      const afterState = stateOf(after, itemId);
-      if (beforeState === afterState) {
-        continue;
-      }
-      if (allowed.get(itemId) === afterState) {
-        continue;
-      }
-      failures.push({
-        itemId,
-        vaultId,
-        ok: false,
-        severity: "critical",
-        message: `执行后校验失败：保险库 ${vaultId} 中 item ${itemId} 出现计划外状态变化（${beforeState} -> ${afterState}）。`
-      });
-    }
-  }
-  return failures;
-}
-
-function stateOf(snapshot: ItemStateSnapshot | undefined, itemId: string): ItemState {
-  if (snapshot?.activeIds.includes(itemId)) {
-    return "active";
-  }
-  if (snapshot?.archivedIds.includes(itemId)) {
-    return "archived";
-  }
-  return "missing";
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function mutationActionError(action: PlanAction, error: unknown): string {
-  const detail = errorMessage(error);
-  if (action.type === "archive") {
-    return `归档失败：${detail}`;
-  }
-  if (action.type === "delete") {
-    return `删除失败：${detail}`;
-  }
-  if (action.type === "copy-to-vault-and-archive-source") {
-    return `迁移失败：${detail}`;
-  }
-  if (action.type === "update-tags") {
-    return `标签更新失败：${detail}`;
-  }
-  return `执行失败：${detail}`;
 }
 
 function formatOnePasswordError(error: unknown): string {
@@ -2395,7 +1362,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function buildItemSearchResponse(items: ItemSummary[], keywords: string[]): ItemSearchResponse {
+function buildItemSearchResponse(items: CanonicalItem[], keywords: string[]): ItemSearchResponse {
   const normalizedKeywords = Array.from(new Set(keywords.map(normalizeLooseText).filter(Boolean)));
   return {
     itemIds: items
@@ -2404,18 +1371,15 @@ function buildItemSearchResponse(items: ItemSummary[], keywords: string[]): Item
   };
 }
 
-function itemMatchesSearchKeyword(item: ItemSummary, keyword: string): boolean {
+function itemMatchesSearchKeyword(item: CanonicalItem, keyword: string): boolean {
   return searchValuesForItem(item).some((value) => normalizeLooseText(value).includes(keyword));
 }
 
-function searchValuesForItem(item: ItemSummary): string[] {
+function searchValuesForItem(item: CanonicalItem): string[] {
   return [
     item.title,
-    ...item.usernames,
-    ...item.urls,
-    ...item.comparableFields
-      .filter((field) => field.kind === "email")
-      .flatMap((field) => field.normalizedValue ? [field.normalizedValue] : []),
+    ...item.identities.map((identity) => identity.value),
+    ...item.urls.map((url) => url.value),
   ];
 }
 
@@ -2435,9 +1399,41 @@ function redactScanSnapshotForClient(scan: ScanSnapshot): ScanSnapshot {
 function redactScanResultForClient(scan: ScanResult): ScanResult {
   return {
     ...redactScanSnapshotForClient(scan),
+    storeVersion: scan.storeVersion,
     analyzedAt: scan.analyzedAt,
     groups: scan.groups
   };
+}
+
+function scanSnapshotFromAnalysis(analysis: ScanResult): ScanSnapshot {
+  return {
+    scanId: analysis.scanId,
+    scannedAt: analysis.scannedAt,
+    durationMs: analysis.durationMs,
+    vaults: analysis.vaults,
+    items: analysis.items,
+  };
+}
+
+function toClientActionPlan(
+  plan: CanonicalActionPlan,
+  services: import("./item-services.js").ApplicationServices
+): ActionPlanDto {
+  return toActionPlanDto(plan, realExecutionSupported(plan, services));
+}
+
+function realExecutionSupported(
+  plan: CanonicalActionPlan,
+  services: import("./item-services.js").ApplicationServices
+): boolean {
+  return plan.groups.every((group) => group.items.every((item) => item.actions.every((action) => {
+    const capabilities = services.backendRegistry.get(action.provider).getCapabilities();
+    if (action.kind === ActionKind.Keep) return true;
+    if (action.kind === ActionKind.Create) return capabilities.supportsCreate;
+    if (action.kind === ActionKind.Update) return capabilities.supportsUpdate;
+    if (action.kind === ActionKind.Archive) return capabilities.supportsArchive;
+    return capabilities.supportsDelete;
+  })));
 }
 
 function analysisResultResponse(state: TabAnalysisState, scan: ScanResult): AnalysisResultResponse {
@@ -2453,29 +1449,7 @@ function assertGroupIsNotSkipped(state: TabAnalysisState, groupId: string): void
   }
 }
 
-function removeCompletedGroup(scan: ScanResult, groupId: string): ScanResult {
-  return {
-    ...scan,
-    groups: scan.groups.filter((group) => group.id !== groupId)
-  };
-}
-
-function dryRunKeyFor(decision: GroupDecision, actions: PlanAction[]): string {
-  const canonicalPlan = {
-    scanId: decision.scanId,
-    groupId: decision.groupId,
-    actions: actions.map((action) => ({
-      type: action.type,
-      itemId: action.itemId,
-      vaultId: action.vaultId,
-      targetVaultId: "targetVaultId" in action ? action.targetVaultId : ""
-    }))
-  };
-
-  return createHash("sha256").update(JSON.stringify(canonicalPlan)).digest("base64url");
-}
-
-async function registerStaticUi(server: FastifyInstance, webDistDir: string | undefined): Promise<void> {
+async function registerStaticUi(server: FastifyInstance, webDistDir: string): Promise<void> {
   if (!webDistDir || !(await directoryExists(webDistDir))) {
     return;
   }
@@ -2485,34 +1459,34 @@ async function registerStaticUi(server: FastifyInstance, webDistDir: string | un
     const rawPath = request.url.split("?")[0] || "/";
     const decodedPath = safeDecodePath(rawPath);
     const candidatePath = decodedPath === "/" ? "/index.html" : decodedPath;
-    const filePath = await resolveStaticFile(root, candidatePath);
+    const file = await resolveStaticFile(root, candidatePath);
 
-    if (!filePath) {
+    if (!file.path) {
       return reply.code(404).send({ error: "找不到请求的资源。" });
     }
 
-    reply.type(contentTypeFor(filePath));
-    return reply.send(createReadStream(filePath));
+    reply.type(contentTypeFor(file.path));
+    return reply.send(createReadStream(file.path));
   });
 }
 
-async function resolveStaticFile(root: string, requestPath: string): Promise<string | undefined> {
+async function resolveStaticFile(root: string, requestPath: string): Promise<StaticFileLookup> {
   const relativePath = normalize(requestPath).replace(/^(\.\.(\/|\\|$))+/, "").replace(/^[/\\]+/, "");
   const requestedFile = resolve(root, relativePath);
   if (!isInside(root, requestedFile)) {
-    return undefined;
+    return {};
   }
 
   if (await fileExists(requestedFile)) {
-    return requestedFile;
+    return { path: requestedFile };
   }
 
   const indexFile = join(root, "index.html");
   if (!extname(requestPath) && await fileExists(indexFile)) {
-    return indexFile;
+    return { path: indexFile };
   }
 
-  return undefined;
+  return {};
 }
 
 async function directoryExists(path: string): Promise<boolean> {

@@ -1,9 +1,10 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { ActionExecutionStatus, DryRunSpeedMultiplier, ItemDisposition } from "@optimize-password/core";
 import { invoke } from '@tauri-apps/api/core';
 import { vi } from 'vitest';
-import { ApiService, SessionResponse } from './api.service';
+import { ApiService, ClientAppMode, ClientShell, SessionResponse } from './api.service';
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn()
@@ -41,12 +42,13 @@ describe('ApiService session bootstrap', () => {
     const request = http.expectOne('/api/session');
 
     expect(request.request.headers.has('x-session-token')).toBe(false);
-    request.flush(sessionResponse({ token: 'browser-token', mode: 'browser-dev' }));
+    request.flush(sessionResponse({ token: 'browser-token', mode: ClientAppMode.BrowserDev }));
 
     await expect(loading).resolves.toMatchObject({
       token: 'browser-token',
       mode: 'browser-dev'
     });
+    expect(service.session()?.token).toBe('browser-token');
     expect(vi.mocked(invoke)).not.toHaveBeenCalled();
   });
 
@@ -65,16 +67,17 @@ describe('ApiService session bootstrap', () => {
     const request = http.expectOne('http://127.0.0.1:49152/api/session');
 
     expect(request.request.headers.get('x-session-token')).toBe('tauri-token');
-    request.flush(sessionResponse({ token: 'tauri-token', mode: 'tauri' }));
+    request.flush(sessionResponse({ token: 'tauri-token', mode: ClientAppMode.Tauri }));
 
     await expect(loading).resolves.toMatchObject({
       token: 'tauri-token',
       mode: 'tauri'
     });
+    expect(service.session()?.token).toBe('tauri-token');
   });
 
   it('updates mutation mode through the session API', async () => {
-    service.session.set(sessionResponse({ token: 'browser-token', enableMutations: false }));
+    service.setSession(sessionResponse({ token: 'browser-token', enableMutations: false }));
 
     const updating = service.setMutationsEnabled(true);
     const request = http.expectOne('/api/session/mutations');
@@ -89,29 +92,33 @@ describe('ApiService session bootstrap', () => {
   });
 
   it("sends the selected dry-run speed with a batch execution", async () => {
-    service.session.set(sessionResponse({ token: "browser-token" }));
+    service.setSession(sessionResponse({ token: "browser-token" }));
     const draft = {
-      scanId: "scan-test",
+      storeSnapshotId: "scan-test",
+      storeVersion: 1,
       groups: [{
         groupId: "group-test",
-        items: [{ itemId: "vault:item", keep: false, deleteMode: "archive" as const }],
+        items: [{ itemId: "vault:item", disposition: ItemDisposition.Archive, removeTags: [] }],
       }],
     };
 
-    const starting = service.startActionExecution(draft, undefined, 5);
+    const planId = "plan-test";
+    const planHash = "a".repeat(64);
+    const starting = service.startActionExecution(planId, planHash, undefined, DryRunSpeedMultiplier.Five);
     const request = http.expectOne("/api/action-executions/start");
 
     expect(request.request.body).toEqual({
-      draft,
+      planId,
+      planHash,
       permanentDeleteConfirmationPhrase: undefined,
-      dryRunSpeedMultiplier: 5,
+      dryRunSpeedMultiplier: DryRunSpeedMultiplier.Five,
     });
     request.flush({
       executionId: "execution-test",
       eventsToken: "events-token",
-      status: "running",
+      status: ActionExecutionStatus.Running,
       writeEnabled: false,
-      dryRunSpeedMultiplier: 5,
+      dryRunSpeedMultiplier: DryRunSpeedMultiplier.Five,
       totalGroups: 1,
       totalOperations: 1,
       completedOperations: 0,
@@ -120,7 +127,7 @@ describe('ApiService session bootstrap', () => {
       draft,
     });
 
-    await expect(starting).resolves.toMatchObject({ dryRunSpeedMultiplier: 5 });
+    await expect(starting).resolves.toMatchObject({ dryRunSpeedMultiplier: DryRunSpeedMultiplier.Five });
   });
 
   it('streams scan events through native EventSource and closes after a terminal event', async () => {
@@ -222,19 +229,19 @@ describe('ApiService session bootstrap', () => {
 function sessionResponse(overrides: Partial<SessionResponse>): SessionResponse {
   return {
     token: 'token',
-    mode: 'browser-dev',
+    mode: ClientAppMode.BrowserDev,
     apiBaseUrl: 'http://127.0.0.1:3417',
     enableMutations: false,
     hasServiceAccountToken: false,
     supportsDesktopAuth: true,
-    idleShutdownMs: null,
+    idleShutdownMs: 0,
     capabilities: {
       staticUi: false,
       canShutdown: false,
       supportsHeartbeat: false,
       supportsIdleShutdown: false,
       supportsDesktopAuth: true,
-      shell: 'browser'
+      shell: ClientShell.Browser
     },
     ...overrides
   };
