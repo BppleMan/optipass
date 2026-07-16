@@ -178,9 +178,9 @@ export class ActionExecutionService {
 }
 
 const dryRunActionDelayMs: Record<DryRunSpeedMultiplier, number> = {
-    [DryRunSpeedMultiplier.One]: 1_000,
+    [DryRunSpeedMultiplier.One]: 0,
     [DryRunSpeedMultiplier.Five]: 200,
-    [DryRunSpeedMultiplier.Ten]: 100,
+    [DryRunSpeedMultiplier.Ten]: 400,
 };
 
 async function waitForDryRunPacing(multiplier: DryRunSpeedMultiplier, control?: ActionExecutionControl): Promise<void> {
