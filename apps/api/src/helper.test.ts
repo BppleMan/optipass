@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApiServer, PasswordService } from "./app.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { createApiServer } from "./app.js";
+import { createApplicationServices } from "./item-services.js";
+import { MockItemBackend } from "./mock-backend.js";
+import { AppMode } from "./config.js";
 import {
   formatHelperReadyLine,
   helperReadyPrefix,
@@ -7,19 +10,6 @@ import {
 } from "./helper.js";
 
 const originalEnv = { ...process.env };
-
-function createService(): PasswordService {
-  return {
-    scan: vi.fn(),
-    revealCredentials: vi.fn(),
-    archive: vi.fn(),
-    delete: vi.fn(),
-    removeTags: vi.fn(),
-    copyToVaultAndArchiveSource: vi.fn(),
-    listItemStates: vi.fn(),
-    clearCache: vi.fn()
-  };
-}
 
 describe("tauri helper", () => {
   afterEach(() => {
@@ -42,7 +32,7 @@ describe("tauri helper", () => {
       host: "127.0.0.1",
       port: 49152,
       token: "session-token",
-      mode: "tauri",
+      mode: AppMode.Tauri,
       apiBaseUrl: "http://127.0.0.1:49152",
       startedAt: "2026-01-01T00:00:00.000Z"
     });
@@ -60,12 +50,12 @@ describe("tauri helper", () => {
       config: {
         host: "127.0.0.1",
         port: 0,
-        mode: "tauri",
+        mode: AppMode.Tauri,
         webOrigins: ["http://tauri.localhost"],
         enableMutations: false,
         sessionToken: "helper-token"
       },
-      onePassword: createService(),
+      services: createApplicationServices([new MockItemBackend()]),
       logger: false,
       lifecycle: {
         shutdown: {

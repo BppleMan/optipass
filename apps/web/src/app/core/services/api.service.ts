@@ -1,11 +1,13 @@
 import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
-import { Injectable, signal } from '@angular/core';
-import type {
-  ActionDraft,
-  ActionPlan,
-  ActionPlanGroup,
-  GroupDecision,
-  PlanAction,
+import { computed, Injectable, signal } from '@angular/core';
+import {
+  ActionExecutionStatus,
+  ActionExecutionEventKind,
+  DryRunSpeedMultiplier,
+  type ActionDraft,
+  type ActionPlanDto,
+  ScanMode,
+  type ItemProvider,
   RevealCredentialsResponse,
   ScanProgress,
   ScanProgressEvent,
@@ -15,52 +17,70 @@ import type {
 import { firstValueFrom } from 'rxjs';
 
 const actionExecutionEventTypes = [
-  'started',
-  'group-started',
-  'action-started',
-  'action-completed',
-  'action-failed',
-  'group-verifying',
-  'group-completed',
-  'paused',
-  'resumed',
-  'stop-requested',
-  'analysis-updated',
-  'stopped',
-  'completed',
-  'failed',
-] as const;
+  ActionExecutionEventKind.Started,
+  ActionExecutionEventKind.StepStarted,
+  ActionExecutionEventKind.StepCompleted,
+  ActionExecutionEventKind.StepFailed,
+  ActionExecutionEventKind.Paused,
+  ActionExecutionEventKind.Resumed,
+  ActionExecutionEventKind.StopRequested,
+  ActionExecutionEventKind.AnalysisUpdated,
+  ActionExecutionEventKind.Stopped,
+  ActionExecutionEventKind.Completed,
+  ActionExecutionEventKind.Failed,
+];
 
-export type DryRunSpeedMultiplier = 1 | 5 | 10;
+export { DryRunSpeedMultiplier } from '@optimize-password/core';
 
 interface TauriBackendSession {
   baseUrl: string;
   token: string;
 }
 
+interface TauriBackendSessionLookup {
+  session?: TauriBackendSession;
+}
+
+interface ApiSessionState {
+  session?: SessionResponse;
+  bootstrapToken?: string;
+}
+
+export enum ClientAppMode {
+  BrowserDev = 'browser-dev', BrowserServe = 'browser-serve', Tauri = 'tauri',
+}
+
+export enum ClientShell {
+  Browser = 'browser', Tauri = 'tauri',
+}
+
+enum ActionExecutionCommand {
+  Pause = 'pause', Resume = 'resume', Stop = 'stop',
+}
+
 export interface SessionResponse {
   token: string;
-  mode: 'browser-dev' | 'browser-serve' | 'tauri';
+  mode: ClientAppMode;
   accountName?: string;
   resumeAccountName?: string;
   apiBaseUrl: string;
   enableMutations: boolean;
   hasServiceAccountToken: boolean;
   supportsDesktopAuth: boolean;
-  idleShutdownMs: number | null;
+  idleShutdownMs: number;
   capabilities: {
     staticUi: boolean;
     canShutdown: boolean;
     supportsHeartbeat: boolean;
     supportsIdleShutdown: boolean;
     supportsDesktopAuth: boolean;
-    shell: 'browser' | 'tauri';
+    shell: ClientShell;
   };
 }
 
 export interface ScanStartResponse {
   scanId: string;
-  mode: 'live' | 'mock';
+  mode: ScanMode;
   progress: ScanProgress;
   eventsToken: string;
 }
@@ -68,77 +88,6 @@ export interface ScanStartResponse {
 export interface ActiveScanResponse extends ScanStartResponse {
   eventCount: number;
 }
-
-export interface ExecuteActionResult {
-  itemId: string;
-  action: string;
-  ok: boolean;
-  dryRun?: boolean;
-  skipped?: boolean;
-  error?: string;
-  createdItemId?: string;
-  targetVaultId?: string;
-}
-
-export interface VerificationResult {
-  itemId?: string;
-  vaultId: string;
-  action?: string;
-  ok: boolean;
-  severity: 'critical' | 'incomplete';
-  message: string;
-}
-
-export interface ExecutionVerification {
-  ok: boolean;
-  results: VerificationResult[];
-}
-
-export interface ExecuteResponse {
-  plan?: ActionPlanGroup;
-  scan?: AnalysisResultResponse;
-  results?: ExecuteActionResult[];
-  verification?: ExecutionVerification;
-  blocked?: boolean;
-  error?: string;
-  dryRun?: boolean;
-  dryRunKey?: string;
-  scanInvalidated?: boolean;
-  completedGroupId?: string;
-  mutated?: boolean;
-}
-
-export interface ExecuteStartResponse {
-  executionId: string;
-  eventsToken: string;
-  dryRun: boolean;
-  totalOperations: number;
-}
-
-export interface ExecuteProgressEvent {
-  type: 'started' | 'action-started' | 'action' | 'completed' | 'failed';
-  sequence: number;
-  executionId: string;
-  dryRun: boolean;
-  totalOperations: number;
-  completedOperations: number;
-  action?: {
-    itemId: string;
-    type: string;
-  };
-  result?: ExecuteActionResult;
-  response?: ExecuteResponse;
-  error?: string;
-}
-
-export type ExecuteRequest = GroupDecision & {
-  confirmPermanentDelete?: boolean;
-  permanentDeleteConfirmationPhrase?: string;
-  confirmedDryRunKey?: string;
-  dryRun?: boolean;
-};
-
-export type ActionExecutionStatus = 'running' | 'pause-requested' | 'paused' | 'stop-requested' | 'stopped' | 'completed' | 'failed';
 
 export interface ActionExecutionSnapshot {
   executionId: string;
@@ -150,29 +99,19 @@ export interface ActionExecutionSnapshot {
   totalOperations: number;
   completedOperations: number;
   cancelledOperations: number;
-  plan: ActionPlan;
+  plan: ActionPlanDto;
   draft: ActionDraft;
 }
 
 export interface ActionExecutionUpdateResponse {
-  draft: ActionDraft;
-  completedGroupIds: string[];
-  results: ExecuteActionResult[];
-  effects: ActionExecutionEffect[];
-  cancelledOperations: number;
-}
-
-export interface ActionExecutionEffect {
-  groupId: string;
-  sourceItemId: string;
-  createdItemId?: string;
-  actionType: PlanAction["type"];
-  wroteToOnePassword: boolean;
-  succeeded: boolean;
+  analysis: AnalysisResultResponse;
+  storeVersion: number;
+  itemIdMappings: Record<string, string>;
+  dryRun: boolean;
 }
 
 export interface ActionExecutionEvent {
-  type: string;
+  type: ActionExecutionEventKind;
   sequence: number;
   executionId: string;
   status: ActionExecutionStatus;
@@ -181,10 +120,9 @@ export interface ActionExecutionEvent {
   totalOperations: number;
   completedOperations: number;
   groupId?: string;
-  entryId?: string;
-  action?: { itemId: string; type: string };
-  result?: ExecuteActionResult;
-  progress?: ScanProgress;
+  actionId?: string;
+  stepStatus?: import("@optimize-password/core").ActionStepStatus;
+  message?: string;
   response?: ActionExecutionUpdateResponse;
   error?: string;
 }
@@ -207,36 +145,45 @@ const tabIdStorageKey = 'optipass.tabId';
 
 @Injectable({ providedIn: 'root' })
 export class ApiService {
-  readonly session = signal<SessionResponse | undefined>(undefined);
+  private readonly sessionState = signal<ApiSessionState>({});
+  readonly session = computed(() => this.sessionState().session);
   private apiBaseUrl = '';
-  private bootstrapSessionToken: string | undefined;
   private readonly tabId = loadTabId();
 
   constructor(private readonly http: HttpClient) {}
 
+  public setSession(session: SessionResponse): void {
+    this.sessionState.set({ session });
+  }
+
   async loadSession(): Promise<SessionResponse> {
     const tauriSession = await this.loadTauriBackendSession();
-    if (tauriSession) {
-      this.apiBaseUrl = normalizeBaseUrl(tauriSession.baseUrl);
-      this.bootstrapSessionToken = tauriSession.token;
+    if (tauriSession.session) {
+      this.apiBaseUrl = normalizeBaseUrl(tauriSession.session.baseUrl);
+      this.sessionState.set({ bootstrapToken: tauriSession.session.token });
     } else {
       this.apiBaseUrl = '';
-      this.bootstrapSessionToken = undefined;
+      this.sessionState.set({});
     }
 
     const session = await this.request(firstValueFrom(
       this.http.get<SessionResponse>(this.apiUrl('/api/session'), { headers: this.headers() })
     ));
-    this.session.set(session);
-    this.bootstrapSessionToken = undefined;
+    this.setSession(session);
     return session;
   }
 
-  async startScan(options: { accountName?: string; mode?: 'live' | 'mock' }): Promise<ScanStartResponse> {
+  async startScan(options: { accountName?: string; mode?: ScanMode; provider?: ItemProvider; fileName?: string; csvContent?: string }): Promise<ScanStartResponse> {
     return this.request(firstValueFrom(
       this.http.post<ScanStartResponse>(
         this.apiUrl('/api/scan'),
-        { accountName: options.accountName || undefined, mode: options.mode ?? 'live' },
+        {
+          accountName: options.accountName || undefined,
+          mode: options.mode ?? ScanMode.Live,
+          provider: options.provider,
+          fileName: options.fileName,
+          csvContent: options.csvContent,
+        },
         { headers: this.headers() }
       )
     ));
@@ -386,8 +333,8 @@ export class ApiService {
     }
   }
 
-  async createPlan(decision: GroupDecision): Promise<ActionPlanGroup> {
-    return this.request(firstValueFrom(this.http.post<ActionPlanGroup>(this.apiUrl('/api/plan'), decision, { headers: this.headers() })));
+  async createPlan(draft: ActionDraft): Promise<ActionPlanDto> {
+    return this.request(firstValueFrom(this.http.post<ActionPlanDto>(this.apiUrl("/api/plan"), draft, { headers: this.headers() })));
   }
 
   async skipGroup(scanId: string, groupId: string): Promise<SkipGroupResponse> {
@@ -410,43 +357,29 @@ export class ApiService {
     ));
   }
 
-  async execute(decision: GroupDecision & {
-    confirmPermanentDelete?: boolean;
-    permanentDeleteConfirmationPhrase?: string;
-    confirmedDryRunKey?: string;
-    dryRun?: boolean;
-  }): Promise<ExecuteResponse> {
-    return this.request(firstValueFrom(this.http.post<ExecuteResponse>(this.apiUrl('/api/execute'), decision, { headers: this.headers() })));
-  }
-
-  async startExecution(decision: ExecuteRequest): Promise<ExecuteStartResponse> {
-    return this.request(firstValueFrom(
-      this.http.post<ExecuteStartResponse>(this.apiUrl('/api/execute/start'), decision, { headers: this.headers() })
-    ));
-  }
-
   async startActionExecution(
-    draft: ActionDraft,
+    planId: string,
+    planHash: string,
     permanentDeleteConfirmationPhrase?: string,
-    dryRunSpeedMultiplier: DryRunSpeedMultiplier = 1,
+    dryRunSpeedMultiplier: DryRunSpeedMultiplier = DryRunSpeedMultiplier.One,
   ): Promise<ActionExecutionSnapshot> {
     return this.request(firstValueFrom(this.http.post<ActionExecutionSnapshot>(
       this.apiUrl('/api/action-executions/start'),
-      { draft, permanentDeleteConfirmationPhrase, dryRunSpeedMultiplier },
+      { planId, planHash, permanentDeleteConfirmationPhrase, dryRunSpeedMultiplier },
       { headers: this.headers() }
     )));
   }
 
   async pauseActionExecution(executionId: string): Promise<ActionExecutionSnapshot> {
-    return this.actionExecutionCommand(executionId, 'pause');
+    return this.actionExecutionCommand(executionId, ActionExecutionCommand.Pause);
   }
 
   async resumeActionExecution(executionId: string): Promise<ActionExecutionSnapshot> {
-    return this.actionExecutionCommand(executionId, 'resume');
+    return this.actionExecutionCommand(executionId, ActionExecutionCommand.Resume);
   }
 
   async stopActionExecution(executionId: string): Promise<ActionExecutionSnapshot> {
-    return this.actionExecutionCommand(executionId, 'stop');
+    return this.actionExecutionCommand(executionId, ActionExecutionCommand.Stop);
   }
 
   async streamActionExecutionEvents(
@@ -484,20 +417,6 @@ export class ApiService {
     });
   }
 
-  async streamExecutionEvents(
-    executionId: string,
-    eventsToken: string,
-    onEvent: (event: ExecuteProgressEvent) => void,
-    options: { signal?: AbortSignal; after?: number } = {}
-  ): Promise<void> {
-    if (typeof EventSource !== 'undefined') {
-      await this.streamExecutionEventsWithEventSource(executionId, eventsToken, onEvent, options);
-      return;
-    }
-
-    await this.streamExecutionEventsWithFetch(executionId, eventsToken, onEvent, options);
-  }
-
   async setMutationsEnabled(enableMutations: boolean): Promise<SessionResponse> {
     const session = await this.request(firstValueFrom(
       this.http.patch<SessionResponse>(
@@ -506,7 +425,7 @@ export class ApiService {
         { headers: this.headers() }
       )
     ));
-    this.session.set(session);
+    this.setSession(session);
     return session;
   }
 
@@ -514,9 +433,9 @@ export class ApiService {
     return this.request(firstValueFrom(this.http.post<{ ok: boolean }>(this.apiUrl('/api/scan/clear'), {}, { headers: this.headers() })));
   }
 
-  async heartbeat(): Promise<{ ok: boolean; idleShutdownMs: number | null }> {
+  async heartbeat(): Promise<{ ok: boolean; idleShutdownMs: number }> {
     return this.request(firstValueFrom(
-      this.http.post<{ ok: boolean; idleShutdownMs: number | null }>(this.apiUrl('/api/session/heartbeat'), {}, { headers: this.headers() })
+      this.http.post<{ ok: boolean; idleShutdownMs: number }>(this.apiUrl('/api/session/heartbeat'), {}, { headers: this.headers() })
     ));
   }
 
@@ -525,7 +444,7 @@ export class ApiService {
   }
 
   private headers(): HttpHeaders {
-    const token = this.session()?.token ?? this.bootstrapSessionToken;
+    const token = this.session()?.token ?? this.sessionState().bootstrapToken;
     const headers: Record<string, string> = { 'x-tab-id': this.tabId };
     if (token) {
       headers['x-session-token'] = token;
@@ -534,7 +453,7 @@ export class ApiService {
   }
 
   private fetchHeaders(): HeadersInit {
-    const token = this.session()?.token ?? this.bootstrapSessionToken;
+    const token = this.session()?.token ?? this.sessionState().bootstrapToken;
     return token ? { 'x-session-token': token, 'x-tab-id': this.tabId } : { 'x-tab-id': this.tabId };
   }
 
@@ -553,17 +472,6 @@ export class ApiService {
     return this.apiUrl(`/api/scan/events?${query.toString()}`);
   }
 
-  private executionEventsUrl(executionId: string, eventsToken: string, after = 0): string {
-    const query = new URLSearchParams({
-      executionId,
-      eventsToken
-    });
-    if (after > 0) {
-      query.set('after', String(after));
-    }
-    return this.apiUrl(`/api/execute/events?${query.toString()}`);
-  }
-
   private actionExecutionEventsUrl(executionId: string, eventsToken: string, after = 0): string {
     const query = new URLSearchParams({ eventsToken });
     if (after > 0) {
@@ -572,7 +480,7 @@ export class ApiService {
     return this.apiUrl(`/api/action-executions/${ encodeURIComponent(executionId) }/events?${ query.toString() }`);
   }
 
-  private async actionExecutionCommand(executionId: string, command: 'pause' | 'resume' | 'stop'): Promise<ActionExecutionSnapshot> {
+  private async actionExecutionCommand(executionId: string, command: ActionExecutionCommand): Promise<ActionExecutionSnapshot> {
     return this.request(firstValueFrom(this.http.post<ActionExecutionSnapshot>(
       this.apiUrl(`/api/action-executions/${ encodeURIComponent(executionId) }/${ command }`),
       {},
@@ -580,112 +488,14 @@ export class ApiService {
     )));
   }
 
-  private streamExecutionEventsWithEventSource(
-    executionId: string,
-    eventsToken: string,
-    onEvent: (event: ExecuteProgressEvent) => void,
-    options: { signal?: AbortSignal; after?: number } = {}
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (options.signal?.aborted) {
-        resolve();
-        return;
-      }
-
-      const source = new EventSource(this.executionEventsUrl(executionId, eventsToken, options.after));
-      let settled = false;
-      const settle = (callback: () => void): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        options.signal?.removeEventListener('abort', abort);
-        source.close();
-        callback();
-      };
-      const abort = (): void => settle(resolve);
-      const handleEvent = (message: Event): void => {
-        const event = JSON.parse((message as MessageEvent<string>).data) as ExecuteProgressEvent;
-        onEvent(event);
-        if (event.type === 'completed') {
-          settle(resolve);
-        } else if (event.type === 'failed') {
-          settle(() => reject(new Error(event.error || '执行进度流异常结束。')));
-        }
-      };
-
-      source.addEventListener('started', handleEvent);
-      source.addEventListener('action-started', handleEvent);
-      source.addEventListener('action', handleEvent);
-      source.addEventListener('completed', handleEvent);
-      source.addEventListener('failed', handleEvent);
-      source.onerror = () => {
-        if (source.readyState === EventSource.CLOSED) {
-          settle(() => reject(new Error('执行进度流已关闭。')));
-        }
-      };
-      options.signal?.addEventListener('abort', abort, { once: true });
-    });
-  }
-
-  private async streamExecutionEventsWithFetch(
-    executionId: string,
-    eventsToken: string,
-    onEvent: (event: ExecuteProgressEvent) => void,
-    options: { signal?: AbortSignal; after?: number } = {}
-  ): Promise<void> {
-    const response = await fetch(this.executionEventsUrl(executionId, eventsToken, options.after), {
-      headers: this.fetchHeaders(),
-      cache: 'no-store',
-      signal: options.signal
-    });
-    if (!response.ok) {
-      throw new Error(await this.fetchErrorMessage(response));
-    }
-    if (!response.body) {
-      throw new Error('当前浏览器不支持执行进度流。');
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    while (!options.signal?.aborted) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split('\n\n');
-      buffer = chunks.pop() ?? '';
-      for (const chunk of chunks) {
-        const data = chunk
-          .split('\n')
-          .filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trimStart())
-          .join('\n');
-        if (!data) {
-          continue;
-        }
-        const event = JSON.parse(data) as ExecuteProgressEvent;
-        onEvent(event);
-        if (event.type === 'completed') {
-          return;
-        }
-        if (event.type === 'failed') {
-          throw new Error(event.error || '执行进度流异常结束。');
-        }
-      }
-    }
-  }
-
-  private async loadTauriBackendSession(): Promise<TauriBackendSession | undefined> {
+  private async loadTauriBackendSession(): Promise<TauriBackendSessionLookup> {
     if (!isTauriRuntime()) {
-      return undefined;
+      return {};
     }
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<TauriBackendSession>('backend_session');
+      return { session: await invoke<TauriBackendSession>('backend_session') };
     } catch (error) {
       throw new Error(`无法启动本地 API：${this.apiErrorMessage(error)}`);
     }

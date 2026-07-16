@@ -1,31 +1,22 @@
-export type ItemCategory =
-  | "api-credential"
-  | "bank-account"
-  | "credit-card"
-  | "crypto-wallet"
-  | "database"
-  | "document"
-  | "driver-license"
-  | "email"
-  | "identity"
-  | "login"
-  | "medical-record"
-  | "membership"
-  | "outdoor-license"
-  | "passport"
-  | "person"
-  | "password"
-  | "rewards"
-  | "router"
-  | "secure-note"
-  | "server"
-  | "ssh-key"
-  | "social-security-number"
-  | "software-license"
-  | "unsupported"
-  | "unknown";
+import { ItemCategory } from "./domain.js";
 
-export type SimilarityRule = "account-identity-url" | "title-url";
+export { ItemCategory } from "./domain.js";
+
+export enum SimilarityRule {
+    AccountIdentityUrl = "account-identity-url",
+    TitleUrl = "title-url",
+}
+
+export enum ComparableFieldKind {
+    Username = "username",
+    Url = "url",
+    Email = "email",
+    Phone = "phone",
+    Text = "text",
+    Secret = "secret",
+    Card = "card",
+    Unknown = "unknown",
+}
 
 export interface VaultSummary {
   id: string;
@@ -34,7 +25,7 @@ export interface VaultSummary {
 
 export interface ComparableField {
   label: string;
-  kind: "username" | "url" | "email" | "phone" | "text" | "secret" | "card" | "unknown";
+  kind: ComparableFieldKind;
   normalizedValueHash?: string;
   normalizedValue?: string;
 }
@@ -96,25 +87,32 @@ export interface ScanSnapshot {
 }
 
 export interface ScanResult extends ScanSnapshot {
+  storeVersion: number;
   analyzedAt: string;
   groups: SimilarityGroup[];
 }
 
-export type ScanPhase = "idle" | "scanning" | "completed" | "failed";
+export enum ScanPhase {
+    Idle = "idle",
+    Scanning = "scanning",
+    Completed = "completed",
+    Failed = "failed",
+}
 
-export type DashboardCategory =
-  | "login"
-  | "secure-note"
-  | "credit-card"
-  | "document"
-  | "password"
-  | "api-credential"
-  | "database"
-  | "ssh-key"
-  | "identity"
-  | "server"
-  | "software-license"
-  | "other";
+export enum DashboardCategory {
+    Login = "login",
+    SecureNote = "secure-note",
+    CreditCard = "credit-card",
+    Document = "document",
+    Password = "password",
+    ApiCredential = "api-credential",
+    Database = "database",
+    SshKey = "ssh-key",
+    Identity = "identity",
+    Server = "server",
+    SoftwareLicense = "software-license",
+    Other = "other",
+}
 
 export interface DashboardCategoryDefinition {
   id: DashboardCategory;
@@ -143,7 +141,12 @@ export interface ScanProgress {
   error?: string;
 }
 
-export type ScanProgressEventType = "started" | "progress" | "completed" | "failed";
+export enum ScanProgressEventType {
+    Started = "started",
+    Progress = "progress",
+    Completed = "completed",
+    Failed = "failed",
+}
 
 export interface ScanProgressEvent {
   type: ScanProgressEventType;
@@ -166,22 +169,22 @@ export interface RevealCredentialsResponse {
 }
 
 export const dashboardCategoryDefinitions: DashboardCategoryDefinition[] = [
-  { id: "login", label: "登录信息", categories: ["login"] },
-  { id: "secure-note", label: "安全备注", categories: ["secure-note"] },
-  { id: "credit-card", label: "信用卡片", categories: ["credit-card"] },
-  { id: "document", label: "文档", categories: ["document"] },
-  { id: "password", label: "密码", categories: ["password"] },
-  { id: "api-credential", label: "API 凭据", categories: ["api-credential"] },
-  { id: "database", label: "数据库", categories: ["database"] },
-  { id: "ssh-key", label: "SSH 密钥", categories: ["ssh-key"] },
-  { id: "identity", label: "身份标识", categories: ["identity"] },
-  { id: "server", label: "服务器", categories: ["server"] },
-  { id: "software-license", label: "软件许可", categories: ["software-license"] },
-  { id: "other", label: "其它", categories: [] }
+  { id: DashboardCategory.Login, label: "登录信息", categories: [ItemCategory.Login] },
+  { id: DashboardCategory.SecureNote, label: "安全备注", categories: [ItemCategory.SecureNote] },
+  { id: DashboardCategory.CreditCard, label: "信用卡片", categories: [ItemCategory.CreditCard] },
+  { id: DashboardCategory.Document, label: "文档", categories: [ItemCategory.Document] },
+  { id: DashboardCategory.Password, label: "密码", categories: [ItemCategory.Password] },
+  { id: DashboardCategory.ApiCredential, label: "API 凭据", categories: [ItemCategory.ApiCredential] },
+  { id: DashboardCategory.Database, label: "数据库", categories: [ItemCategory.Database] },
+  { id: DashboardCategory.SshKey, label: "SSH 密钥", categories: [ItemCategory.SshKey] },
+  { id: DashboardCategory.Identity, label: "身份标识", categories: [ItemCategory.Identity] },
+  { id: DashboardCategory.Server, label: "服务器", categories: [ItemCategory.Server] },
+  { id: DashboardCategory.SoftwareLicense, label: "软件许可", categories: [ItemCategory.SoftwareLicense] },
+  { id: DashboardCategory.Other, label: "其它", categories: [] }
 ];
 
 export function dashboardCategoryFor(category: ItemCategory): DashboardCategory {
-  return dashboardCategoryDefinitions.find((definition) => definition.categories.includes(category))?.id ?? "other";
+  return dashboardCategoryDefinitions.find((definition) => definition.categories.includes(category))?.id ?? DashboardCategory.Other;
 }
 
 export function emptyDashboardCategoryCounts(): Record<DashboardCategory, number> {
@@ -217,93 +220,3 @@ export function summarizeVaults(vaults: VaultSummary[], items: ItemSummary[]): V
 
   return Array.from(summaries.values());
 }
-
-export interface ActionDraftItem {
-  itemId: string;
-  keep: boolean;
-  targetVaultId?: string;
-  deleteMode?: "archive" | "delete";
-  removeTags?: string[];
-}
-
-export interface ActionDraftGroup {
-  groupId: string;
-  items: ActionDraftItem[];
-}
-
-export interface ActionDraft {
-  scanId: string;
-  groups: ActionDraftGroup[];
-}
-
-/** @deprecated Use ActionDraftItem. */
-export type ItemDecision = ActionDraftItem;
-
-/** @deprecated Legacy single-group request. New batch execution uses ActionDraft. */
-export interface GroupDecision extends ActionDraftGroup {
-  scanId: string;
-}
-
-export type PlanAction =
-  | {
-      type: "keep";
-      itemId: string;
-      vaultId: string;
-      targetVaultId: string;
-    }
-  | {
-      type: "update-tags";
-      itemId: string;
-      vaultId: string;
-      removeTags: string[];
-    }
-  | {
-      type: "archive" | "delete";
-      itemId: string;
-      vaultId: string;
-    }
-  | {
-      type: "copy-to-vault-and-archive-source";
-      itemId: string;
-      vaultId: string;
-      targetVaultId: string;
-      removeTags: string[];
-    };
-
-export interface ActionPlanGroup {
-  createdAt: string;
-  groupId: string;
-  actions: PlanAction[];
-  summary: ActionPlanSummary;
-  warnings: string[];
-  blockers: string[];
-  requiresExplicitDeleteConfirmation: boolean;
-}
-
-export interface ActionPlan {
-  planId: string;
-  sourceScanId: string;
-  createdAt: string;
-  writeEnabled: boolean;
-  groups: ActionPlanGroup[];
-  summary: ActionPlanSummary;
-  warnings: string[];
-  blockers: string[];
-  requiresExplicitDeleteConfirmation: boolean;
-}
-
-export interface ActionPlanSummary {
-  keep: number;
-  archive: number;
-  delete: number;
-  move: number;
-  tagUpdate: number;
-  removedTagCount: number;
-  affectedVaultIds: string[];
-}
-
-/** @deprecated Use ActionPlanGroup. */
-export type ExecutionPlan = ActionPlanGroup;
-
-/** @deprecated Use ActionPlanSummary. */
-export type ExecutionPlanSummary = ActionPlanSummary;

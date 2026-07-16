@@ -1,1054 +1,319 @@
-import { signal } from '@angular/core';
-import { vi } from 'vitest';
-import { type ActionDraft, type GroupDecision, type ItemSummary, type ScanProgress, type ScanResult, type ScanSnapshot, type SimilarityGroup } from '@optimize-password/core';
-import type { ExecuteResponse, SkipGroupResponse } from '../../../core/services/api.service';
-import { WorkflowService } from './workflow.service';
+import { signal } from "@angular/core";
+import {
+    ActionExecutionEventKind,
+    ActionExecutionStatus,
+    ActionKind,
+    ActionStepStatus,
+    DryRunSpeedMultiplier,
+    ItemCategory,
+    ItemDisposition,
+    ItemProvider,
+    ScanMode,
+    ScanPhase,
+    type ActionPlanDto,
+    type ScanResult,
+} from "@optimize-password/core";
+import { describe, expect, it, vi } from "vitest";
+import { WorkflowService } from "./workflow.service";
+import { ApplyStatus, RemoveAction } from "../../../core/models/workflow.models";
+import { ClientAppMode, ClientShell } from "../../../core/services/api.service";
 
-describe('WorkflowService analysis filters', () => {
-  it('shows the configured account in the header before scanning starts', () => {
-    const service = createService();
+describe("WorkflowService canonical action workflow", () => {
+    it("stores decisions with canonical disposition fields", () => {
+        const { service } = createService();
+        service.setScanResult(scanResult());
+        service.decisions.set({
+            "one-password:test:new": {
+                itemId: "one-password:test:new",
+                disposition: ItemDisposition.Keep,
+                targetContainerId: "private",
+                removeTags: [],
+            },
+            "one-password:test:old": {
+                itemId: "one-password:test:old",
+                disposition: ItemDisposition.Archive,
+                targetContainerId: "archive",
+                removeTags: [],
+            },
+        });
 
-    service.updateAccount(' BppleMan ');
+        service.updateItemTitle("one-password:test:new", "新标题");
+        service.updateRemoveAction("one-password:test:old", RemoveAction.Delete);
 
-    expect(service.accountChip()).toBe('BppleMan');
-    expect(service.authState()).toBe('idle');
-  });
-
-  it('keeps multiple credential metadata fields as separate detail entries', () => {
-    const service = createService();
-    const result = scanResult();
-    result.items[0].comparableFields = [
-      { label: '主密码', kind: 'secret' },
-      { label: '恢复密钥', kind: 'secret' }
-    ];
-    service.scanResult.set(result);
-
-    expect(service.visibleGroups()[0].items[0].credChips.map((chip) => ({ label: chip.label, kind: chip.kind }))).toEqual([
-      { label: '主密码', kind: 'password' },
-      { label: '恢复密钥', kind: 'secret' }
-    ]);
-  });
-
-  it('keeps tag removal as a reversible draft and includes it in the plan', () => {
-    const service = createService();
-    const result = scanResult();
-    result.items[0].tags = ['CSV Import', 'work'];
-    service.scanResult.set(result);
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', removeTags: [] },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
+        expect(service.decisions()["one-password:test:new"].desiredTitle).toBe("新标题");
+        expect(service.decisions()["one-password:test:old"].disposition).toBe(ItemDisposition.Delete);
     });
 
-    service.toggleTagRemoval('icloud:github-new', 'CSV Import');
+    it("loads expanded backend steps before opening the execution dialog", async () => {
+        const { service, api } = createService();
+        const result = scanResult();
+        service.setScanResult(result);
+        service.decisions.set(defaultDecisions());
+        vi.mocked(api.createPlan).mockResolvedValue(actionPlan());
 
-    const itemView = service.visibleGroups()[0].items[0];
-    const plan = service.allPreviewGroups()[0].plan!;
-    expect(itemView.removedTags).toEqual(['CSV Import']);
-    expect(itemView.remainingTagCount).toBe(1);
-    expect(plan.actions).toContainEqual({
-      type: 'update-tags',
-      itemId: 'icloud:github-new',
-      vaultId: 'icloud',
-      removeTags: ['CSV Import']
+        await service.openGroupExecutionDialog("group-1");
+
+        expect(api.createPlan).toHaveBeenCalledWith({
+            storeSnapshotId: result.scanId,
+            storeVersion: result.storeVersion,
+            groups: [{
+                groupId: "group-1",
+                items: Object.values(defaultDecisions()),
+            }],
+        });
+        expect(service.operations().map((operation) => operation.actionId)).toEqual(["archive-old"]);
+        expect(service.actionExecutionStatus()).toBe(ActionExecutionStatus.Ready);
     });
 
-    service.toggleTagRemoval('icloud:github-new', 'CSV Import');
-    expect(service.visibleGroups()[0].items[0].removedTags).toEqual([]);
-  });
+    it("使用预览计划的 planId 和 planHash 启动同一组 Action", async () => {
+        const { service, api } = createService();
+        const result = scanResult();
+        const plan = actionPlan();
+        service.setScanResult(result);
+        service.decisions.set(defaultDecisions());
+        vi.mocked(api.createPlan).mockResolvedValue(plan);
+        vi.mocked(api.startActionExecution).mockResolvedValue({
+            executionId: "execution-1",
+            eventsToken: "events",
+            status: ActionExecutionStatus.Completed,
+            writeEnabled: false,
+            dryRunSpeedMultiplier: DryRunSpeedMultiplier.One,
+            totalGroups: 1,
+            totalOperations: 1,
+            completedOperations: 1,
+            cancelledOperations: 0,
+            plan,
+            draft: {
+                storeSnapshotId: result.scanId,
+                storeVersion: result.storeVersion,
+                groups: [{ groupId: "group-1", items: Object.values(defaultDecisions()) }],
+            },
+        });
+        vi.mocked(api.streamActionExecutionEvents).mockResolvedValue();
+        await service.openGroupExecutionDialog("group-1");
 
-  it('applies a shared tag removal only to kept items in the group', () => {
-    const service = createService();
-    const result = scanResult();
-    result.items[0].tags = ['CSV Import'];
-    result.items[1].tags = ['CSV Import'];
-    service.scanResult.set(result);
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
+        await service.startPreparedActionExecution();
+
+        expect(api.startActionExecution).toHaveBeenCalledWith(
+            plan.planId,
+            plan.planHash,
+            undefined,
+            DryRunSpeedMultiplier.One,
+        );
     });
 
-    service.removeTagFromGroup('github-group', 'CSV Import');
+    it("updates progress by actionId and replaces formal analysis after real execution", async () => {
+        const { service, api } = createService();
+        const result = scanResult();
+        service.setScanResult(result);
+        service.decisions.set(defaultDecisions());
+        vi.mocked(api.createPlan).mockResolvedValue(actionPlan());
+        await service.openGroupExecutionDialog("group-1");
 
-    expect(service.decisions()['icloud:github-new'].removeTags).toEqual(['CSV Import']);
-    expect(service.decisions()['private:github-old'].removeTags).toBeUndefined();
-  });
+        const applyEvent = (service as unknown as { applyActionExecutionEvent(event: unknown): void }).applyActionExecutionEvent.bind(service);
+        applyEvent({
+            type: ActionExecutionEventKind.StepStarted,
+            sequence: 1,
+            executionId: "execution-1",
+            status: ActionExecutionStatus.Running,
+            writeEnabled: true,
+            totalGroups: 1,
+            totalOperations: 1,
+            completedOperations: 0,
+            actionId: "archive-old",
+            stepStatus: ActionStepStatus.Running,
+        });
+        expect(service.operations()[0].status).toBe(ApplyStatus.Running);
 
-  it('uses OR within one filter section and AND across different sections', () => {
-    const service = createService();
-    service.scanResult.set(scanResult());
-
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
-
-    service.toggleAnalysisFilter('years', '2025', true);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
-
-    service.toggleAnalysisFilter('years', '2023', true);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
-
-    service.toggleAnalysisFilter('domains', 'apple.com', true);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['apple-group']);
-
-    service.toggleAnalysisFilter('credentials', 'password', true);
-    expect(service.visibleGroups()).toHaveLength(0);
-
-    service.toggleAnalysisFilter('credentials', 'passkey', true);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['apple-group']);
-  });
-
-  it('sorts domain filter options lexicographically instead of by frequency', () => {
-    const service = createService();
-    const result = scanResult();
-    service.scanResult.set({
-      ...result,
-      groups: [...result.groups, { ...result.groups[0], id: 'github-group-copy' }]
+        const refreshed = { ...result, storeVersion: 2, groups: [], skippedGroupIds: [] };
+        applyEvent({
+            type: ActionExecutionEventKind.AnalysisUpdated,
+            sequence: 2,
+            executionId: "execution-1",
+            status: ActionExecutionStatus.Completed,
+            writeEnabled: true,
+            totalGroups: 1,
+            totalOperations: 1,
+            completedOperations: 1,
+            response: { analysis: refreshed, storeVersion: 2, itemIdMappings: {}, dryRun: false },
+        });
+        expect(service.scanResult()?.groups).toEqual([]);
+        expect(service.scanResult()?.storeVersion).toBe(2);
     });
 
-    const domainSection = service.analysisFilterSections().find((section) => section.id === 'domains');
+    it("releases CSV contents after the API accepts the scan", async () => {
+        const { service, api } = createService();
+        vi.mocked(api.loadSession).mockResolvedValue(sessionResponse());
+        vi.mocked(api.startScan).mockResolvedValue({
+            scanId: "scan-job",
+            mode: ScanMode.Csv,
+            eventsToken: "events",
+            progress: { scanId: "scan-job", phase: ScanPhase.Scanning, totalVaults: 0, scannedVaults: 0, totalItems: 0, scannedItems: 0, vaults: [] },
+        });
+        vi.mocked(api.streamScanEvents).mockResolvedValue();
+        await service.selectCsvFile(new File(["Title,Url\nA,https://a.test"], "items.csv", { type: "text/csv" }));
 
-    expect(domainSection?.options.map((option) => option.label)).toEqual(['apple.com', 'github.com']);
-    expect(domainSection?.options.map((option) => option.count)).toEqual([1, 2]);
-  });
+        await service.startScan();
 
-  it('filters complete groups by item ids returned from global search', async () => {
-    const searchItems = vi.fn(async () => ({ itemIds: ['private:github-old'] }));
-    const service = createService({ searchItems });
-    service.scanResult.set(scanResult());
-
-    await service.updateGlobalSearchQuery('github 2025');
-
-    expect(searchItems).toHaveBeenCalledWith(['github', '2025'], [
-      'icloud:github-new',
-      'private:github-old',
-      'private:apple-new',
-      'chrome:apple-old'
-    ]);
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group']);
-    expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['搜索：github 2025']);
-
-    service.removeAnalysisFilter('search', 'github 2025');
-    expect(service.globalSearchQuery()).toBe('');
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['github-group', 'apple-group']);
-  });
-
-  it('searches sidebar options, shares their state, and unions structured and field matches', async () => {
-    const service = createService({
-      searchItems: vi.fn(async () => ({ itemIds: ['private:apple-new'] }))
-    });
-    service.scanResult.set(scanResult());
-
-    await service.updateGlobalSearchQuery('2025 private github');
-    const suggestions = service.globalSearchSuggestionGroups().flatMap((group) => group.suggestions);
-    expect(suggestions.map((suggestion) => [suggestion.kind, suggestion.id])).toEqual([
-      ['year', '2025'],
-      ['vault', 'private'],
-      ['domain', 'github.com']
-    ]);
-
-    suggestions.forEach((suggestion) => service.selectGlobalSearchSuggestion(suggestion));
-    expect(service.analysisFilters()).toMatchObject({ years: ['2025'], vaultIds: ['private'], domains: ['github.com'] });
-    expect(service.visibleGroups().map((group) => group.id)).toEqual(['apple-group']);
-
-    await service.updateGlobalSearchQuery('apple');
-    expect(service.analysisFilters()).toMatchObject({ years: ['2025'], vaultIds: ['private'], domains: ['github.com'] });
-  });
-
-  it('exposes removable filter chips', () => {
-    const service = createService();
-    service.scanResult.set(scanResult());
-
-    service.toggleAnalysisFilter('years', '2025', true);
-    service.toggleAnalysisFilter('vaults', 'icloud', true);
-
-    expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['2025', 'iCloud']);
-
-    service.removeAnalysisFilter('year', '2025');
-    expect(service.analysisFilterSummary().chips.map((chip) => chip.label)).toEqual(['iCloud']);
-
-  });
-
-  it('limits batch apply operations to currently filtered groups', async () => {
-    const service = createService();
-    service.scanResult.set(scanResult());
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
+        expect((service as unknown as { csvContent(): string }).csvContent()).toBe("");
+        expect(service.scanSource()).toBe(ItemProvider.Csv);
     });
 
-    expect(service.planOperationCount()).toBe(2);
+    it("Store 版本变化后丢弃旧 draft 并重建默认决策", async () => {
+        const { service, api } = createService();
+        const result = scanResult();
+        service.setScanResult(result);
+        service.decisions.set({
+            ...defaultDecisions(),
+            "one-password:test:new": {
+                ...defaultDecisions()["one-password:test:new"],
+                desiredTitle: "旧计划标题",
+                removeTags: ["legacy"],
+            },
+        });
+        vi.mocked(api.loadAnalysis).mockResolvedValue({ ...result, storeVersion: 2, skippedGroupIds: [] });
+        const recover = (service as unknown as { recoverStaleAnalysis(message: string): Promise<void> })
+            .recoverStaleAnalysis.bind(service);
 
-    service.toggleAnalysisFilter('vaults', 'icloud', true);
-    service.applyPlan();
+        await recover("Store version conflict");
 
-    expect(service.visiblePreviewGroups().map((group) => group.id)).toEqual(['github-group']);
-    expect(service.planOperationCount()).toBe(1);
-    expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
-    expect(service.operations().map((operation) => operation.status)).toEqual(['pending']);
-    expect(service.actionExecutionStatus()).toBe('ready');
-    expect(service.applying()).toBe(false);
-
-    await service.startPreparedActionExecution();
-
-    expect(service.operationGroups()).toHaveLength(1);
-    expect(service.operationGroups()[0]).toMatchObject({
-      id: 'github-group',
-      total: 1,
-      completed: 1,
-      status: 'done'
+        expect(service.decisions()["one-password:test:new"].desiredTitle).toBeUndefined();
+        expect(service.decisions()["one-password:test:new"].removeTags).toEqual([]);
+        expect(service.error()).toContain("旧处置计划已失效");
     });
-  });
-
-  it('does not create a backend execution until Start is pressed', async () => {
-    const startActionExecution = vi.fn(async () => ({
-      executionId: 'action-execution-test',
-      eventsToken: 'events-token',
-      status: 'running',
-      writeEnabled: false,
-    }));
-    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
-      onEvent({
-        type: 'completed',
-        sequence: 1,
-        executionId: 'action-execution-test',
-        status: 'completed',
-        writeEnabled: false,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1,
-      } as never);
-    });
-    const service = createService({ startActionExecution, streamActionExecutionEvents, enableMutations: false });
-    service.scanResult.set(scanResult());
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
-    });
-    service.toggleAnalysisFilter('vaults', 'icloud', true);
-
-    service.applyPlan();
-
-    expect(startActionExecution).not.toHaveBeenCalled();
-    expect(streamActionExecutionEvents).not.toHaveBeenCalled();
-    expect(service.actionExecutionStatus()).toBe('ready');
-
-    await service.startPreparedActionExecution();
-
-    expect(startActionExecution).toHaveBeenCalledTimes(1);
-    expect(streamActionExecutionEvents).toHaveBeenCalledTimes(1);
-    expect(service.actionExecutionStatus()).toBe('completed');
-  });
-
-  it('keeps skipped groups as reversible no-op preview entries', async () => {
-    const service = createService();
-    service.scanResult.set(scanResult());
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
-    });
-
-    await service.toggleGroupSkip('github-group');
-
-    const skippedGroup = service.visiblePreviewGroups().find((group) => group.id === 'github-group');
-    expect(service.visibleGroups().find((group) => group.id === 'github-group')?.skipped).toBe(true);
-    expect(skippedGroup?.plan).toBeUndefined();
-    expect(skippedGroup?.actions.map((action) => action.tone)).toEqual(['skip']);
-    expect(service.decisionStats().groups).toBe(1);
-    expect(service.decisionStats().skipped).toBe(1);
-
-    await service.toggleGroupSkip('github-group');
-
-    expect(service.visibleGroups().find((group) => group.id === 'github-group')?.skipped).toBe(false);
-    expect(service.visiblePreviewGroups().find((group) => group.id === 'github-group')?.actions.some((action) => action.tone === 'skip')).toBe(false);
-  });
-
-  it('clears backend scan state before returning to the scan page', async () => {
-    const clearScan = vi.fn(async () => ({ ok: true }));
-    const navigateByUrl = vi.fn();
-    const service = createService({ clearScan, navigateByUrl });
-    service.scanResult.set(scanResult());
-    service.error.set('old error');
-
-    await service.rescan();
-
-    expect(clearScan).toHaveBeenCalledTimes(1);
-    expect(service.scanResult()).toBeUndefined();
-    expect(service.error()).toBeUndefined();
-    expect(navigateByUrl).toHaveBeenCalledWith('/scan');
-  });
-
-  it('recovers a completed scan when the progress stream fails', async () => {
-    const session = signal<unknown>(undefined);
-    const scan = scanSnapshot();
-    const service = new WorkflowService(
-      {
-        session,
-        loadSession: vi.fn(async () => {
-          const value = {
-            token: 'test-session',
-            accountName: 'BppleMan',
-            hasServiceAccountToken: false
-          };
-          session.set(value);
-          return value;
-        }),
-        startScan: vi.fn(async () => ({
-          scanId: scan.scanId,
-          mode: 'live',
-          progress: scanProgress(scan.scanId),
-          eventsToken: 'events-token'
-        })),
-        streamScanEvents: vi.fn(async () => {
-          throw new Error('Load failed');
-        }),
-        loadScan: vi.fn(async () => scan)
-      } as never,
-      { navigateByUrl: vi.fn() } as never
-    );
-
-    service.updateAccount('BppleMan');
-    await service.startScan();
-
-    expect(service.authState()).toBe('authorized');
-    expect(service.error()).toBeUndefined();
-    expect(service.scanSnapshot()).toEqual(scan);
-    expect(service.scanDone()).toBe(true);
-  });
-
-  it('restores cached tab analysis as completed scan state', async () => {
-    const result = scanResult();
-    const service = new WorkflowService(
-      {
-        session: signal({ token: 'test-session', resumeAccountName: 'BppleMan' }),
-        loadAnalysis: vi.fn(async () => result),
-        loadScan: vi.fn()
-      } as never,
-      { navigateByUrl: vi.fn() } as never
-    );
-
-    await service.restoreCachedState();
-
-    expect(service.scanResult()).toEqual(result);
-    expect(service.scanSnapshot()?.scanId).toBe(result.scanId);
-    expect(service.scanProgress()?.phase).toBe('completed');
-    expect(service.scanDone()).toBe(true);
-    expect(service.authState()).toBe('authorized');
-    expect(service.account()).toBe('BppleMan');
-  });
-
-  it('restores global cached scan when the current tab has no analysis', async () => {
-    const scan = scanSnapshot();
-    const loadScan = vi.fn(async () => scan);
-    const service = new WorkflowService(
-      {
-        session: signal({ token: 'test-session' }),
-        loadAnalysis: vi.fn(async () => {
-          throw new Error('no analysis');
-        }),
-        loadScan
-      } as never,
-      { navigateByUrl: vi.fn() } as never
-    );
-
-    await service.restoreCachedState();
-
-    expect(loadScan).toHaveBeenCalledTimes(1);
-    expect(service.scanSnapshot()).toEqual(scan);
-    expect(service.scanResult()).toBeUndefined();
-    expect(service.scanProgress()?.phase).toBe('completed');
-    expect(service.scanDone()).toBe(true);
-  });
-
-  it('joins an active scan when no cached scan is available yet', async () => {
-    const scan = scanSnapshot();
-    const activeProgress = scanProgress(scan.scanId);
-    const streamScanEvents = vi.fn(async (_scanId, _eventsToken, onEvent: (event: unknown) => void) => {
-      onEvent({
-        type: 'completed',
-        progress: {
-          ...activeProgress,
-          phase: 'completed',
-          totalVaults: scan.vaults.length,
-          scannedVaults: scan.vaults.length,
-          totalItems: scan.items.length,
-          scannedItems: scan.items.length
-        },
-        scan
-      });
-    });
-    const service = new WorkflowService(
-      {
-        session: signal({ token: 'test-session' }),
-        loadAnalysis: vi.fn(async () => {
-          throw new Error('no analysis');
-        }),
-        loadScan: vi.fn(async () => {
-          throw new Error('no scan');
-        }),
-        loadActiveScan: vi.fn(async () => ({
-          scanId: scan.scanId,
-          mode: 'live',
-          progress: activeProgress,
-          eventsToken: 'events-token',
-          eventCount: 3
-        })),
-        streamScanEvents
-      } as never,
-      { navigateByUrl: vi.fn() } as never
-    );
-
-    await service.restoreCachedState();
-
-    expect(streamScanEvents).toHaveBeenCalledWith(
-      scan.scanId,
-      'events-token',
-      expect.any(Function),
-      expect.objectContaining({ after: 3 })
-    );
-    expect(service.scanSnapshot()).toEqual(scan);
-    expect(service.scanProgress()?.phase).toBe('completed');
-    expect(service.scanDone()).toBe(true);
-    expect(service.loading()).toBe(false);
-  });
-
-  it('uses the shared execution dialog for one group and waits for Start', async () => {
-    const result = scanResult();
-    const execute = vi.fn(async (): Promise<ExecuteResponse> => ({
-      dryRun: false,
-      results: [{ itemId: 'private:github-old', action: 'archive', ok: true }],
-    }));
-    const service = createService({ execute });
-    service.scanResult.set(result);
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
-    });
-
-    service.openGroupExecutionDialog('github-group');
-
-    expect(service.applyDialogOpen()).toBe(true);
-    expect(service.actionExecutionScope()).toBe('group');
-    expect(service.actionExecutionStatus()).toBe('ready');
-    expect(service.operations().map((operation) => operation.groupId)).toEqual(['github-group']);
-    expect(execute).not.toHaveBeenCalled();
-
-    await service.startPreparedActionExecution();
-
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(service.operations().map((operation) => operation.status)).toEqual(['done']);
-  });
-
-  it('updates the current action and grouped progress from SSE events', async () => {
-    let service!: WorkflowService;
-    const result = { itemId: 'private:github-old', action: 'archive', ok: true, dryRun: true };
-    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
-      onEvent({
-        type: 'action-started',
-        sequence: 1,
-        executionId: 'action-execution-test',
-        status: 'running',
-        writeEnabled: false,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 0,
-        groupId: 'github-group',
-        action: { itemId: result.itemId, type: result.action }
-      } as never);
-      expect(service.operations().map((operation) => operation.status)).toEqual(['running']);
-      expect(service.operationGroups()[0]).toMatchObject({ status: 'running', completed: 0, total: 1 });
-
-      onEvent({
-        type: 'action-completed',
-        sequence: 2,
-        executionId: 'action-execution-test',
-        status: 'running',
-        writeEnabled: false,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1,
-        groupId: 'github-group',
-        result
-      } as never);
-      expect(service.operations().map((operation) => operation.status)).toEqual(['done']);
-
-      onEvent({
-        type: 'completed',
-        sequence: 3,
-        executionId: 'action-execution-test',
-        status: 'completed',
-        writeEnabled: false,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1,
-      } as never);
-    });
-    service = createService({ streamActionExecutionEvents, enableMutations: false });
-    service.scanResult.set(scanResult());
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
-    });
-    service.toggleAnalysisFilter('vaults', 'icloud', true);
-
-    service.applyPlan();
-
-    expect(streamActionExecutionEvents).not.toHaveBeenCalled();
-    expect(service.actionExecutionStatus()).toBe('ready');
-
-    await service.startPreparedActionExecution();
-
-    expect(streamActionExecutionEvents).toHaveBeenCalledTimes(1);
-    expect(service.applyDialogOpen()).toBe(true);
-    expect(service.operationGroups()[0].operations[0].label).toContain('归档「GitHub old」');
-  });
-
-  it('preserves every group and item decision after a dry-run', async () => {
-    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
-      onEvent({
-        type: 'analysis-updated',
-        sequence: 1,
-        executionId: 'action-execution-test',
-        status: 'running',
-        writeEnabled: false,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1,
-        response: {
-          draft: { scanId: 'scan-1', groups: [] },
-          completedGroupIds: [],
-          results: [],
-          effects: [],
-          cancelledOperations: 0
-        }
-      } as never);
-      onEvent({
-        type: 'completed',
-        sequence: 2,
-        executionId: 'action-execution-test',
-        status: 'completed',
-        writeEnabled: false,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1
-      } as never);
-    });
-    const service = createService({ streamActionExecutionEvents, enableMutations: false });
-    service.scanResult.set(scanResult());
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive', removeTags: ['CSV Import'] },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'delete', removeTags: [] },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive', removeTags: [] },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive', removeTags: [] }
-    });
-    service.toggleAnalysisFilter('vaults', 'icloud', true);
-
-    service.applyPlan();
-    await service.startPreparedActionExecution();
-
-    expect(service.scanResult()?.groups).toHaveLength(2);
-    expect(service.decisions()['icloud:github-new']).toMatchObject({ removeTags: ['CSV Import'] });
-    expect(service.decisions()['private:github-old']).toMatchObject({ deleteMode: 'delete' });
-    expect(service.decisions()['private:apple-new']).toMatchObject({ keep: true });
-  });
-
-  it('removes only completed groups after a real write and preserves remaining decisions', async () => {
-    const result = scanResult();
-    const completedGroupId = result.groups[0].id;
-    const remainingGroupId = result.groups[1].id;
-    const streamActionExecutionEvents = vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
-      onEvent({
-        type: 'analysis-updated',
-        sequence: 1,
-        executionId: 'action-execution-test',
-        status: 'running',
-        writeEnabled: true,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1,
-        response: {
-          draft: { scanId: result.scanId, groups: [] },
-          completedGroupIds: [completedGroupId],
-          results: [],
-          effects: [],
-          cancelledOperations: 0
-        }
-      } as never);
-      onEvent({
-        type: 'completed',
-        sequence: 2,
-        executionId: 'action-execution-test',
-        status: 'completed',
-        writeEnabled: true,
-        totalGroups: 1,
-        totalOperations: 1,
-        completedOperations: 1
-      } as never);
-    });
-    const service = createService({ streamActionExecutionEvents, enableMutations: true });
-    service.scanResult.set(result);
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive', removeTags: [] },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive', removeTags: [] },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive', removeTags: ['Important'] },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'delete', removeTags: [] }
-    });
-
-    service.openGroupExecutionDialog(completedGroupId);
-    await service.startPreparedActionExecution();
-
-    expect(service.scanResult()?.groups.map((group) => group.id)).toEqual([remainingGroupId]);
-    expect(service.decisions()['icloud:github-new']).toBeUndefined();
-    expect(service.decisions()['private:github-old']).toBeUndefined();
-    expect(service.decisions()['private:apple-new']).toMatchObject({ keep: true, removeTags: ['Important'] });
-    expect(service.decisions()['chrome:apple-old']).toMatchObject({ keep: false, deleteMode: 'delete' });
-  });
-
-  it('stops batch apply and skips pending groups after verification failure', async () => {
-    const result = scanResult();
-    const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => {
-      if (decision.dryRun) {
-        return { dryRun: true, dryRunKey: `dry-${decision.groupId}` };
-      }
-      return {
-        scanInvalidated: true,
-        results: [{ itemId: decision.items[1].itemId, action: 'archive', ok: true }],
-        verification: {
-          ok: false,
-          results: [{
-            itemId: decision.items[0].itemId,
-            vaultId: decision.items[0].targetVaultId ?? 'unknown',
-            action: 'keep',
-            ok: false,
-            severity: 'critical',
-            message: '执行后校验失败，请重新扫描确认。'
-          }]
-        }
-      };
-    });
-    const service = createService({ execute });
-    service.scanResult.set(result);
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive' },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive' }
-    });
-
-    service.applyPlan();
-    await service.startPreparedActionExecution();
-
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ groupId: 'github-group' }));
-    expect(service.operations().filter((operation) => operation.groupId === 'github-group').map((operation) => operation.status)).toEqual(['done']);
-    expect(service.operationGroups().find((group) => group.id === 'github-group')).toMatchObject({ status: 'failed', statusText: '校验失败' });
-    expect(service.operations().filter((operation) => operation.groupId === 'apple-group').map((operation) => operation.status)).toEqual(['skipped']);
-  });
-
-  it('keeps apply enabled in dry-run mode and does not submit a write execution', async () => {
-    const result = scanResult();
-    const execute = vi.fn(async (decision: GroupDecision & { dryRun?: boolean }): Promise<ExecuteResponse> => ({
-      dryRun: true,
-      dryRunKey: `dry-${decision.groupId}`,
-      results: decision.items.filter((item) => !item.keep).map((item) => ({
-        itemId: item.itemId,
-        action: item.deleteMode === 'delete' ? 'delete' : 'archive',
-        ok: true,
-        dryRun: true,
-      })),
-    }));
-    const service = createService({ execute, enableMutations: false });
-    service.scanResult.set(result);
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive' },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'archive' }
-    });
-
-    expect(service.canApply()).toBe(true);
-    expect(service.applyDialogOpen()).toBe(false);
-
-    service.applyPlan();
-
-    expect(execute).not.toHaveBeenCalled();
-    expect(service.actionExecutionStatus()).toBe('ready');
-
-    await service.startPreparedActionExecution();
-
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(service.operations().every((operation) => operation.status === 'done' && operation.dryRun)).toBe(true);
-    expect(service.applyDialogOpen()).toBe(true);
-    expect(service.status()).toContain('试写完成');
-
-    service.closeApplyDialog();
-
-    expect(service.applyDialogOpen()).toBe(false);
-  });
-
-  it('allows closing the progress dialog only after execution reaches a terminal state', () => {
-    const service = createService();
-    service.applyDialogOpen.set(true);
-    service.applying.set(true);
-    service.actionExecutionStatus.set('running');
-
-    service.closeApplyDialog();
-
-    expect(service.applyDialogOpen()).toBe(true);
-    expect(service.canCloseApplyDialog()).toBe(false);
-
-    service.actionExecutionStatus.set('completed');
-
-    expect(service.actionExecutionStatusLabel()).toBe('已完成');
-    expect(service.canCloseApplyDialog()).toBe(true);
-
-    service.closeApplyDialog();
-
-    expect(service.applyDialogOpen()).toBe(false);
-    expect(service.applying()).toBe(true);
-
-    service.openApplyDialog();
-
-    expect(service.applyDialogOpen()).toBe(true);
-  });
-
-  it('keeps the stopped terminal state when the Stop response arrives after SSE', async () => {
-    let resolveStop!: (snapshot: { status: 'stop-requested' }) => void;
-    const stopActionExecution = vi.fn(() => new Promise<{ status: 'stop-requested' }>((resolve) => {
-      resolveStop = resolve;
-    }));
-    const service = createService({ stopActionExecution });
-    service.applying.set(true);
-    service.actionExecutionId.set('action-execution-test');
-    service.actionExecutionStatus.set('running');
-
-    const stopping = service.stopActionExecution();
-    service.actionExecutionStatus.set('stopped');
-    resolveStop({ status: 'stop-requested' });
-    await stopping;
-
-    expect(stopActionExecution).toHaveBeenCalledWith('action-execution-test');
-    expect(service.actionExecutionStatus()).toBe('stopped');
-  });
-
-  it('recovers a stale analysis before allowing the plan to be restarted', async () => {
-    const refreshed = { ...scanResult(), scanId: 'scan-refreshed', skippedGroupIds: [] };
-    const service = createService({
-      loadAnalysis: vi.fn(async () => refreshed),
-      startActionExecution: vi.fn(async () => {
-        throw new Error('当前分析结果已过期，请重新扫描并重新分析后再继续。');
-      })
-    });
-    service.scanResult.set(scanResult());
-    service.decisions.set({
-      'icloud:github-new': { itemId: 'icloud:github-new', keep: true, targetVaultId: 'icloud', deleteMode: 'archive', removeTags: ['CSV Import'] },
-      'private:github-old': { itemId: 'private:github-old', keep: false, targetVaultId: 'private', deleteMode: 'delete', removeTags: [] },
-      'private:apple-new': { itemId: 'private:apple-new', keep: true, targetVaultId: 'private', deleteMode: 'archive', removeTags: [] },
-      'chrome:apple-old': { itemId: 'chrome:apple-old', keep: false, targetVaultId: 'chrome', deleteMode: 'archive', removeTags: [] }
-    });
-
-    service.applyPlan();
-    await service.startPreparedActionExecution();
-
-    expect(service.scanResult()?.scanId).toBe('scan-refreshed');
-    expect(service.decisions()['icloud:github-new']).toMatchObject({ keep: true, removeTags: ['CSV Import'] });
-    expect(service.decisions()['private:github-old']).toMatchObject({ keep: false, deleteMode: 'delete' });
-    expect(service.error()).toContain('分析结果已自动同步');
-    expect(service.status()).toContain('请重新点击应用计划');
-    expect(service.actionExecutionStatus()).toBe('failed');
-  });
 });
 
-function createService(overrides: {
-  clearScan?: () => Promise<{ ok: boolean }>;
-  navigateByUrl?: (url: string) => Promise<boolean>;
-  execute?: (decision: GroupDecision) => Promise<ExecuteResponse>;
-  skipGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
-  restoreSkippedGroup?: (scanId: string, groupId: string) => Promise<SkipGroupResponse>;
-  searchItems?: (keywords: string[], itemIds: string[]) => Promise<{ itemIds: string[] }>;
-  loadAnalysis?: () => Promise<ReturnType<typeof scanResult> & { skippedGroupIds: string[] }>;
-  startActionExecution?: (draft: ActionDraft) => Promise<unknown>;
-  stopActionExecution?: (executionId: string) => Promise<unknown>;
-  streamActionExecutionEvents?: (
-    executionId: string,
-    eventsToken: string,
-    onEvent: (event: never) => void
-  ) => Promise<void>;
-  streamExecutionEvents?: (
-    executionId: string,
-    eventsToken: string,
-    onEvent: (event: never) => void
-  ) => Promise<void>;
-  enableMutations?: boolean;
-} = {}): WorkflowService {
-  const execute = overrides.execute ?? vi.fn(async (): Promise<ExecuteResponse> => ({
-    dryRun: true,
-    results: []
-  }));
-  let pendingDecision: GroupDecision | undefined;
-  let pendingDraft: ActionDraft | undefined;
-  return new WorkflowService(
-    {
-      session: signal({ token: 'test-session', enableMutations: overrides.enableMutations ?? true }),
-      clearScan: overrides.clearScan ?? vi.fn(async () => ({ ok: true })),
-      loadAnalysis: overrides.loadAnalysis ?? vi.fn(async () => ({ ...scanResult(), skippedGroupIds: [] })),
-      execute,
-      startExecution: vi.fn(async (decision: GroupDecision) => {
-        pendingDecision = decision;
-        return {
-          executionId: 'execution-test',
-          eventsToken: 'events-token',
-          dryRun: !Boolean(overrides.enableMutations ?? true),
-          totalOperations: decision.items.filter((item) => !item.keep).length
-        };
-      }),
-      startActionExecution: overrides.startActionExecution ?? vi.fn(async (draft: ActionDraft) => {
-        pendingDraft = draft;
-        return {
-          executionId: 'action-execution-test',
-          eventsToken: 'action-events-token',
-          status: 'running',
-          writeEnabled: Boolean(overrides.enableMutations ?? true),
-          totalGroups: draft.groups.length,
-          totalOperations: draft.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
-          completedOperations: 0,
-          cancelledOperations: 0,
-          plan: {} as never,
-          draft,
-        };
-      }),
-      pauseActionExecution: vi.fn(),
-      resumeActionExecution: vi.fn(),
-      stopActionExecution: overrides.stopActionExecution ?? vi.fn(),
-      streamActionExecutionEvents: overrides.streamActionExecutionEvents ?? vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
-        let sequence = 0;
-        let completedOperations = 0;
-        for (const decision of pendingDraft!.groups) {
-          const legacyDecision = { ...decision, scanId: pendingDraft!.scanId };
-          const response = await execute(legacyDecision);
-          const responseResults = response.results?.length
-            ? response.results
-            : legacyDecision.items.filter((item) => !item.keep).map((item) => ({
-                itemId: item.itemId,
-                action: item.deleteMode === 'delete' ? 'delete' : 'archive',
-                ok: true,
-                dryRun: !Boolean(overrides.enableMutations ?? true),
-              }));
-          for (const result of responseResults) {
-            onEvent({
-              type: 'action-started',
-              sequence: ++sequence,
-              executionId: 'action-execution-test',
-              status: 'running',
-              writeEnabled: Boolean(overrides.enableMutations ?? true),
-              totalGroups: pendingDraft!.groups.length,
-              totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
-              completedOperations,
-              groupId: legacyDecision.groupId,
-              action: { itemId: result.itemId, type: result.action },
-            } as never);
-            completedOperations += 1;
-            onEvent({
-              type: result.ok ? 'action-completed' : 'action-failed',
-              sequence: ++sequence,
-              executionId: 'action-execution-test',
-              status: 'running',
-              writeEnabled: Boolean(overrides.enableMutations ?? true),
-              totalGroups: pendingDraft!.groups.length,
-              totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
-              completedOperations,
-              groupId: legacyDecision.groupId,
-              result,
-            } as never);
-          }
-          if (response.scanInvalidated) {
-            onEvent({
-              type: 'failed',
-              sequence: ++sequence,
-              executionId: 'action-execution-test',
-              status: 'failed',
-              writeEnabled: Boolean(overrides.enableMutations ?? true),
-              totalGroups: pendingDraft!.groups.length,
-              totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
-              completedOperations,
-              groupId: legacyDecision.groupId,
-              error: response.verification?.results.find((result) => !result.ok)?.message ?? '执行失败。',
-            } as never);
-            break;
-          }
-        }
-        onEvent({
-          type: 'completed',
-          sequence: ++sequence,
-          executionId: 'action-execution-test',
-          status: 'completed',
-          writeEnabled: Boolean(overrides.enableMutations ?? true),
-          totalGroups: pendingDraft!.groups.length,
-          totalOperations: pendingDraft!.groups.flatMap((group) => group.items).filter((item) => !item.keep).length,
-          completedOperations,
-        } as never);
-      }),
-      streamExecutionEvents: overrides.streamExecutionEvents ?? vi.fn(async (_executionId: string, _eventsToken: string, onEvent: (event: never) => void) => {
-        const response = await execute(pendingDecision!);
-        for (const result of response.results ?? []) {
-          onEvent({
-            type: 'action-started',
-            sequence: 1,
-            executionId: 'execution-test',
-            dryRun: Boolean(response.dryRun),
-            totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
-            completedOperations: 0,
-            action: { itemId: result.itemId, type: result.action }
-          } as never);
-          onEvent({
-            type: 'action',
-            sequence: 2,
-            executionId: 'execution-test',
-            dryRun: Boolean(response.dryRun),
-            totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
-            completedOperations: 1,
-            result
-          } as never);
-        }
-        onEvent({
-          type: 'completed',
-          sequence: 3,
-          executionId: 'execution-test',
-          dryRun: Boolean(response.dryRun),
-          totalOperations: pendingDecision!.items.filter((item) => !item.keep).length,
-          completedOperations: pendingDecision!.items.filter((item) => !item.keep).length,
-          response
-        } as never);
-      }),
-      skipGroup: overrides.skipGroup ?? vi.fn(async (_scanId: string, groupId: string) => ({
-        skippedGroupId: groupId,
-        restorableSkippedGroupCount: 1,
-        scan: { ...scanResult(), skippedGroupIds: [groupId] }
-      })),
-      restoreSkippedGroup: overrides.restoreSkippedGroup ?? vi.fn(async (scanId: string, groupId: string) => ({
-        skippedGroupId: groupId,
-        restorableSkippedGroupCount: 0,
-        scan: { ...scanResult(), scanId, skippedGroupIds: [] }
-      })),
-      searchItems: overrides.searchItems ?? vi.fn(async () => ({ itemIds: [] }))
-    } as never,
-    { navigateByUrl: overrides.navigateByUrl ?? vi.fn() } as never
-  );
+function createService(): { service: WorkflowService; api: any } {
+    const api = {
+        session: signal(sessionResponse()),
+        loadSession: vi.fn(),
+        loadAnalysis: vi.fn(),
+        createPlan: vi.fn(),
+        startScan: vi.fn(),
+        startActionExecution: vi.fn(),
+        streamScanEvents: vi.fn(),
+        streamActionExecutionEvents: vi.fn(),
+    };
+    const router = { navigate: vi.fn() };
+    return { service: new WorkflowService(api as never, router as never), api };
+}
+
+function sessionResponse(): any {
+    return {
+        token: "test",
+        mode: ClientAppMode.BrowserDev,
+        accountName: "test",
+        apiBaseUrl: "",
+        enableMutations: true,
+        hasServiceAccountToken: false,
+        supportsDesktopAuth: true,
+        idleShutdownMs: 0,
+        capabilities: {
+            staticUi: false,
+            canShutdown: false,
+            supportsHeartbeat: false,
+            supportsIdleShutdown: false,
+            supportsDesktopAuth: true,
+            shell: ClientShell.Browser,
+        },
+    };
+}
+
+function defaultDecisions() {
+    return {
+        "one-password:test:new": {
+            itemId: "one-password:test:new",
+            disposition: ItemDisposition.Keep,
+            targetContainerId: "private",
+            removeTags: [],
+        },
+        "one-password:test:old": {
+            itemId: "one-password:test:old",
+            disposition: ItemDisposition.Archive,
+            targetContainerId: "archive",
+            removeTags: [],
+        },
+    };
+}
+
+function actionPlan(): ActionPlanDto {
+    const step = {
+        actionId: "archive-old",
+        groupId: "group-1",
+        sourceItemId: "one-password:test:old",
+        provider: ItemProvider.OnePassword,
+        kind: ActionKind.Archive,
+        sequence: 0,
+        dependsOnActionIds: [],
+        label: "归档旧项目",
+        detail: "归档旧项目",
+    };
+    return {
+        planId: "plan-1",
+        planHash: "plan-hash-1",
+        storeSnapshotId: "snapshot-1",
+        storeVersion: 1,
+        groups: [{
+            groupId: "group-1",
+            items: [{
+                itemId: "one-password:test:old",
+                disposition: ItemDisposition.Archive,
+                intent: { itemId: "one-password:test:old", disposition: ItemDisposition.Archive, removeTags: [] },
+                steps: [step],
+            }],
+            steps: [step],
+            warnings: [],
+            blockers: [],
+        }],
+        warnings: [],
+        blockers: [],
+        requiresExplicitDeleteConfirmation: false,
+        statistics: { groupCount: 1, itemCount: 1, stepCount: 1, mutationStepCount: 1 },
+        realExecutionSupported: true,
+    };
 }
 
 function scanResult(): ScanResult {
-  const items = [
-    item({
-      id: 'icloud:github-new',
-      vaultId: 'icloud',
-      vaultName: 'iCloud',
-      title: 'GitHub',
-      urls: ['https://github.com/login'],
-      usernames: ['alice@example.com'],
-      updatedAt: '2025-04-01T00:00:00.000Z',
-      hasPassword: true
-    }),
-    item({
-      id: 'private:github-old',
-      vaultId: 'private',
-      vaultName: 'Private',
-      title: 'GitHub old',
-      urls: ['github.com/login'],
-      usernames: ['alice@example.com'],
-      updatedAt: '2024-04-01T00:00:00.000Z',
-      hasTotp: true
-    }),
-    item({
-      id: 'private:apple-new',
-      vaultId: 'private',
-      vaultName: 'Private',
-      title: 'Apple',
-      urls: ['https://apple.com/login'],
-      usernames: ['alice@example.com'],
-      updatedAt: '2023-04-01T00:00:00.000Z',
-      hasPasskey: true
-    }),
-    item({
-      id: 'chrome:apple-old',
-      vaultId: 'chrome',
-      vaultName: 'Chrome',
-      title: 'Apple old',
-      urls: ['apple.com/login'],
-      usernames: ['alice@example.com'],
-      updatedAt: '2023-01-01T00:00:00.000Z',
-      hasPasskey: true
-    })
-  ];
-
-  return {
-    scanId: 'scan-test',
-    scannedAt: '2026-01-01T00:00:00.000Z',
-    analyzedAt: '2026-01-01T00:00:00.000Z',
-    vaults: [
-      { id: 'icloud', name: 'iCloud' },
-      { id: 'private', name: 'Private' },
-      { id: 'chrome', name: 'Chrome' }
-    ],
-    items,
-    groups: [
-      group('github-group', ['icloud:github-new', 'private:github-old']),
-      group('apple-group', ['private:apple-new', 'chrome:apple-old'])
-    ]
-  };
+    return {
+        scanId: "snapshot-1",
+        storeVersion: 1,
+        scannedAt: "2026-07-16T00:00:00.000Z",
+        analyzedAt: "2026-07-16T00:00:01.000Z",
+        vaults: [
+            { id: "private", name: "Private" },
+            { id: "archive", name: "Archive" },
+        ],
+        items: [
+            item("one-password:test:new", "new", "Private", "private"),
+            item("one-password:test:old", "old", "Archive", "archive"),
+        ],
+        groups: [{
+            id: "group-1",
+            itemIds: ["one-password:test:new", "one-password:test:old"],
+            reasons: [],
+            recommendedKeepIds: ["one-password:test:new"],
+            recommendedKeepReasons: [],
+        }],
+    };
 }
 
-function scanSnapshot(): ScanSnapshot {
-  const result = scanResult();
-  return {
-    scanId: result.scanId,
-    scannedAt: result.scannedAt,
-    vaults: result.vaults,
-    items: result.items
-  };
-}
-
-function scanProgress(scanId: string): ScanProgress {
-  return {
-    scanId,
-    phase: 'scanning',
-    totalVaults: 0,
-    scannedVaults: 0,
-    totalItems: 0,
-    scannedItems: 0,
-    vaults: [],
-    message: '正在等待 1Password 授权。'
-  };
-}
-
-function group(id: string, itemIds: string[]): SimilarityGroup {
-  return {
-    id,
-    itemIds,
-    reasons: [],
-    recommendedKeepIds: [itemIds[0]],
-    recommendedKeepReasons: []
-  };
-}
-
-function item(overrides: Partial<ItemSummary> & Pick<ItemSummary, 'id' | 'title'>): ItemSummary {
-  return {
-    onePasswordItemId: overrides.id,
-    vaultId: 'private',
-    vaultName: 'Private',
-    category: 'login',
-    createdAt: '2026-01-01T00:00:00.000Z',
-    updatedAt: '2026-01-01T00:00:00.000Z',
-    urls: [],
-    usernames: [],
-    tags: [],
-    fieldCount: 2,
-    hasPassword: false,
-    hasTotp: false,
-    hasPasskey: false,
-    hasAttachments: false,
-    hasNotes: false,
-    comparableFields: [],
-    ...overrides
-  };
+function item(id: string, externalId: string, vaultName: string, vaultId: string) {
+    return {
+        id,
+        onePasswordItemId: externalId,
+        vaultId,
+        vaultName,
+        title: "Example",
+        category: ItemCategory.Login,
+        urls: ["https://example.com"],
+        usernames: ["user@example.com"],
+        tags: [],
+        fieldCount: 2,
+        hasPassword: true,
+        hasTotp: false,
+        hasPasskey: false,
+        hasAttachments: false,
+        hasNotes: false,
+        comparableFields: [],
+    };
 }

@@ -13,7 +13,7 @@
         border-color: rgba(195, 232, 141, 0.34);
     }
 
-    .title-row strong,
+    .title-row .title-input,
     .username-row strong {
         width: 100%;
         min-width: 0;
@@ -53,12 +53,28 @@
         line-height: 20px;
     }
 
-    .title-row strong {
+    .title-row .title-input {
+        min-width: 0;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        padding: 1px 3px;
+        background: transparent;
         color: #EEFFFF;
         font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
         font-size: 15px;
         font-weight: 700;
         line-height: 20px;
+
+        &:hover:not(:disabled),
+        &:focus {
+            border-color: rgba(130, 170, 255, 0.7);
+            background: rgba(0, 0, 0, 0.18);
+            outline: none;
+        }
+
+        &:disabled {
+            opacity: 0.72;
+        }
     }
 
     .username-row strong {
@@ -102,6 +118,7 @@
     .url-row strong {
         width: 100%;
         min-width: 0;
+        overflow: hidden;
         color: #82AAFF;
         font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
         font-size: 10.5px;
@@ -111,8 +128,8 @@
         text-decoration-color: rgba(130, 170, 255, 0.38);
         text-decoration-thickness: 1px;
         text-underline-offset: 2px;
-        overflow-wrap: anywhere;
-        word-break: break-word;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .url-marker {

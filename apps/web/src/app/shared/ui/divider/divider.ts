@@ -1,5 +1,10 @@
 import { ChangeDetectionStrategy, Component, input } from "@angular/core";
 
+export enum DividerOrientation {
+    Horizontal = "horizontal",
+    Vertical = "vertical",
+}
+
 @Component({
     selector: "op-divider",
     standalone: true,
@@ -13,5 +18,5 @@ import { ChangeDetectionStrategy, Component, input } from "@angular/core";
     styleUrl: "./divider.scss",
 })
 export class DividerComponent {
-    public readonly orientation = input<"horizontal" | "vertical">("horizontal");
+    public readonly orientation = input<DividerOrientation>(DividerOrientation.Horizontal);
 }

@@ -15,6 +15,18 @@ export interface RuntimeManifest {
   url: string;
 }
 
+export interface RuntimeManifestInput {
+  pid: number;
+  host: string;
+  port: number;
+  token: string;
+  mode: AppMode;
+}
+
+export interface RuntimeManifestLookup {
+  manifest?: RuntimeManifest;
+}
+
 export interface RuntimePaths {
   dir: string;
   lockFile: string;
@@ -38,7 +50,7 @@ export function defaultRuntimePaths(): RuntimePaths {
   };
 }
 
-export function createRuntimeManifest(input: Omit<RuntimeManifest, "startedAt" | "url">): RuntimeManifest {
+export function createRuntimeManifest(input: RuntimeManifestInput): RuntimeManifest {
   return {
     ...input,
     startedAt: new Date().toISOString(),
@@ -53,12 +65,12 @@ export function createSessionToken(): string {
 export async function acquireRuntimeLock(paths = defaultRuntimePaths()): Promise<RuntimeLock> {
   await mkdir(paths.dir, { recursive: true });
 
-  const existingManifest = await readRuntimeManifest(paths);
-  if (existingManifest && isProcessAlive(existingManifest.pid)) {
-    return existingRuntimeLock(paths, existingManifest);
+  const existing = await readRuntimeManifest(paths);
+  if (existing.manifest && isProcessAlive(existing.manifest.pid)) {
+    return existingRuntimeLock(paths, existing.manifest);
   }
 
-  if (existingManifest) {
+  if (existing.manifest) {
     await clearRuntimeFiles(paths);
   }
 
@@ -67,9 +79,9 @@ export async function acquireRuntimeLock(paths = defaultRuntimePaths()): Promise
     await handle.writeFile(String(process.pid));
     return acquiredRuntimeLock(paths, handle);
   } catch (error) {
-    const manifest = await readRuntimeManifest(paths);
-    if (manifest && isProcessAlive(manifest.pid)) {
-      return existingRuntimeLock(paths, manifest);
+    const lookup = await readRuntimeManifest(paths);
+    if (lookup.manifest && isProcessAlive(lookup.manifest.pid)) {
+      return existingRuntimeLock(paths, lookup.manifest);
     }
     await clearRuntimeFiles(paths);
     const handle = await open(paths.lockFile, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR);
@@ -78,7 +90,7 @@ export async function acquireRuntimeLock(paths = defaultRuntimePaths()): Promise
   }
 }
 
-export async function readRuntimeManifest(paths = defaultRuntimePaths()): Promise<RuntimeManifest | undefined> {
+export async function readRuntimeManifest(paths = defaultRuntimePaths()): Promise<RuntimeManifestLookup> {
   try {
     const raw = await readFile(paths.manifestFile, "utf8");
     const parsed = JSON.parse(raw) as Partial<RuntimeManifest>;
@@ -91,12 +103,12 @@ export async function readRuntimeManifest(paths = defaultRuntimePaths()): Promis
       typeof parsed.startedAt === "string" &&
       typeof parsed.url === "string"
     ) {
-      return parsed as RuntimeManifest;
+      return { manifest: parsed as RuntimeManifest };
     }
   } catch {
-    return undefined;
+    return {};
   }
-  return undefined;
+  return {};
 }
 
 export function isProcessAlive(pid: number): boolean {

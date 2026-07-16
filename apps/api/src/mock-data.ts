@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { findSimilarityGroups, ItemSummary, ScanResult, VaultSummary } from "@optimize-password/core";
+import { ComparableFieldKind, findSimilarityGroups, ItemCategory, ItemSummary, ScanResult, VaultSummary } from "@optimize-password/core";
 
 const vaults: VaultSummary[] = [
   { id: "vault-personal", name: "Personal" },
@@ -14,7 +14,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-personal",
     vaultName: "Personal",
     title: "GitHub",
-    category: "login",
+    category: ItemCategory.Login,
     createdAt: "2025-12-01T12:00:00.000Z",
     updatedAt: "2026-06-01T12:00:00.000Z",
     urls: ["https://github.com/login"],
@@ -27,8 +27,8 @@ const items: ItemSummary[] = [
     hasAttachments: false,
     hasNotes: true,
     comparableFields: [
-      { label: "username", kind: "username", normalizedValue: "alice@example.com" },
-      { label: "password", kind: "secret", normalizedValueHash: "mock-github-work-secret" }
+      { label: "username", kind: ComparableFieldKind.Username, normalizedValue: "alice@example.com" },
+      { label: "password", kind: ComparableFieldKind.Secret, normalizedValueHash: "mock-github-work-secret" }
     ],
     analysis: {
       notesText: "GitHub work account"
@@ -40,7 +40,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-work",
     vaultName: "Work",
     title: "github copy",
-    category: "login",
+    category: ItemCategory.Login,
     createdAt: "2024-05-01T12:00:00.000Z",
     updatedAt: "2026-05-15T12:00:00.000Z",
     urls: ["https://github.com/login/"],
@@ -53,8 +53,8 @@ const items: ItemSummary[] = [
     hasAttachments: false,
     hasNotes: false,
     comparableFields: [
-      { label: "username", kind: "username", normalizedValue: "alice@example.com" },
-      { label: "password", kind: "secret", normalizedValueHash: "mock-github-secret" }
+      { label: "username", kind: ComparableFieldKind.Username, normalizedValue: "alice@example.com" },
+      { label: "password", kind: ComparableFieldKind.Secret, normalizedValueHash: "mock-github-secret" }
     ]
   },
   {
@@ -63,7 +63,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-personal",
     vaultName: "Personal",
     title: "AWS root",
-    category: "api-credential",
+    category: ItemCategory.ApiCredential,
     createdAt: "2026-01-01T12:00:00.000Z",
     updatedAt: "2026-06-10T12:00:00.000Z",
     urls: ["https://console.aws.amazon.com"],
@@ -76,8 +76,8 @@ const items: ItemSummary[] = [
     hasAttachments: true,
     hasNotes: true,
     comparableFields: [
-      { label: "access key", kind: "text", normalizedValue: "AKIA-MOCK-KEY" },
-      { label: "secret key", kind: "secret", normalizedValueHash: "mock-aws-secret" }
+      { label: "access key", kind: ComparableFieldKind.Text, normalizedValue: "AKIA-MOCK-KEY" },
+      { label: "secret key", kind: ComparableFieldKind.Secret, normalizedValueHash: "mock-aws-secret" }
     ]
   },
   {
@@ -86,7 +86,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-archive",
     vaultName: "Archive",
     title: "AWS root",
-    category: "api-credential",
+    category: ItemCategory.ApiCredential,
     createdAt: "2023-01-01T12:00:00.000Z",
     updatedAt: "2024-01-01T12:00:00.000Z",
     urls: ["https://console.aws.amazon.com"],
@@ -99,8 +99,8 @@ const items: ItemSummary[] = [
     hasAttachments: false,
     hasNotes: false,
     comparableFields: [
-      { label: "access key", kind: "text", normalizedValue: "AKIA-MOCK-KEY" },
-      { label: "secret key", kind: "secret", normalizedValueHash: "mock-aws-secret" }
+      { label: "access key", kind: ComparableFieldKind.Text, normalizedValue: "AKIA-MOCK-KEY" },
+      { label: "secret key", kind: ComparableFieldKind.Secret, normalizedValueHash: "mock-aws-secret" }
     ]
   },
   {
@@ -109,7 +109,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-personal",
     vaultName: "Personal",
     title: "Linear",
-    category: "login",
+    category: ItemCategory.Login,
     createdAt: "2025-03-01T12:00:00.000Z",
     updatedAt: "2026-02-12T12:00:00.000Z",
     urls: ["https://linear.app/login"],
@@ -122,8 +122,8 @@ const items: ItemSummary[] = [
     hasAttachments: false,
     hasNotes: false,
     comparableFields: [
-      { label: "username", kind: "username", normalizedValue: "alice@example.com" },
-      { label: "password", kind: "secret", normalizedValueHash: "mock-linear-secret-new" }
+      { label: "username", kind: ComparableFieldKind.Username, normalizedValue: "alice@example.com" },
+      { label: "password", kind: ComparableFieldKind.Secret, normalizedValueHash: "mock-linear-secret-new" }
     ]
   },
   {
@@ -132,7 +132,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-work",
     vaultName: "Work",
     title: "Linear copy",
-    category: "login",
+    category: ItemCategory.Login,
     createdAt: "2024-03-01T12:00:00.000Z",
     updatedAt: "2025-10-12T12:00:00.000Z",
     urls: ["https://linear.app/login/"],
@@ -145,8 +145,8 @@ const items: ItemSummary[] = [
     hasAttachments: false,
     hasNotes: false,
     comparableFields: [
-      { label: "username", kind: "username", normalizedValue: "alice@example.com" },
-      { label: "password", kind: "secret", normalizedValueHash: "mock-linear-secret-old" }
+      { label: "username", kind: ComparableFieldKind.Username, normalizedValue: "alice@example.com" },
+      { label: "password", kind: ComparableFieldKind.Secret, normalizedValueHash: "mock-linear-secret-old" }
     ]
   },
   {
@@ -155,7 +155,7 @@ const items: ItemSummary[] = [
     vaultId: "vault-work",
     vaultName: "Work",
     title: "VPN recovery note",
-    category: "secure-note",
+    category: ItemCategory.SecureNote,
     createdAt: "2026-02-01T12:00:00.000Z",
     updatedAt: "2026-02-01T12:00:00.000Z",
     urls: [],
@@ -168,9 +168,9 @@ const items: ItemSummary[] = [
     hasAttachments: false,
     hasNotes: true,
     comparableFields: [
-      { label: "note", kind: "text", normalizedValue: "vpn recovery note" },
-      { label: "support email", kind: "email", normalizedValue: "vpn@example.com" },
-      { label: "support phone", kind: "phone", normalizedValue: "13800000000" }
+      { label: "note", kind: ComparableFieldKind.Text, normalizedValue: "vpn recovery note" },
+      { label: "support email", kind: ComparableFieldKind.Email, normalizedValue: "vpn@example.com" },
+      { label: "support phone", kind: ComparableFieldKind.Phone, normalizedValue: "13800000000" }
     ],
     analysis: {
       notesText: "vpn recovery note"
@@ -182,6 +182,7 @@ export function createMockScanResult(): ScanResult {
   return {
     scanId: randomUUID(),
     scannedAt: new Date().toISOString(),
+    storeVersion: 1,
     analyzedAt: new Date().toISOString(),
     vaults,
     items,

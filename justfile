@@ -101,6 +101,9 @@ build-tauri:
 
 # 验证与检查
 
+check-no-union-types:
+    node scripts/check-no-union-types.mjs
+
 test-core: build-core
     pnpm --dir packages/core test
 
@@ -127,7 +130,7 @@ typecheck-ui: build-core
 typecheck-tauri:
     cd apps/tauri && cargo check
 
-typecheck: typecheck-core typecheck-api typecheck-ui typecheck-tauri
+typecheck: check-no-union-types typecheck-core typecheck-api typecheck-ui typecheck-tauri
 
 smoke-mock: build-local
     node scripts/smoke-mock.mjs

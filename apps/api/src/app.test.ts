@@ -1,1930 +1,321 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ScanProgress, ScanResult, ScanSnapshot } from "@optimize-password/core";
+import {
+    ActionExecutionStatus,
+    DryRunSpeedMultiplier,
+    ExecutionMode,
+    ItemDisposition,
+    ItemProvider,
+    StoreState,
+    UpdateItemAction,
+    type ScanResult,
+    type ScanSnapshot,
+} from "@optimize-password/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApiServer, PasswordService } from "./app.js";
-import { createMockScanResult } from "./mock-data.js";
+import { createApiServer } from "./app.js";
+import { CsvItemBackend } from "./csv-backend.js";
+import { ApplicationServices, createApplicationServices } from "./item-services.js";
+import { MockItemBackend } from "./mock-backend.js";
 
 const token = "test-session-token";
-type ApiServer = Awaited<ReturnType<typeof createApiServer>>;
-
-function createService(): PasswordService {
-  return {
-    scan: vi.fn(),
-    revealCredentials: vi.fn(),
-    archive: vi.fn(),
-    delete: vi.fn(),
-    removeTags: vi.fn(),
-    copyToVaultAndArchiveSource: vi.fn(),
-    listItemStates: vi.fn(),
-    clearCache: vi.fn()
-  };
-}
-
-function createThreeItemScanResult() {
-  const scan = createMockScanResult();
-  const firstGroup = scan.groups[0];
-  const baseItem = scan.items.find((item) => item.id === firstGroup.itemIds[0])!;
-  const thirdItem = {
-    ...baseItem,
-    id: "vault-archive:github-3",
-    onePasswordItemId: "github-3",
-    vaultId: "vault-archive",
-    vaultName: "Archive",
-    title: "GitHub archive copy"
-  };
-
-  return {
-    ...scan,
-    items: [...scan.items, thirdItem],
-    groups: [
-      {
-        ...firstGroup,
-        id: "dup-three-github",
-        itemIds: [firstGroup.itemIds[0], firstGroup.itemIds[1], thirdItem.id],
-        recommendedKeepIds: [thirdItem.id]
-      },
-      ...scan.groups.slice(1)
-    ]
-  };
-}
-
-async function dryRunGroup(
-  app: ApiServer,
-  payload: Record<string, unknown>
-): Promise<string> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/api/execute",
-    headers: { "x-session-token": token },
-    payload: {
-      ...payload,
-      dryRun: true
-    }
-  });
-
-  expect(response.statusCode).toBe(200);
-  expect(response.json().dryRun).toBe(true);
-  expect(response.json().dryRunKey).toEqual(expect.any(String));
-  return response.json().dryRunKey;
-}
-
-async function startScan(
-  app: ApiServer,
-  payload: Record<string, unknown>
-): Promise<{ scanId: string; mode: string; progress: ScanProgress; eventsToken: string }> {
-  const response = await app.inject({
-    method: "POST",
-    url: "/api/scan",
-    headers: { "x-session-token": token },
-    payload
-  });
-
-  expect(response.statusCode).toBe(200);
-  return response.json();
-}
-
-async function waitForScan(app: ApiServer, scanId: string): Promise<ScanSnapshot> {
-  let snapshot: ScanSnapshot | undefined;
-  await vi.waitFor(async () => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/scan",
-      headers: { "x-session-token": token }
-    });
-    expect(response.statusCode).toBe(200);
-    snapshot = response.json();
-    expect(snapshot.scanId).toBe(scanId);
-  });
-  return snapshot!;
-}
-
-async function scanAndAnalyze(app: ApiServer, payload: Record<string, unknown>): Promise<ScanResult> {
-  const start = await startScan(app, payload);
-  await waitForScan(app, start.scanId);
-  const response = await app.inject({
-    method: "POST",
-    url: "/api/analyze",
-    headers: { "x-session-token": token },
-    payload: { scanId: start.scanId }
-  });
-
-  expect(response.statusCode).toBe(200);
-  return response.json();
-}
-
-function decisionForGroup(scan: ScanResult, group: ScanResult["groups"][number]): Record<string, unknown> {
-  return {
-    scanId: scan.scanId,
-    groupId: group.id,
-    items: group.itemIds.map((itemId, index) => ({
-      itemId,
-      keep: index === 0,
-      deleteMode: "archive"
-    }))
-  };
-}
-
-function sseEvent(body: string, type: string): unknown {
-  const block = body.split("\n\n").find((candidate) => candidate.includes(`event: ${type}\n`));
-  const data = block?.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
-  if (!data) {
-    throw new Error(`找不到 SSE 事件：${type}`);
-  }
-  return JSON.parse(data);
-}
-
-function mockArchiveGroupVerification(service: PasswordService, scan: ScanResult, group: ScanResult["groups"][number]): void {
-  const groupItems = group.itemIds.map((itemId) => scan.items.find((item) => item.id === itemId)!);
-  const keepItem = groupItems[0];
-  const archivedItems = groupItems.slice(1);
-  const callsByVault = new Map<string, number>();
-  vi.mocked(service.listItemStates).mockImplementation(async (vaultId: string) => {
-    const callCount = callsByVault.get(vaultId) ?? 0;
-    callsByVault.set(vaultId, callCount + 1);
-    const vaultItems = groupItems.filter((item) => item.vaultId === vaultId);
-    const vaultArchivedItems = archivedItems.filter((item) => item.vaultId === vaultId);
-    if (callCount === 0) {
-      return {
-        activeIds: vaultItems.map((item) => item.onePasswordItemId),
-        archivedIds: []
-      };
-    }
-    return {
-      activeIds: keepItem.vaultId === vaultId ? [keepItem.onePasswordItemId] : [],
-      archivedIds: vaultArchivedItems.map((item) => item.onePasswordItemId)
-    };
-  });
-}
-
-function mockVaultStateReadSequence(
-  service: PasswordService,
-  states: Array<Record<string, { activeIds: string[]; archivedIds: string[] }>>
-): void {
-  let index = 0;
-  vi.mocked(service.listItemStates).mockImplementation(async (vaultId: string) => {
-    const state = states[Math.min(index, states.length - 1)]?.[vaultId] ?? { activeIds: [], archivedIds: [] };
-    index += 1;
-    return state;
-  });
-}
-
-describe("api app", () => {
-  let service: PasswordService;
-  let app: Awaited<ReturnType<typeof createApiServer>>;
-
-  beforeEach(async () => {
-    service = createService();
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: true,
-        sessionToken: token
-      },
-      onePassword: service,
-      logger: false
-    });
-  });
-
-  afterEach(async () => {
-    await app.close();
-  });
-
-  it("protects non-public endpoints with the local session token", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      payload: { mode: "mock" }
-    });
-
-    expect(response.statusCode).toBe(401);
-  });
-
-  it("executes a batch ActionDraft in dry-run mode and refreshes the unchanged draft", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const groups = scan.groups.slice(0, 2);
-    const draft = {
-      scanId: scan.scanId,
-      groups: groups.map((group) => decisionForGroup(scan, group))
-    };
-    const executionStartedAt = Date.now();
-    const start = await app.inject({
-      method: "POST",
-      url: "/api/action-executions/start",
-      headers: { "x-session-token": token },
-      payload: { draft, dryRunSpeedMultiplier: 5 }
-    });
-
-    expect(start.statusCode).toBe(200);
-    expect(start.json()).toMatchObject({
-      writeEnabled: false,
-      dryRunSpeedMultiplier: 5,
-      totalGroups: 2,
-      status: "running"
-    });
-    const events = await app.inject({
-      method: "GET",
-      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
-    });
-    expect(events.statusCode).toBe(200);
-    expect(events.body).toContain("event: action-started");
-    expect(events.body).toContain("event: analysis-updated");
-    expect(events.body).toContain("event: completed");
-    expect(Date.now() - executionStartedAt).toBeGreaterThanOrEqual(90);
-    const snapshot = await app.inject({
-      method: "GET",
-      url: `/api/action-executions/${start.json().executionId}`,
-      headers: { "x-session-token": token }
-    });
-    expect(snapshot.json()).toMatchObject({ status: "completed", writeEnabled: false });
-    expect(snapshot.json().draft.groups.map((group: { items: Array<Record<string, unknown>> }) => group.items.map((item) => ({
-      itemId: item.itemId,
-      keep: item.keep,
-      deleteMode: item.deleteMode
-    })))).toEqual(draft.groups.map((group) => group.items));
-
-    const update = sseEvent(events.body, "analysis-updated") as { response: { draft: Record<string, unknown> } };
-    const restarted = await app.inject({
-      method: "POST",
-      url: "/api/action-executions/start",
-      headers: { "x-session-token": token },
-      payload: { draft: update.response.draft }
-    });
-    expect(restarted.statusCode).toBe(200);
-    const restartedEvents = await app.inject({
-      method: "GET",
-      url: `/api/action-executions/${restarted.json().executionId}/events?eventsToken=${restarted.json().eventsToken}`
-    });
-    expect(restartedEvents.body).toContain("event: completed");
-  });
-
-  it("does not rescan 1Password after a live dry-run batch", async () => {
-    await app.close();
-    service = createService();
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: false,
-        sessionToken: token,
-        accountName: "test-account"
-      },
-      onePassword: service,
-      logger: false
-    });
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
-    const group = scan.groups[0];
-    const start = await app.inject({
-      method: "POST",
-      url: "/api/action-executions/start",
-      headers: { "x-session-token": token },
-      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
-    });
-    const events = await app.inject({
-      method: "GET",
-      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
-    });
-    const update = sseEvent(events.body, "analysis-updated") as { response: { completedGroupIds: string[] } };
-
-    expect(update.response.completedGroupIds).toEqual([]);
-    expect(service.scan).toHaveBeenCalledTimes(1);
-  });
-
-  it("removes completed write groups from cached analysis without rescanning or reanalyzing", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
-    const group = scan.groups[0];
-    mockArchiveGroupVerification(service, scan, group);
-    const start = await app.inject({
-      method: "POST",
-      url: "/api/action-executions/start",
-      headers: { "x-session-token": token },
-      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
-    });
-    const events = await app.inject({
-      method: "GET",
-      url: `/api/action-executions/${start.json().executionId}/events?eventsToken=${start.json().eventsToken}`
-    });
-    const update = sseEvent(events.body, "analysis-updated") as { response: { completedGroupIds: string[] } };
-    const cachedAnalysis = await app.inject({
-      method: "GET",
-      url: "/api/analysis",
-      headers: { "x-session-token": token }
-    });
-
-    expect(events.body).toContain("event: completed");
-    expect(update.response.completedGroupIds).toEqual([group.id]);
-    expect(cachedAnalysis.json().scanId).toBe(scan.scanId);
-    expect(cachedAnalysis.json().groups.some((candidate: { id: string }) => candidate.id === group.id)).toBe(false);
-    expect(cachedAnalysis.json().items).toEqual(scan.items);
-    expect(service.scan).toHaveBeenCalledTimes(1);
-  });
-
-  it("pauses after the running action, resumes the same execution, and can stop it", async () => {
-    await app.close();
-    const liveScan = createMockScanResult();
-    let releaseArchive!: () => void;
-    const archiveGate = new Promise<void>((resolve) => {
-      releaseArchive = resolve;
-    });
-    vi.mocked(service.scan).mockResolvedValue(liveScan);
-    vi.mocked(service.archive).mockImplementationOnce(async () => archiveGate);
-    vi.mocked(service.listItemStates).mockResolvedValue({
-      activeIds: liveScan.items.map((item) => item.onePasswordItemId),
-      archivedIds: []
-    });
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: true,
-        sessionToken: token,
-        accountName: "test-account"
-      },
-      onePassword: service,
-      logger: false
-    });
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "test-account" });
-    const group = scan.groups[0];
-    const start = await app.inject({
-      method: "POST",
-      url: "/api/action-executions/start",
-      headers: { "x-session-token": token },
-      payload: { draft: { scanId: scan.scanId, groups: [decisionForGroup(scan, group)] } }
-    });
-    const executionId = start.json().executionId;
-    await vi.waitFor(() => expect(service.archive).toHaveBeenCalledTimes(1));
-    const pause = await app.inject({
-      method: "POST",
-      url: `/api/action-executions/${executionId}/pause`,
-      headers: { "x-session-token": token }
-    });
-    expect(pause.json().status).toBe("pause-requested");
-    releaseArchive();
-    await vi.waitFor(async () => {
-      const snapshot = await app.inject({
-        method: "GET",
-        url: `/api/action-executions/${executionId}`,
-        headers: { "x-session-token": token }
-      });
-      expect(snapshot.json().status).toBe("paused");
-    });
-    const resume = await app.inject({
-      method: "POST",
-      url: `/api/action-executions/${executionId}/resume`,
-      headers: { "x-session-token": token }
-    });
-    expect(resume.statusCode).toBe(200);
-    const stop = await app.inject({
-      method: "POST",
-      url: `/api/action-executions/${executionId}/stop`,
-      headers: { "x-session-token": token }
-    });
-    expect(["stop-requested", "stopped"]).toContain(stop.json().status);
-    await vi.waitFor(async () => {
-      const snapshot = await app.inject({
-        method: "GET",
-        url: `/api/action-executions/${executionId}`,
-        headers: { "x-session-token": token }
-      });
-      expect(snapshot.json().status).toBe("stopped");
-    });
-  });
-
-  it("limits browser CORS access to configured local web origins", async () => {
-    const allowed = await app.inject({
-      method: "GET",
-      url: "/api/session",
-      headers: { origin: "http://127.0.0.1:4200" }
-    });
-    const denied = await app.inject({
-      method: "GET",
-      url: "/api/session",
-      headers: { origin: "http://127.0.0.1:9999" }
-    });
-
-    expect(allowed.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:4200");
-    expect(denied.headers["access-control-allow-origin"]).toBeUndefined();
-  });
-
-  it("allows mutation mode PATCH requests through CORS preflight", async () => {
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/api/session/mutations",
-      headers: {
-        origin: "http://127.0.0.1:4200",
-        "access-control-request-method": "PATCH",
-        "access-control-request-headers": "x-session-token,x-tab-id,content-type"
-      }
-    });
-
-    expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:4200");
-    expect(response.headers["access-control-allow-methods"]).toContain("PATCH");
-  });
-
-  it("describes the local session mode and runtime capabilities", async () => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/session"
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      token,
-      mode: "browser-dev",
-      enableMutations: true,
-      hasServiceAccountToken: false,
-      supportsDesktopAuth: true,
-      idleShutdownMs: null,
-      capabilities: {
-        staticUi: false,
-        canShutdown: false,
-        supportsHeartbeat: false,
-        supportsIdleShutdown: false,
-        supportsDesktopAuth: true,
-        shell: "browser"
-      }
-    });
-    expect(JSON.stringify(response.json())).not.toContain("OP_SERVICE_ACCOUNT_TOKEN");
-  });
-
-  it("toggles live mutation capability at runtime", async () => {
-    const disabled = await app.inject({
-      method: "PATCH",
-      url: "/api/session/mutations",
-      headers: { "x-session-token": token },
-      payload: { enableMutations: false }
-    });
-    const enabled = await app.inject({
-      method: "PATCH",
-      url: "/api/session/mutations",
-      headers: { "x-session-token": token },
-      payload: { enableMutations: true }
-    });
-
-    expect(disabled.statusCode).toBe(200);
-    expect(disabled.json().enableMutations).toBe(false);
-    expect(enabled.statusCode).toBe(200);
-    expect(enabled.json().enableMutations).toBe(true);
-  });
-
-  it("adds baseline security headers to API responses", async () => {
-    const response = await app.inject({
-      method: "GET",
-      url: "/healthz"
-    });
-
-    expect(response.headers["x-content-type-options"]).toBe("nosniff");
-    expect(response.headers["x-frame-options"]).toBe("DENY");
-    expect(response.headers["referrer-policy"]).toBe("no-referrer");
-    expect(response.headers["cache-control"]).toBe("no-store");
-    expect(response.headers["content-security-policy"]).toContain("default-src 'self'");
-    expect(response.headers["content-security-policy"]).toContain("script-src 'self' 'unsafe-inline'");
-    expect(response.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
-    expect(response.headers["content-security-policy"]).toContain("object-src 'none'");
-  });
-
-  it("starts mock scans without analyzing until requested", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const snapshot = await waitForScan(app, start.scanId);
-    const analyzeResponse = await app.inject({
-      method: "POST",
-      url: "/api/analyze",
-      headers: { "x-session-token": token },
-      payload: { scanId: start.scanId }
-    });
-
-    expect(start).not.toHaveProperty("groups");
-    expect(start.progress.phase).toBe("completed");
-    expect(start.progress.startedAt).toEqual(expect.any(String));
-    expect(start.progress.finishedAt).toEqual(expect.any(String));
-    expect(snapshot.items.length).toBeGreaterThan(0);
-    expect(snapshot.durationMs).toEqual(expect.any(Number));
-    expect(snapshot).not.toHaveProperty("groups");
-    expect(analyzeResponse.statusCode).toBe(200);
-    expect(analyzeResponse.json().groups.length).toBeGreaterThan(0);
-    expect(service.scan).not.toHaveBeenCalled();
-  });
-
-  it("redacts comparison-only fields from scan responses", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const body = await waitForScan(app, start.scanId);
-
-    expect(body.items.flatMap((item: { comparableFields: Array<{ normalizedValue?: string; normalizedValueHash?: string }> }) => item.comparableFields)
-      .every((field: { normalizedValue?: string; normalizedValueHash?: string }) => field.normalizedValue === undefined && field.normalizedValueHash === undefined)).toBe(true);
-    expect(body.items.every((item: { analysis?: unknown }) => item.analysis === undefined)).toBe(true);
-    expect(JSON.stringify(body)).not.toContain("AKIA-MOCK-KEY");
-    expect(JSON.stringify(body)).not.toContain("mock-aws-secret");
-    expect(JSON.stringify(body)).not.toContain("mock-analysis");
-  });
-
-  it("searches only requested item fields and requires every keyword on the same item", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    await waitForScan(app, start.scanId);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/items/search",
-      headers: { "x-session-token": token },
-      payload: {
-        keywords: ["github", "alice@example.com"],
-        itemIds: ["vault-personal:github-1", "vault-work:github-2", "vault-personal:linear-1"]
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    const body = response.json();
-    expect(body).toEqual({ itemIds: [
-      "vault-personal:github-1",
-      "vault-work:github-2"
-    ] });
-
-    const excludedFields = await app.inject({
-      method: "POST",
-      url: "/api/items/search",
-      headers: { "x-session-token": token },
-      payload: { keywords: ["2026"], itemIds: ["vault-personal:github-1"] }
-    });
-    expect(excludedFields.json()).toEqual({ itemIds: [] });
-  });
-
-  it("streams scan progress events with a completed snapshot", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}`,
-      headers: { "x-session-token": token }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("event: started");
-    expect(response.body).toContain("event: completed");
-    expect(response.body).toContain("\"scan\"");
-    expect(response.body).not.toContain("AKIA-MOCK-KEY");
-  });
-
-  it("continues scan event streams after a known event index", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    await waitForScan(app, start.scanId);
-
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}&after=1`
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).not.toContain("event: started");
-    expect(response.body).toContain("event: completed");
-  });
-
-  it("reports the active scan job for another tab to follow", async () => {
-    vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
-    }));
-    const start = await startScan(app, { mode: "live", accountName: "example-account" });
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/scan/active",
-      headers: { "x-session-token": token, "x-tab-id": "second-tab" }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      scanId: start.scanId,
-      mode: "live",
-      eventsToken: start.eventsToken,
-      eventCount: expect.any(Number)
-    });
-    expect(response.json().progress.scanId).toBe(start.scanId);
-  });
-
-  it("allows scan event streams with the per-scan events token", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}`
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("event: started");
-    expect(response.body).toContain("event: completed");
-  });
-
-  it("adds CORS headers to scan event streams for configured origins", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=${start.eventsToken}`,
-      headers: { origin: "http://127.0.0.1:4200" }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:4200");
-  });
-
-  it("rejects scan event streams with an invalid events token", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/scan/events?scanId=${start.scanId}&eventsToken=wrong-token`
-    });
-
-    expect(response.statusCode).toBe(401);
-  });
-
-  it("streams backend-selected dry-run execution events without calling 1Password mutations", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-    const start = await app.inject({
-      method: "POST",
-      url: "/api/execute/start",
-      headers: { "x-session-token": token },
-      payload: decisionForGroup(scan, group)
-    });
-
-    expect(start.statusCode).toBe(200);
-    expect(start.json().dryRun).toBe(true);
-    const stream = await app.inject({
-      method: "GET",
-      url: `/api/execute/events?executionId=${start.json().executionId}&eventsToken=${start.json().eventsToken}`
-    });
-
-    expect(stream.statusCode).toBe(200);
-    expect(stream.body).toContain("event: started");
-    expect(stream.body).toContain("event: action-started");
-    expect(stream.body).toContain("event: action");
-    expect(stream.body).toContain("event: completed");
-    expect(stream.body).toContain("id: 1");
-    expect(stream.body.indexOf("event: action-started")).toBeLessThan(stream.body.indexOf("event: action\n"));
-    const resumedStream = await app.inject({
-      method: "GET",
-      url: `/api/execute/events?executionId=${start.json().executionId}&eventsToken=${start.json().eventsToken}`,
-      headers: { "last-event-id": "1" }
-    });
-    expect(resumedStream.body).not.toContain("event: started\n");
-    expect(resumedStream.body).toContain("event: action-started");
-    expect(vi.mocked(service.archive)).not.toHaveBeenCalled();
-    expect(vi.mocked(service.delete)).not.toHaveBeenCalled();
-  });
-
-  it("clears the current scan and local item cache without calling 1Password mutations", async () => {
-    const scanResponse = await startScan(app, { mode: "mock" });
-    await waitForScan(app, scanResponse.scanId);
-
-    const clearResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan/clear",
-      headers: { "x-session-token": token }
-    });
-    const afterClearResponse = await app.inject({
-      method: "GET",
-      url: "/api/scan",
-      headers: { "x-session-token": token }
-    });
-
-    expect(scanResponse.scanId).toEqual(expect.any(String));
-    expect(clearResponse.statusCode).toBe(200);
-    expect(clearResponse.json()).toEqual({ ok: true });
-    expect(afterClearResponse.statusCode).toBe(400);
-    expect(afterClearResponse.json().message).toContain("还没有扫描结果");
-    expect(service.clearCache).toHaveBeenCalledTimes(1);
-    expect(service.scan).not.toHaveBeenCalled();
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("reports missing live desktop auth account as a bad request", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live" }
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json().message).toContain("Desktop App 授权需要账户名或 account_uuid");
-  });
-
-  it("exposes the completed Desktop Auth account for scan-cache recovery", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-
-    const start = await startScan(app, { mode: "live", accountName: "example-account" });
-    await waitForScan(app, start.scanId);
-
-    const resumedSession = await app.inject({ method: "GET", url: "/api/session" });
-    expect(resumedSession.statusCode).toBe(200);
-    expect(resumedSession.json()).toMatchObject({ resumeAccountName: "example-account" });
-
-    await app.inject({
-      method: "POST",
-      url: "/api/scan/clear",
-      headers: { "x-session-token": token }
-    });
-
-    const clearedSession = await app.inject({ method: "GET", url: "/api/session" });
-    expect(clearedSession.json()).not.toHaveProperty("resumeAccountName");
-  });
-
-  it("rejects a new scan while another scan is still running", async () => {
-    vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
-    }));
-
-    const firstResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const secondResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-
-    expect(firstResponse.statusCode).toBe(200);
-    expect(secondResponse.statusCode).toBe(409);
-    expect(secondResponse.json().message).toContain("当前已有执行任务正在运行");
-    expect(service.scan).toHaveBeenCalledTimes(1);
-  });
-
-  it("cancels an active scan when clearing scan state", async () => {
-    let resolveLiveScan!: (scan: ScanSnapshot) => void;
-    vi.mocked(service.scan).mockImplementationOnce(() => new Promise((resolve) => {
-      resolveLiveScan = resolve;
-    }));
-
-    const liveStart = await startScan(app, { mode: "live", accountName: "example-account" });
-    const clearResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan/clear",
-      headers: { "x-session-token": token }
-    });
-    const mockStart = await startScan(app, { mode: "mock" });
-    const mockScan = await waitForScan(app, mockStart.scanId);
-
-    resolveLiveScan(createMockScanResult());
-    await vi.waitFor(async () => {
-      const response = await app.inject({
-        method: "GET",
-        url: "/api/scan",
-        headers: { "x-session-token": token }
-      });
-      expect(response.statusCode).toBe(200);
-      expect(response.json().scanId).toBe(mockStart.scanId);
-    });
-
-    expect(liveStart.scanId).not.toBe(mockStart.scanId);
-    expect(clearResponse.statusCode).toBe(200);
-    expect(mockScan.scanId).toBe(mockStart.scanId);
-    expect(service.clearCache).toHaveBeenCalledTimes(1);
-  });
-
-  it("serves the production web UI without intercepting API routes", async () => {
-    await app.close();
-    const webDistDir = await mkdtemp(join(tmpdir(), "optimize-password-web-"));
-    await writeFile(join(webDistDir, "index.html"), "<!doctype html><op-root></op-root>");
-    await writeFile(join(webDistDir, "main.js"), "console.log('optimize-password');");
-
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: true,
-        sessionToken: token,
-        webDistDir
-      },
-      onePassword: service,
-      logger: false
-    });
-
-    try {
-      const indexResponse = await app.inject({ method: "GET", url: "/" });
-      const assetResponse = await app.inject({ method: "GET", url: "/main.js" });
-      const fallbackResponse = await app.inject({ method: "GET", url: "/review/group-1" });
-      const apiResponse = await app.inject({ method: "GET", url: "/api/session" });
-
-      expect(indexResponse.statusCode).toBe(200);
-      expect(indexResponse.headers["content-type"]).toContain("text/html");
-      expect(indexResponse.headers["content-security-policy"]).toContain("script-src 'self' 'unsafe-inline'");
-      expect(indexResponse.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
-      expect(indexResponse.body).toContain("<op-root>");
-      expect(assetResponse.statusCode).toBe(200);
-      expect(assetResponse.headers["content-type"]).toContain("text/javascript");
-      expect(assetResponse.body).toContain("optimize-password");
-      expect(fallbackResponse.statusCode).toBe(200);
-      expect(fallbackResponse.body).toContain("<op-root>");
-      expect(apiResponse.statusCode).toBe(200);
-      expect(apiResponse.json().token).toBe(token);
-    } finally {
-      await rm(webDistDir, { recursive: true, force: true });
-    }
-  });
-
-  it("protects heartbeat and shutdown with the local session token", async () => {
-    const heartbeatResponse = await app.inject({
-      method: "POST",
-      url: "/api/session/heartbeat"
-    });
-    const shutdownResponse = await app.inject({
-      method: "POST",
-      url: "/api/session/shutdown"
-    });
-
-    expect(heartbeatResponse.statusCode).toBe(401);
-    expect(shutdownResponse.statusCode).toBe(401);
-  });
-
-  it("allows launcher-managed shutdown when no scan or mutation is running", async () => {
-    await app.close();
-    const onShutdown = vi.fn();
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        mode: "browser-serve",
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: true,
-        sessionToken: token,
-        idleShutdownMs: 5000
-      },
-      onePassword: service,
-      lifecycle: {
-        shutdown: {
-          enabled: true,
-          onShutdown
-        }
-      },
-      logger: false
-    });
-
-    const sessionResponse = await app.inject({ method: "GET", url: "/api/session" });
-    const shutdownResponse = await app.inject({
-      method: "POST",
-      url: "/api/session/shutdown",
-      headers: { "x-session-token": token }
-    });
-
-    expect(sessionResponse.json()).toMatchObject({
-      mode: "browser-serve",
-      idleShutdownMs: 5000,
-      capabilities: {
-        canShutdown: true,
-        supportsHeartbeat: true,
-        supportsIdleShutdown: true
-      }
-    });
-    expect(shutdownResponse.statusCode).toBe(200);
-    await vi.waitFor(() => expect(onShutdown).toHaveBeenCalledWith("requested"));
-  });
-
-  it("refuses shutdown while a scan is still running", async () => {
-    await app.close();
-    vi.mocked(service.scan).mockImplementation(() => new Promise(() => {
-    }));
-    const onShutdown = vi.fn();
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        mode: "browser-serve",
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: true,
-        sessionToken: token
-      },
-      onePassword: service,
-      lifecycle: {
-        shutdown: {
-          enabled: true,
-          onShutdown
-        }
-      },
-      logger: false
-    });
-
-    const startResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-    const shutdownResponse = await app.inject({
-      method: "POST",
-      url: "/api/session/shutdown",
-      headers: { "x-session-token": token }
+const headers = { "x-session-token": token, "x-tab-id": "tab-1" };
+
+describe("canonical API workflow", () => {
+    let app: Awaited<ReturnType<typeof createApiServer>>;
+    let services: ApplicationServices;
+
+    beforeEach(async () => {
+        services = createApplicationServices([new MockItemBackend(), new CsvItemBackend()]);
+        app = await createApiServer({
+            config: {
+                host: "127.0.0.1",
+                port: 3417,
+                sessionToken: token,
+                webOrigins: ["http://127.0.0.1:4200"],
+                enableMutations: false,
+            },
+            services,
+            logger: false,
+        });
+    });
+
+    afterEach(async () => {
+        await app.close();
+    });
+
+    it("loads the Canonical Store and exposes canonical item ids", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+
+        expect(analysis.storeVersion).toBe(1);
+        expect(analysis.items.length).toBeGreaterThan(0);
+        expect(analysis.groups.length).toBeGreaterThan(0);
+        expect(analysis.items.every((item) => item.id.startsWith(`${ ItemProvider.Mock }:`))).toBe(true);
+        expect(analysis.items.every((item) => item.analysis === undefined)).toBe(true);
+    });
+
+    it("item 搜索直接读取 Store 当前事实而不是扫描 DTO 缓存", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const item = services.itemRepository.getStore().listActive()[0];
+        const action = new UpdateItemAction(
+            "update-search-title",
+            analysis.groups[0].id,
+            item.id,
+            ItemProvider.Mock,
+            0,
+            [],
+            { label: "更新标题", detail: "验证搜索事实源" },
+            { itemId: item.id, patch: { title: "Store-only-search-title" } },
+        );
+        await services.itemRepository.apply(action, services.itemRepository.getStore(), ExecutionMode.Real);
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/api/items/search",
+            headers,
+            payload: { keywords: ["Store-only-search-title"], itemIds: analysis.items.map((candidate) => candidate.id) },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().itemIds).toContain(item.id);
+    });
+
+    it("returns only DTO steps and never serializes backend action commands", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const draft = draftFor(analysis);
+
+        const response = await app.inject({ method: "POST", url: "/api/plan", headers, payload: draft });
+
+        expect(response.statusCode).toBe(200);
+        const plan = response.json();
+        expect(plan.storeSnapshotId).toBe(analysis.scanId);
+        expect(plan.planHash).toMatch(/^[0-9a-f]{64}$/);
+        expect(plan.statistics.groupCount).toBe(1);
+        expect(plan.groups[0].steps.length).toBeGreaterThan(0);
+        expect(plan.groups[0].items[0]).not.toHaveProperty("actions");
+        expect(JSON.stringify(plan)).not.toContain("command");
+    });
+
+    it("拒绝用错误 hash 或其它 tab 启动已展开计划", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const plan = (await app.inject({ method: "POST", url: "/api/plan", headers, payload: draftFor(analysis) })).json();
+
+        const wrongHash = await app.inject({
+            method: "POST",
+            url: "/api/action-executions/start",
+            headers,
+            payload: { planId: plan.planId, planHash: "b".repeat(64) },
+        });
+        const wrongTab = await app.inject({
+            method: "POST",
+            url: "/api/action-executions/start",
+            headers: { ...headers, "x-tab-id": "tab-2" },
+            payload: { planId: plan.planId, planHash: plan.planHash },
+        });
+
+        expect(wrongHash.statusCode).toBe(400);
+        expect(wrongTab.statusCode).toBe(400);
+    });
+
+    it("executes the backend-expanded plan against a Store fork in dry-run mode", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const draft = draftFor(analysis);
+        const plan = (await app.inject({ method: "POST", url: "/api/plan", headers, payload: draft })).json();
+        const start = await app.inject({
+            method: "POST",
+            url: "/api/action-executions/start",
+            headers,
+            payload: { planId: plan.planId, planHash: plan.planHash, dryRunSpeedMultiplier: DryRunSpeedMultiplier.Ten },
+        });
+
+        expect(start.statusCode).toBe(200);
+        expect(start.json().writeEnabled).toBe(false);
+        expect(start.json().plan.planHash).toBe(plan.planHash);
+        expect(start.json().plan.groups[0].steps.map((step: { actionId: string }) => step.actionId))
+            .toEqual(plan.groups[0].steps.map((step: { actionId: string }) => step.actionId));
+        expect(start.json().plan.groups[0].steps.length).toBeGreaterThan(0);
+        await vi.waitFor(async () => {
+            const snapshot = await app.inject({
+                method: "GET",
+                url: `/api/action-executions/${ start.json().executionId }`,
+                headers,
+            });
+            expect(snapshot.json().status).toBe(ActionExecutionStatus.Completed);
+        });
+
+        const formal = await app.inject({ method: "GET", url: "/api/analysis", headers });
+        expect(formal.statusCode).toBe(200);
+        expect(formal.json().storeVersion).toBe(analysis.storeVersion);
+        expect(formal.json().groups).toEqual(analysis.groups);
+    });
+
+    it("真实执行按 Backend 能力运行并刷新所有 tab 的 workspace 投影", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const plan = (await app.inject({ method: "POST", url: "/api/plan", headers, payload: draftFor(analysis) })).json();
+        const tabTwoHeaders = { ...headers, "x-tab-id": "tab-2" };
+        const tabTwoAnalysis = await app.inject({
+            method: "POST",
+            url: "/api/analyze",
+            headers: tabTwoHeaders,
+            payload: { scanId: analysis.scanId },
+        });
+        expect(tabTwoAnalysis.statusCode).toBe(200);
+        await app.inject({
+            method: "PATCH",
+            url: "/api/session/mutations",
+            headers,
+            payload: { enableMutations: true },
+        });
+
+        const start = await app.inject({
+            method: "POST",
+            url: "/api/action-executions/start",
+            headers,
+            payload: { planId: plan.planId, planHash: plan.planHash, dryRunSpeedMultiplier: DryRunSpeedMultiplier.One },
+        });
+
+        expect(start.statusCode).toBe(200);
+        expect(start.json().writeEnabled).toBe(true);
+        await vi.waitFor(async () => {
+            const snapshot = await app.inject({
+                method: "GET",
+                url: `/api/action-executions/${ start.json().executionId }`,
+                headers,
+            });
+            expect(snapshot.json().status).toBe(ActionExecutionStatus.Completed);
+        });
+        const refreshedTabTwo = await app.inject({ method: "GET", url: "/api/analysis", headers: tabTwoHeaders });
+        expect(refreshedTabTwo.statusCode).toBe(200);
+        expect(refreshedTabTwo.json().storeVersion).toBeGreaterThan(analysis.storeVersion);
+        expect(refreshedTabTwo.json().groups).toHaveLength(analysis.groups.length - 1);
+        expect(refreshedTabTwo.json().groups.map((group: { id: string }) => group.id)).not.toContain(analysis.groups[0].id);
+    });
+
+    it("marks skipped groups per workspace without changing Store analysis", async () => {
+        const analysis = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const group = analysis.groups[0];
+        const response = await app.inject({
+            method: "POST",
+            url: `/api/groups/${ group.id }/skip`,
+            headers,
+            payload: { scanId: analysis.scanId },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().scan.groups).toHaveLength(analysis.groups.length);
+        expect(response.json().scan.skippedGroupIds).toContain(group.id);
+    });
+
+    it("scans a 1Password CSV through the read-only backend", async () => {
+        const analysis = await scanAndAnalyze(app, {
+            provider: ItemProvider.Csv,
+            fileName: "export.csv",
+            csvContent: [
+                "Title,Url,Username,Password,OTPAuth,Favorite,Archived,Tags,Notes",
+                "Example,https://example.com,user@example.com,secret-value-never-expose,,,false,,",
+                "Example,https://example.com/,user@example.com,another-secret-never-expose,,,false,,",
+            ].join("\n"),
+        });
+        const planResponse = await app.inject({ method: "POST", url: "/api/plan", headers, payload: draftFor(analysis) });
+
+        expect(analysis.items).toHaveLength(2);
+        expect(JSON.stringify(analysis)).not.toContain("secret-value-never-expose");
+        expect(JSON.stringify(analysis)).not.toContain("another-secret-never-expose");
+        expect(planResponse.statusCode).toBe(200);
+        expect(planResponse.json().realExecutionSupported).toBe(false);
+    });
+
+    it("CSV 在真写模式下明确阻断而不是静默降级为 dry-run", async () => {
+        const analysis = await scanAndAnalyze(app, {
+            provider: ItemProvider.Csv,
+            fileName: "export.csv",
+            csvContent: [
+                "Title,Url,Username,Password,OTPAuth,Favorite,Archived,Tags,Notes",
+                "Example,https://example.com,user@example.com,secret,,,false,,",
+                "Example,https://example.com/,user@example.com,secret,,,false,,",
+            ].join("\n"),
+        });
+        await app.inject({
+            method: "PATCH",
+            url: "/api/session/mutations",
+            headers,
+            payload: { enableMutations: true },
+        });
+        const plan = (await app.inject({ method: "POST", url: "/api/plan", headers, payload: draftFor(analysis) })).json();
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/api/action-executions/start",
+            headers,
+            payload: { planId: plan.planId, planHash: plan.planHash, dryRunSpeedMultiplier: DryRunSpeedMultiplier.One },
+        });
+
+        expect(response.statusCode).toBe(422);
+        expect(response.json().message).toBe("当前扫描源不支持真实写回。");
+    });
+
+    it("clears Store and workspace state together", async () => {
+        await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        expect((await app.inject({ method: "POST", url: "/api/scan/clear", headers })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: "/api/scan", headers })).statusCode).toBe(400);
+        expect((await app.inject({ method: "GET", url: "/api/analysis", headers })).statusCode).toBe(400);
+    });
+
+    it("开始不同后端扫描时立即清除全局 Store、扫描快照和所有 tab workspace", async () => {
+        const previous = await scanAndAnalyze(app, { provider: ItemProvider.Mock });
+        const secondTabHeaders = { ...headers, "x-tab-id": "tab-2" };
+        expect((await app.inject({
+            method: "POST",
+            url: "/api/analyze",
+            headers: secondTabHeaders,
+            payload: { scanId: previous.scanId },
+        })).statusCode).toBe(200);
+
+        const start = await app.inject({
+            method: "POST",
+            url: "/api/scan",
+            headers,
+            payload: {
+                provider: ItemProvider.Csv,
+                fileName: "replacement.csv",
+                csvContent: "invalid,csv\nvalue",
+            },
+        });
+
+        expect(start.statusCode).toBe(200);
+        expect(services.itemRepository.getStore().getState()).toBe(StoreState.Empty);
+        expect((await app.inject({ method: "GET", url: "/api/scan", headers })).statusCode).toBe(400);
+        expect((await app.inject({ method: "GET", url: "/api/analysis", headers })).statusCode).toBe(400);
+        expect((await app.inject({ method: "GET", url: "/api/analysis", headers: secondTabHeaders })).statusCode).toBe(400);
     });
-
-    expect(startResponse.statusCode).toBe(200);
-    expect(shutdownResponse.statusCode).toBe(409);
-    expect(shutdownResponse.json().message).toContain("扫描或执行任务运行中");
-    expect(onShutdown).not.toHaveBeenCalled();
-  });
-
-  it("blocks execution when the decision omits items from the duplicate group", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: [{ itemId: group.itemIds[0], keep: true }]
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().blocked).toBe(true);
-    expect(response.json().plan.blockers.join("\n")).toContain("执行请求缺少组内 item");
-  });
-
-  it("blocks unknown decision item ids without raising a server error", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: [
-          ...group.itemIds.map((itemId: string, index: number) => ({
-            itemId,
-            keep: index === 0
-          })),
-          { itemId: "vault-forged:item-not-in-scan", keep: false }
-        ]
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().blocked).toBe(true);
-    expect(response.json().plan.blockers.join("\n")).toContain("执行请求包含不属于该组的 item：vault-forged:item-not-in-scan");
-    expect(response.json().plan.actions.every((action: { itemId: string }) => group.itemIds.includes(action.itemId))).toBe(true);
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("blocks plans that target an unknown vault", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0,
-          targetVaultId: index === 0 ? "vault-not-in-scan" : undefined
-        }))
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().blocked).toBe(true);
-    expect(response.json().plan.blockers.join("\n")).toContain("目标保险库不存在或不可访问：vault-not-in-scan");
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("uses no-op dry-run execution for mock scans", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0
-        }))
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().dryRun).toBe(true);
-    expect(response.json().results.every((result: { dryRun?: boolean }) => result.dryRun)).toBe(true);
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-  });
-
-  it("marks a duplicate group as skipped without removing it from the current scan", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/groups/${group.id}/skip`,
-      headers: { "x-session-token": token },
-      payload: { scanId: scan.scanId }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().skippedGroupId).toBe(group.id);
-    expect(response.json().restorableSkippedGroupCount).toBe(1);
-    expect(response.json().scan.groups).toHaveLength(scan.groups.length);
-    expect(response.json().scan.skippedGroupIds).toEqual([group.id]);
-
-    const planResponse = await app.inject({
-      method: "POST",
-      url: "/api/plan",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({ itemId, keep: index === 0 }))
-      }
-    });
-
-    expect(planResponse.statusCode).toBe(400);
-    expect(planResponse.json().message).toContain("已标记跳过");
-
-    const cachedAnalysis = await app.inject({
-      method: "GET",
-      url: "/api/analysis",
-      headers: { "x-session-token": token }
-    });
-
-    expect(cachedAnalysis.statusCode).toBe(200);
-    expect(cachedAnalysis.json().skippedGroupIds).toEqual([group.id]);
-    expect(service.scan).not.toHaveBeenCalled();
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("shares scan cache globally while keeping analysis state isolated per tab", async () => {
-    const start = await startScan(app, { mode: "mock" });
-    const snapshot = await waitForScan(app, start.scanId);
-    const tabA = { "x-session-token": token, "x-tab-id": "tab-a" };
-    const tabB = { "x-session-token": token, "x-tab-id": "tab-b" };
-
-    const scanFromTabB = await app.inject({
-      method: "GET",
-      url: "/api/scan",
-      headers: tabB
-    });
-    const analyzeTabA = await app.inject({
-      method: "POST",
-      url: "/api/analyze",
-      headers: tabA,
-      payload: { scanId: snapshot.scanId }
-    });
-    const analysisTabBBeforeAnalyze = await app.inject({
-      method: "GET",
-      url: "/api/analysis",
-      headers: tabB
-    });
-    const analyzeTabB = await app.inject({
-      method: "POST",
-      url: "/api/analyze",
-      headers: tabB,
-      payload: { scanId: snapshot.scanId }
-    });
-    const group = analyzeTabA.json().groups[0];
-    const skipTabA = await app.inject({
-      method: "POST",
-      url: `/api/groups/${group.id}/skip`,
-      headers: tabA,
-      payload: { scanId: snapshot.scanId }
-    });
-    const analysisTabBAfterSkip = await app.inject({
-      method: "GET",
-      url: "/api/analysis",
-      headers: tabB
-    });
-
-    expect(scanFromTabB.statusCode).toBe(200);
-    expect(scanFromTabB.json().scanId).toBe(snapshot.scanId);
-    expect(analyzeTabA.statusCode).toBe(200);
-    expect(analysisTabBBeforeAnalyze.statusCode).toBe(400);
-    expect(analysisTabBBeforeAnalyze.json().message).toContain("还没有分析结果");
-    expect(analyzeTabB.statusCode).toBe(200);
-    expect(skipTabA.statusCode).toBe(200);
-    expect(skipTabA.json().scan.groups).toHaveLength(analyzeTabA.json().groups.length);
-    expect(skipTabA.json().scan.skippedGroupIds).toEqual([group.id]);
-    expect(analysisTabBAfterSkip.statusCode).toBe(200);
-    expect(analysisTabBAfterSkip.json().groups).toHaveLength(analyzeTabB.json().groups.length);
-    expect(analysisTabBAfterSkip.json().groups[0].id).toBe(group.id);
-    expect(analysisTabBAfterSkip.json().skippedGroupIds).toEqual([]);
-  });
-
-  it("restores a specific skipped duplicate group without calling 1Password", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = scan.groups[0];
-
-    await app.inject({
-      method: "POST",
-      url: `/api/groups/${group.id}/skip`,
-      headers: { "x-session-token": token },
-      payload: { scanId: scan.scanId }
-    });
-    const restoreResponse = await app.inject({
-      method: "POST",
-      url: `/api/groups/${group.id}/restore`,
-      headers: { "x-session-token": token },
-      payload: { scanId: scan.scanId }
-    });
-
-    expect(restoreResponse.statusCode).toBe(200);
-    expect(restoreResponse.json().skippedGroupId).toBe(group.id);
-    expect(restoreResponse.json().restorableSkippedGroupCount).toBe(0);
-    expect(restoreResponse.json().scan.groups).toHaveLength(scan.groups.length);
-    expect(restoreResponse.json().scan.skippedGroupIds).toEqual([]);
-    expect(service.scan).not.toHaveBeenCalled();
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("reports when no skipped group can be restored", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/groups/restore-skipped",
-      headers: { "x-session-token": token },
-      payload: { scanId: scan.scanId }
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json().message).toContain("没有可恢复");
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("keeps skipped-group state after completing a different mock group", async () => {
-    const scan = await scanAndAnalyze(app, { mode: "mock" });
-    const skippedGroup = scan.groups[0];
-    const skipResponse = await app.inject({
-      method: "POST",
-      url: `/api/groups/${skippedGroup.id}/skip`,
-      headers: { "x-session-token": token },
-      payload: { scanId: scan.scanId }
-    });
-    const currentScan = skipResponse.json().scan;
-    const group = currentScan.groups.find((candidate: { id: string }) => candidate.id !== skippedGroup.id);
-
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: currentScan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0
-        }))
-      }
-    });
-    const restoreResponse = await app.inject({
-      method: "POST",
-      url: `/api/groups/${skippedGroup.id}/restore`,
-      headers: { "x-session-token": token },
-      payload: { scanId: currentScan.scanId }
-    });
-
-    expect(skipResponse.statusCode).toBe(200);
-    expect(executeResponse.statusCode).toBe(200);
-    expect(executeResponse.json().completedGroupId).toBe(group.id);
-    expect(restoreResponse.statusCode).toBe(200);
-    expect(restoreResponse.json().skippedGroupId).toBe(skippedGroup.id);
-    expect(service.scan).not.toHaveBeenCalled();
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("allows live dry-run for permanent-delete plans without mutating items", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        dryRun: true,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0,
-          deleteMode: index === 0 ? "archive" : "delete"
-        }))
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().dryRun).toBe(true);
-    expect(response.json().dryRunKey).toEqual(expect.any(String));
-    expect(response.json().blocked).toBeUndefined();
-    expect(response.json().plan.requiresExplicitDeleteConfirmation).toBe(true);
-    expect(response.json().results.every((result: { dryRun?: boolean }) => result.dryRun)).toBe(true);
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("rejects plans and execution for stale scan ids", async () => {
-    const firstScan = await scanAndAnalyze(app, { mode: "mock" });
-    const group = firstScan.groups[0];
-
-    const secondScan = await scanAndAnalyze(app, { mode: "mock" });
-    expect(secondScan.scanId).not.toBe(firstScan.scanId);
-
-    const payload = {
-      scanId: firstScan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-
-    const planResponse = await app.inject({
-      method: "POST",
-      url: "/api/plan",
-      headers: { "x-session-token": token },
-      payload
-    });
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload
-    });
-
-    expect(planResponse.statusCode).toBe(400);
-    expect(executeResponse.statusCode).toBe(400);
-    expect(planResponse.json().message).toContain("已过期");
-    expect(executeResponse.json().message).toContain("已过期");
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-  });
-
-  it("blocks live execution until the current plan has a successful dry-run", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0
-        }))
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().blocked).toBe(true);
-    expect(response.json().error).toContain("试运行");
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("treats live execution as dry-run unless mutations are explicitly enabled", async () => {
-    await app.close();
-    service = createService();
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    app = await createApiServer({
-      config: {
-        host: "127.0.0.1",
-        port: 0,
-        webOrigins: ["http://127.0.0.1:4200"],
-        enableMutations: false,
-        sessionToken: token
-      },
-      onePassword: service,
-      logger: false
-    });
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().dryRun).toBe(true);
-    expect(response.json().dryRunKey).toEqual(expect.any(String));
-    expect(response.json().results.every((result: { dryRun?: boolean }) => result.dryRun)).toBe(true);
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("normalizes live action order before dry-run approval and execution", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createThreeItemScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-    vi.mocked(service.delete).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const originalPayload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: [
-        { itemId: group.itemIds[0], keep: false, deleteMode: "archive" },
-        { itemId: group.itemIds[1], keep: false, deleteMode: "delete" },
-        { itemId: group.itemIds[2], keep: true }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, originalPayload);
-
-    const reorderedResponse = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        confirmPermanentDelete: true,
-        permanentDeleteConfirmationPhrase: "永久删除",
-        confirmedDryRunKey,
-        items: [
-          { itemId: group.itemIds[1], keep: false, deleteMode: "delete" },
-          { itemId: group.itemIds[0], keep: false, deleteMode: "archive" },
-          { itemId: group.itemIds[2], keep: true }
-        ]
-      }
-    });
-
-    expect(reorderedResponse.statusCode).toBe(200);
-    expect(reorderedResponse.json().blocked).toBeUndefined();
-    expect(reorderedResponse.json().results.map((result: { action: string }) => result.action)).toEqual([
-      "keep",
-      "archive",
-      "delete"
-    ]);
-    expect(service.archive).toHaveBeenCalledTimes(1);
-    expect(service.delete).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(service.archive).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(service.delete).mock.invocationCallOrder[0]
-    );
-  });
-
-  it("requires the permanent-delete confirmation phrase for live delete execution", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createThreeItemScanResult());
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: [
-        { itemId: group.itemIds[0], keep: false, deleteMode: "archive" },
-        { itemId: group.itemIds[1], keep: false, deleteMode: "delete" },
-        { itemId: group.itemIds[2], keep: true }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: {
-        ...payload,
-        confirmPermanentDelete: true,
-        confirmedDryRunKey
-      }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().blocked).toBe(true);
-    expect(response.json().error).toContain("永久删除");
-    expect(service.archive).not.toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("blocks concurrent live mutations for the active scan", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    let releaseArchive!: () => void;
-    vi.mocked(service.archive).mockReturnValue(new Promise<void>((resolve) => {
-      releaseArchive = resolve;
-    }));
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockArchiveGroupVerification(service, scan, group);
-
-    const firstExecute = app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-    await vi.waitFor(() => {
-      expect(service.archive).toHaveBeenCalledTimes(1);
-    });
-
-    const secondExecute = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    expect(secondExecute.statusCode).toBe(200);
-    expect(secondExecute.json().blocked).toBe(true);
-    expect(secondExecute.json().error).toContain("已有执行任务正在运行");
-    expect(service.archive).toHaveBeenCalledTimes(1);
-
-    releaseArchive();
-    const firstExecuteResponse = await firstExecute;
-    expect(firstExecuteResponse.statusCode).toBe(200);
-    expect(firstExecuteResponse.json().scanInvalidated).toBe(false);
-    expect(firstExecuteResponse.json().completedGroupId).toBe(group.id);
-  });
-
-  it("rejects scans while a live mutation is running", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    let releaseArchive!: () => void;
-    vi.mocked(service.archive).mockReturnValue(new Promise<void>((resolve) => {
-      releaseArchive = resolve;
-    }));
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-
-    const firstExecute = app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-    await vi.waitFor(() => {
-      expect(service.archive).toHaveBeenCalledTimes(1);
-    });
-
-    const rescanResponse = await app.inject({
-      method: "POST",
-      url: "/api/scan",
-      headers: { "x-session-token": token },
-      payload: { mode: "live", accountName: "example-account" }
-    });
-
-    expect(rescanResponse.statusCode).toBe(409);
-    expect(rescanResponse.json().message).toContain("已有执行任务正在运行");
-    expect(service.scan).toHaveBeenCalledTimes(1);
-
-    releaseArchive();
-    await firstExecute;
-  });
-
-  it("keeps the live scan usable after a group is completed successfully", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const nextGroup = scan.groups[1];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockArchiveGroupVerification(service, scan, group);
-
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-    const completedGroupPlanResponse = await app.inject({
-      method: "POST",
-      url: "/api/plan",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0
-        }))
-      }
-    });
-    const nextGroupPlanResponse = await app.inject({
-      method: "POST",
-      url: "/api/plan",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: nextGroup.id,
-        items: nextGroup.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0
-        }))
-      }
-    });
-
-    expect(executeResponse.statusCode).toBe(200);
-    expect(executeResponse.json().scanInvalidated).toBe(false);
-    expect(executeResponse.json().completedGroupId).toBe(group.id);
-    expect(executeResponse.json().scan.groups).toHaveLength(scan.groups.length - 1);
-    expect(service.archive).toHaveBeenCalled();
-    expect(completedGroupPlanResponse.statusCode).toBe(400);
-    expect(completedGroupPlanResponse.json().message).toContain("找不到重复组");
-    expect(nextGroupPlanResponse.statusCode).toBe(200);
-  });
-
-  it("keeps skipped-group state after completing a different live group", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const skippedGroup = scan.groups[0];
-    const skipResponse = await app.inject({
-      method: "POST",
-      url: `/api/groups/${skippedGroup.id}/skip`,
-      headers: { "x-session-token": token },
-      payload: { scanId: scan.scanId }
-    });
-    const currentScan = skipResponse.json().scan;
-    const group = currentScan.groups.find((candidate: { id: string }) => candidate.id !== skippedGroup.id);
-    const payload = {
-      scanId: currentScan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockArchiveGroupVerification(service, currentScan, group);
-
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-    const restoreResponse = await app.inject({
-      method: "POST",
-      url: `/api/groups/${skippedGroup.id}/restore`,
-      headers: { "x-session-token": token },
-      payload: { scanId: currentScan.scanId }
-    });
-
-    expect(skipResponse.statusCode).toBe(200);
-    expect(executeResponse.statusCode).toBe(200);
-    expect(executeResponse.json().scanInvalidated).toBe(false);
-    expect(executeResponse.json().completedGroupId).toBe(group.id);
-    expect(restoreResponse.statusCode).toBe(200);
-    expect(restoreResponse.json().skippedGroupId).toBe(skippedGroup.id);
-    expect(service.archive).toHaveBeenCalled();
-    expect(service.delete).not.toHaveBeenCalled();
-    expect(service.copyToVaultAndArchiveSource).not.toHaveBeenCalled();
-  });
-
-  it("verifies archived items after a successful live archive", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockArchiveGroupVerification(service, scan, group);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().scanInvalidated).toBe(false);
-    expect(response.json().verification).toMatchObject({ ok: true, results: [] });
-  });
-
-  it("verifies deleted items are absent from active and archived states", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.delete).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups.find((candidate) => candidate.itemIds.some((itemId: string) => itemId.includes("github")))!;
-    const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
-    const deleteItem = scan.items.find((item) => item.id === group.itemIds[1])!;
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      confirmPermanentDelete: true,
-      permanentDeleteConfirmationPhrase: "永久删除",
-      items: [
-        { itemId: keepItem.id, keep: true },
-        { itemId: deleteItem.id, keep: false, deleteMode: "delete" }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockVaultStateReadSequence(service, [
-      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
-      { [deleteItem.vaultId]: { activeIds: [deleteItem.onePasswordItemId], archivedIds: [] } },
-      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
-      { [deleteItem.vaultId]: { activeIds: [], archivedIds: [] } }
-    ]);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().scanInvalidated).toBe(false);
-    expect(response.json().verification).toMatchObject({ ok: true, results: [] });
-    expect(service.delete).toHaveBeenCalledWith(deleteItem.vaultId, deleteItem.onePasswordItemId);
-  });
-
-  it("invalidates the scan when a kept item disappears after execution", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
-    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: [
-        { itemId: keepItem.id, keep: true },
-        { itemId: archiveItem.id, keep: false, deleteMode: "archive" }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockVaultStateReadSequence(service, [
-      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
-      { [archiveItem.vaultId]: { activeIds: [archiveItem.onePasswordItemId], archivedIds: [] } },
-      { [keepItem.vaultId]: { activeIds: [], archivedIds: [] } },
-      { [archiveItem.vaultId]: { activeIds: [], archivedIds: [archiveItem.onePasswordItemId] } }
-    ]);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    const body = response.json();
-    expect(response.statusCode).toBe(200);
-    expect(body.scanInvalidated).toBe(true);
-    expect(body.completedGroupId).toBeUndefined();
-    expect(body.verification.ok).toBe(false);
-    expect(body.verification.results).toContainEqual(expect.objectContaining({
-      action: "keep",
-      severity: "critical",
-      ok: false
-    }));
-  });
-
-  it("verifies moved items by checking source archive and target active item", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-    vi.mocked(service.copyToVaultAndArchiveSource).mockResolvedValue({ createdItemId: "created-copy-1" });
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups.find((candidate) => candidate.itemIds.some((itemId: string) => itemId.includes("github")))!;
-    const moveItem = scan.items.find((item) => item.id === group.itemIds[0])!;
-    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: [
-        { itemId: moveItem.id, keep: true, targetVaultId: "vault-archive" },
-        { itemId: archiveItem.id, keep: false, deleteMode: "archive" }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockVaultStateReadSequence(service, [
-      { "vault-archive": { activeIds: [], archivedIds: [] } },
-      { [moveItem.vaultId]: { activeIds: [moveItem.onePasswordItemId], archivedIds: [] } },
-      { [archiveItem.vaultId]: { activeIds: [archiveItem.onePasswordItemId], archivedIds: [] } },
-      { "vault-archive": { activeIds: ["created-copy-1"], archivedIds: [] } },
-      { [moveItem.vaultId]: { activeIds: [], archivedIds: [moveItem.onePasswordItemId] } },
-      { [archiveItem.vaultId]: { activeIds: [], archivedIds: [archiveItem.onePasswordItemId] } }
-    ]);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.json().scanInvalidated).toBe(false);
-    expect(response.json().verification).toMatchObject({ ok: true, results: [] });
-    expect(response.json().results).toContainEqual(expect.objectContaining({
-      itemId: moveItem.id,
-      action: "copy-to-vault-and-archive-source",
-      createdItemId: "created-copy-1"
-    }));
-  });
-
-  it("reports critical verification failure for unexpected vault state changes", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockResolvedValue(undefined);
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const keepItem = scan.items.find((item) => item.id === group.itemIds[0])!;
-    const archiveItem = scan.items.find((item) => item.id === group.itemIds[1])!;
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: [
-        { itemId: keepItem.id, keep: true },
-        { itemId: archiveItem.id, keep: false, deleteMode: "archive" }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-    mockVaultStateReadSequence(service, [
-      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
-      { [archiveItem.vaultId]: { activeIds: [archiveItem.onePasswordItemId, "external-item"], archivedIds: [] } },
-      { [keepItem.vaultId]: { activeIds: [keepItem.onePasswordItemId], archivedIds: [] } },
-      { [archiveItem.vaultId]: { activeIds: [], archivedIds: [archiveItem.onePasswordItemId, "external-item"] } }
-    ]);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    const body = response.json();
-    expect(response.statusCode).toBe(200);
-    expect(body.scanInvalidated).toBe(true);
-    expect(body.verification.ok).toBe(false);
-    expect(body.verification.results).toContainEqual(expect.objectContaining({
-      itemId: "external-item",
-      severity: "critical",
-      ok: false
-    }));
-  });
-
-  it("invalidates live scan state after a failed mutation", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createMockScanResult());
-    vi.mocked(service.archive).mockRejectedValue(new Error("archive failed"));
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      items: group.itemIds.map((itemId: string, index: number) => ({
-        itemId,
-        keep: index === 0
-      }))
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-
-    const executeResponse = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-    const planAfterFailureResponse = await app.inject({
-      method: "POST",
-      url: "/api/plan",
-      headers: { "x-session-token": token },
-      payload: {
-        scanId: scan.scanId,
-        groupId: group.id,
-        items: group.itemIds.map((itemId: string, index: number) => ({
-          itemId,
-          keep: index === 0
-        }))
-      }
-    });
-
-    expect(executeResponse.statusCode).toBe(200);
-    expect(executeResponse.json().scanInvalidated).toBe(true);
-    expect(executeResponse.json().results.some((result: { ok: boolean }) => !result.ok)).toBe(true);
-    expect(planAfterFailureResponse.statusCode).toBe(400);
-    expect(planAfterFailureResponse.json().message).toContain("请先完成扫描并手动运行分析");
-  });
-
-  it("stops live execution after the first failed mutation", async () => {
-    vi.mocked(service.scan).mockResolvedValue(createThreeItemScanResult());
-    vi.mocked(service.archive).mockRejectedValue(new Error("archive failed"));
-
-    const scan = await scanAndAnalyze(app, { mode: "live", accountName: "example-account" });
-    const group = scan.groups[0];
-    const payload = {
-      scanId: scan.scanId,
-      groupId: group.id,
-      confirmPermanentDelete: true,
-      permanentDeleteConfirmationPhrase: "永久删除",
-      items: [
-        { itemId: group.itemIds[0], keep: false, deleteMode: "archive" },
-        { itemId: group.itemIds[1], keep: false, deleteMode: "delete" },
-        { itemId: group.itemIds[2], keep: true }
-      ]
-    };
-    const confirmedDryRunKey = await dryRunGroup(app, payload);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/execute",
-      headers: { "x-session-token": token },
-      payload: { ...payload, confirmedDryRunKey }
-    });
-
-    const body = response.json();
-    expect(response.statusCode).toBe(200);
-    expect(body.scanInvalidated).toBe(true);
-    expect(body.results).toEqual([
-      expect.objectContaining({ itemId: group.itemIds[2], action: "keep", ok: true }),
-      expect.objectContaining({ itemId: group.itemIds[0], action: "archive", ok: false }),
-      expect.objectContaining({ itemId: group.itemIds[1], action: "delete", ok: false, skipped: true })
-    ]);
-    expect(service.archive).toHaveBeenCalledTimes(1);
-    expect(service.delete).not.toHaveBeenCalled();
-  });
 });
+
+async function scanAndAnalyze(
+    app: Awaited<ReturnType<typeof createApiServer>>,
+    payload: Record<string, unknown>,
+): Promise<ScanResult & { skippedGroupIds: string[] }> {
+    const started = await app.inject({ method: "POST", url: "/api/scan", headers, payload });
+    expect(started.statusCode).toBe(200);
+    let snapshot: ScanSnapshot | undefined;
+    await vi.waitFor(async () => {
+        const response = await app.inject({ method: "GET", url: "/api/scan", headers });
+        expect(response.statusCode).toBe(200);
+        snapshot = response.json();
+    });
+    const response = await app.inject({ method: "POST", url: "/api/analyze", headers, payload: { scanId: snapshot!.scanId } });
+    expect(response.statusCode).toBe(200);
+    return response.json();
+}
+
+function draftFor(analysis: ScanResult) {
+    const group = analysis.groups[0];
+    return {
+        storeSnapshotId: analysis.scanId,
+        storeVersion: analysis.storeVersion,
+        groups: [{
+            groupId: group.id,
+            items: group.itemIds.map((itemId, index) => ({
+                itemId,
+                disposition: index === 0 ? ItemDisposition.Keep : ItemDisposition.Archive,
+                removeTags: [],
+            })),
+        }],
+    };
+}

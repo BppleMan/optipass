@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from "@angular/core";
-import type { CredentialChipView, DuplicateGroupView, DuplicateItemView } from "../../../../core/models/workflow.models";
+import { CredentialFieldKind, ItemDetailFieldKey, TagRemovalScope, type CredentialChipView, type DuplicateGroupView,
+    type DuplicateItemView } from "../../../../core/models/workflow.models";
 import { SegmentedControlComponent, type SegmentedControlItem } from "../../../../shared/ui/segmented-control/segmented-control";
 import { VaultSelectComponent } from "../../../../shared/ui/vault-select/vault-select";
 
@@ -20,6 +21,7 @@ export interface AnalysisTagScopePrompt {
     },
 })
 export class AnalysisItemCard {
+    protected readonly TagRemovalScope = TagRemovalScope;
     public readonly group = input.required<DuplicateGroupView>();
     public readonly item = input.required<DuplicateItemView>();
     public readonly decisionItems = input.required<SegmentedControlItem[]>();
@@ -27,8 +29,20 @@ export class AnalysisItemCard {
 
     public readonly decisionChange = output<string>();
     public readonly vaultChange = output<string>();
+    public readonly titleChange = output<string>();
     public readonly tagRemovalRequested = output<string>();
-    public readonly tagScopeApplied = output<"item" | "group">();
+    public readonly tagScopeApplied = output<TagRemovalScope>();
+
+    public commitTitle(event: Event): void {
+        const input = event.currentTarget as HTMLInputElement;
+        const title = input.value.trim();
+        if (!title) {
+            input.value = this.item().title;
+            return;
+        }
+        input.value = title;
+        this.titleChange.emit(title);
+    }
 
     public readonly decisionValue = computed(() => {
         const item = this.item();
@@ -38,15 +52,15 @@ export class AnalysisItemCard {
     public credentialSlots(): AnalysisCredentialSlot[] {
         const chips = this.item().credChips;
         return [
-            credentialSlot("password", "密码", chips, ["password", "secret"]),
-            credentialSlot("totp", "一次性", chips, ["totp"]),
-            credentialSlot("passkey", "通行证", chips, ["passkey"]),
+            credentialSlot(AnalysisCredentialSlotKind.Password, "密码", chips, [CredentialFieldKind.Password, CredentialFieldKind.Secret]),
+            credentialSlot(AnalysisCredentialSlotKind.Totp, "一次性", chips, [CredentialFieldKind.Totp]),
+            credentialSlot(AnalysisCredentialSlotKind.Passkey, "通行证", chips, [CredentialFieldKind.Passkey]),
         ];
     }
 
     public detailTimeParts(): string[] {
         const item = this.item();
-        return [detailRowValue(item, "created"), detailRowValue(item, "updated")];
+        return [detailRowValue(item, ItemDetailFieldKey.Created), detailRowValue(item, ItemDetailFieldKey.Updated)];
     }
 
     public tagSharedAcrossGroup(tag: string): boolean {
@@ -60,8 +74,14 @@ export class AnalysisItemCard {
     }
 }
 
+enum AnalysisCredentialSlotKind {
+    Password = "password",
+    Totp = "totp",
+    Passkey = "passkey",
+}
+
 interface AnalysisCredentialSlot {
-    kind: "password" | "totp" | "passkey";
+    kind: AnalysisCredentialSlotKind;
     label: string;
     text: string;
     empty: boolean;
@@ -82,6 +102,6 @@ function credentialSlot(
     };
 }
 
-function detailRowValue(item: DuplicateItemView, key: "created" | "updated" | "tags"): string {
+function detailRowValue(item: DuplicateItemView, key: ItemDetailFieldKey): string {
     return item.detailRows.find((row) => row.key === key)?.value || "—";
 }

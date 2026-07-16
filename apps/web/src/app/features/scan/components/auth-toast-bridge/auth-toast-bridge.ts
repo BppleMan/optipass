@@ -1,6 +1,7 @@
 import { Component, effect } from '@angular/core';
 import { opToast } from '../../../../shared/ui/op-toast/op-toast';
 import { WorkflowService } from '../../../analysis/state/workflow.service';
+import { AuthState } from '../../../../core/models/workflow.models';
 
 const AUTH_TOAST_ID = 'scan-auth-hint';
 
@@ -27,13 +28,13 @@ export class AuthToastBridgeComponent {
 
       queueMicrotask(() => {
         if (this.pendingToastKey === toastKey) {
-          this.syncAuthToast(message, state);
+          this.syncAuthToast(message ?? '', state);
         }
       });
     });
   }
 
-  private syncAuthToast(message: string | undefined, state: string): void {
+  private syncAuthToast(message: string, state: AuthState): void {
     if (!message) {
       opToast.dismiss(AUTH_TOAST_ID);
       return;
@@ -41,7 +42,7 @@ export class AuthToastBridgeComponent {
 
     const options = {
       id: AUTH_TOAST_ID,
-      duration: state === 'failed' ? 14000 : 10000
+      duration: state === AuthState.Failed ? 14000 : 10000
     };
 
     if (state === 'failed') {

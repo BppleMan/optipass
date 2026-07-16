@@ -23,7 +23,7 @@ export class VaultSelectComponent {
 
   @ViewChild('trigger') private readonly trigger?: ElementRef<HTMLButtonElement>;
 
-  public selectedOption(): VaultOptionView | undefined {
+  public selectedOption() {
     return this.options().find((option) => option.id === this.value()) ?? this.options()[0];
   }
 

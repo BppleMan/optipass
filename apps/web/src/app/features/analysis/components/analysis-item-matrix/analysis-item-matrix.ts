@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, input, output } from "@angular/core";
-import type { DuplicateGroupView, DuplicateItemView } from "../../../../core/models/workflow.models";
+import { TagRemovalScope, type DuplicateGroupView, type DuplicateItemView } from "../../../../core/models/workflow.models";
 import type { SegmentedControlItem } from "../../../../shared/ui/segmented-control/segmented-control";
 import { AnalysisItemCard, type AnalysisTagScopePrompt } from "../analysis-item-card/analysis-item-card";
 
@@ -9,6 +9,11 @@ export interface AnalysisItemDecisionChange {
 }
 
 export interface AnalysisItemVaultChange {
+    itemId: string;
+    value: string;
+}
+
+export interface AnalysisItemTitleChange {
     itemId: string;
     value: string;
 }
@@ -32,7 +37,8 @@ export class AnalysisItemMatrix {
 
     public readonly decisionChange = output<AnalysisItemDecisionChange>();
     public readonly vaultChange = output<AnalysisItemVaultChange>();
+    public readonly titleChange = output<AnalysisItemTitleChange>();
     public readonly tagRemovalRequested = output<AnalysisItemTagRemoval>();
-    public readonly tagScopeApplied = output<"item" | "group">();
+    public readonly tagScopeApplied = output<TagRemovalScope>();
 
 }

@@ -6,6 +6,23 @@ import { OpProgressComponent } from '../../shared/ui/op-progress/op-progress';
 import { ItemTypeIconComponent } from '../../shared/ui/item-type-icon/item-type-icon';
 import { VaultIconComponent } from '../../shared/ui/vault-icon/vault-icon';
 import { WorkflowService } from '../analysis/state/workflow.service';
+import { ItemProvider, ScanMode, ScanPhase } from '@optimize-password/core';
+import { AuthState } from '../../core/models/workflow.models';
+
+enum ScanStatusTone {
+  Waiting = 'waiting', Scanning = 'scanning', Done = 'done', Failed = 'failed',
+}
+
+enum ScanSummaryMetricKind {
+  Items = 'items', Vaults = 'vaults', Failed = 'failed', Done = 'done', Elapsed = 'elapsed',
+}
+
+interface ScanSummaryMetric {
+  label: string;
+  value: string;
+  kind: ScanSummaryMetricKind;
+  color: string;
+}
 
 @Component({
   selector: "op-scan-page",
@@ -19,9 +36,10 @@ import { WorkflowService } from '../analysis/state/workflow.service';
   ],
 })
 export class ScanPageComponent implements OnInit, OnDestroy {
+  public readonly ItemProvider = ItemProvider;
   public errorDialogOpen = false;
   private readonly elapsedNow = signal(Date.now());
-  private elapsedTimer: number | undefined;
+  private elapsedTimer?: number;
 
   constructor(public readonly wf: WorkflowService) {}
 
@@ -44,20 +62,20 @@ export class ScanPageComponent implements OnInit, OnDestroy {
     if (this.wf.scanDone()) {
       return '扫描';
     }
-    if (this.wf.authState() === 'authorizing') {
-      if (this.wf.activeScanMode() === 'mock') {
+    if (this.wf.authState() === AuthState.Authorizing) {
+      if (this.wf.activeScanMode() === ScanMode.Mock) {
         return '扫描中';
       }
       return '等待授权…';
     }
-    if (this.wf.authState() === 'authorized') {
+    if (this.wf.authState() === AuthState.Authorized) {
       return '扫描中';
     }
     return '扫描';
   }
 
   scanControlsDisabled(): boolean {
-    return !this.wf.scanDone() && (this.wf.loading() || this.wf.authState() === 'authorizing' || this.wf.authState() === 'authorized');
+    return !this.wf.scanDone() && (this.wf.loading() || this.wf.authState() === AuthState.Authorizing || this.wf.authState() === AuthState.Authorized);
   }
 
   scanInProgress(): boolean {
@@ -65,7 +83,7 @@ export class ScanPageComponent implements OnInit, OnDestroy {
       return false;
     }
     const phase = this.wf.scanProgress()?.phase;
-    return this.wf.loading() || phase === 'scanning';
+    return this.wf.loading() || phase === ScanPhase.Scanning;
   }
 
   scanStatusLabel(): string {
@@ -81,28 +99,28 @@ export class ScanPageComponent implements OnInit, OnDestroy {
     return '等待扫描';
   }
 
-  scanStatusTone(): 'waiting' | 'scanning' | 'done' | 'failed' {
+  scanStatusTone(): ScanStatusTone {
     if (this.wf.scanDone()) {
-      return 'done';
+      return ScanStatusTone.Done;
     }
     if (this.scanInProgress()) {
-      return 'scanning';
+      return ScanStatusTone.Scanning;
     }
     if (this.wf.scanFailed()) {
-      return 'failed';
+      return ScanStatusTone.Failed;
     }
-    return 'waiting';
+    return ScanStatusTone.Waiting;
   }
 
   scanProgressColor(): string {
     switch (this.scanStatusTone()) {
-      case 'done':
+      case ScanStatusTone.Done:
         return '#c3e88d';
-      case 'scanning':
+      case ScanStatusTone.Scanning:
         return '#82aaff';
-      case 'failed':
+      case ScanStatusTone.Failed:
         return '#ff5370';
-      case 'waiting':
+      case ScanStatusTone.Waiting:
         return '#616161';
     }
   }
@@ -117,8 +135,23 @@ export class ScanPageComponent implements OnInit, OnDestroy {
     this.errorDialogOpen = false;
   }
 
+  public async onCsvFileSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.item(0);
+    if (!file) {
+      return;
+    }
+    try {
+      await this.wf.selectCsvFile(file);
+    } catch (error) {
+      this.wf.error.set(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   connectionTitle(): string {
-    const account = this.wf.account().trim() || '1Password';
+    const account = this.wf.scanSource() === ItemProvider.Csv
+      ? this.wf.csvFileName() || 'CSV 文件'
+      : this.wf.account().trim() || '1Password';
     if (this.wf.scanDone()) {
       return `已连接 ${account}`;
     }
@@ -133,13 +166,13 @@ export class ScanPageComponent implements OnInit, OnDestroy {
 
   connectionIcon(): string {
     switch (this.scanStatusTone()) {
-      case 'done':
+      case ScanStatusTone.Done:
         return '✓';
-      case 'scanning':
+      case ScanStatusTone.Scanning:
         return '◌';
-      case 'failed':
+      case ScanStatusTone.Failed:
         return '!';
-      case 'waiting':
+      case ScanStatusTone.Waiting:
         return '○';
     }
   }
@@ -166,13 +199,13 @@ export class ScanPageComponent implements OnInit, OnDestroy {
     return this.wf.overallPct();
   }
 
-  summaryMetrics(): Array<{ label: string; value: string; kind: 'items' | 'vaults' | 'failed' | 'done' | 'elapsed'; color: string }> {
+  summaryMetrics(): ScanSummaryMetric[] {
     return [
-      { label: '总 items', value: String(this.wf.totalItems()), kind: 'items', color: '#82aaff' },
-      { label: '已扫描 vault', value: String(this.scannedVaults()), kind: 'vaults', color: '#c3e88d' },
-      { label: '异常 vault', value: String(this.failedVaults()), kind: 'failed', color: '#c792ea' },
-      { label: '扫描耗时', value: this.scanElapsedLabel(), kind: 'elapsed', color: '#89ddff' },
-      { label: '扫描完成', value: `${this.displayOverallPct()}%`, kind: 'done', color: '#ffcb6b' }
+      { label: '总 items', value: String(this.wf.totalItems()), kind: ScanSummaryMetricKind.Items, color: '#82aaff' },
+      { label: '已扫描 vault', value: String(this.scannedVaults()), kind: ScanSummaryMetricKind.Vaults, color: '#c3e88d' },
+      { label: '异常 vault', value: String(this.failedVaults()), kind: ScanSummaryMetricKind.Failed, color: '#c792ea' },
+      { label: '扫描耗时', value: this.scanElapsedLabel(), kind: ScanSummaryMetricKind.Elapsed, color: '#89ddff' },
+      { label: '扫描完成', value: `${this.displayOverallPct()}%`, kind: ScanSummaryMetricKind.Done, color: '#ffcb6b' }
     ];
   }
 
@@ -206,7 +239,7 @@ export class ScanPageComponent implements OnInit, OnDestroy {
       return ` · 已将 ${this.wf.totalItems()} 个 item 读入本地内存`;
     }
     if (this.wf.scanFailed()) {
-      return ' · 请检查授权状态后重新扫描';
+      return this.wf.scanSource() === ItemProvider.Csv ? ' · 请检查 CSV 格式后重试' : ' · 请检查授权状态后重新扫描';
     }
     return '';
   }

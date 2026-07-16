@@ -296,6 +296,7 @@
               [tagPrompt]="tagScopePrompt"
               (decisionChange)="onItemDecisionChange($event.item, $event.value)"
               (vaultChange)="wf.updateTargetVault($event.itemId, $event.value)"
+              (titleChange)="wf.updateItemTitle($event.itemId, $event.value)"
               (tagRemovalRequested)="requestTagRemoval(group, $event.item, $event.tag)"
               (tagScopeApplied)="applyTagScope($event)"
             ></op-analysis-item-matrix>

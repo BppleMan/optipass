@@ -110,6 +110,28 @@ describe("OnePasswordService", () => {
     expect(put).toHaveBeenCalledWith(expect.objectContaining({ tags: ["work"] }));
   });
 
+  it("updates the title on the latest item", async () => {
+    const latest = { ...loginItem("item-1"), vaultId: "vault-1", title: "Old title" };
+    const get = vi.fn().mockResolvedValue(latest);
+    const put = vi.fn(async (item: typeof latest) => item);
+    sdkMock.createClient.mockResolvedValue({
+      vaults: { list: vi.fn(() => [{ id: "vault-1", title: "Personal" }]) },
+      items: {
+        list: vi.fn(() => [{ id: "item-1" }]),
+        getAll: vi.fn(async () => ({ individualResponses: [{ content: latest }] })),
+        get,
+        put
+      }
+    });
+
+    const service = new OnePasswordService();
+    await service.scan({ serviceAccountToken: "ops-test" });
+    await service.updateTitle("vault-1:item-1", "New title");
+
+    expect(get).toHaveBeenCalledWith("vault-1", "item-1");
+    expect(put).toHaveBeenCalledWith(expect.objectContaining({ title: "New title" }));
+  });
+
   it("removes archived items from the local mutation cache", async () => {
     const item = { ...loginItem("item-1"), vaultId: "vault-1" };
     const archive = vi.fn();

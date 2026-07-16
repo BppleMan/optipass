@@ -2,7 +2,11 @@ import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type AppMode = "browser-dev" | "browser-serve" | "tauri";
+export enum AppMode {
+    BrowserDev = "browser-dev",
+    BrowserServe = "browser-serve",
+    Tauri = "tauri",
+}
 
 export interface ApiConfig {
   host: string;
@@ -50,17 +54,17 @@ function readWebOrigins(): string[] {
 function readAppMode(): AppMode {
   const mode = process.env.APP_MODE;
   if (mode === "browser-dev" || mode === "browser-serve" || mode === "tauri") {
-    return mode;
+    return mode as AppMode;
   }
-  return "browser-dev";
+  return AppMode.BrowserDev;
 }
 
-function readPositiveNumber(name: string): number | undefined {
+function readPositiveNumber(name: string): number {
   const value = process.env[name];
   if (!value) {
-    return undefined;
+    return 0;
   }
 
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }

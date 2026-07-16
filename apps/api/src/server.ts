@@ -1,11 +1,13 @@
 import { createApiServer } from "./app.js";
 import { readConfig } from "./config.js";
 import { OnePasswordService } from "./onepassword.js";
+import { createDefaultApplicationServices } from "./application-services.js";
 
 const config = readConfig();
+const onePassword = new OnePasswordService();
 const server = await createApiServer({
   config,
-  onePassword: new OnePasswordService()
+  services: createDefaultApplicationServices(onePassword)
 });
 
 await server.listen({ host: config.host, port: config.port });

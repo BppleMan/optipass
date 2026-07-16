@@ -1,12 +1,47 @@
-import type { ActionDraftItem, ActionPlanGroup, ItemSummary } from '@optimize-password/core';
+import { ItemDisposition, type ActionDraftItem, type ActionPlanGroupDto, type ItemSummary } from "@optimize-password/core";
 
-export type AppStep = 'scan' | 'analysis' | 'applying' | 'summary';
-export type AuthState = 'idle' | 'authorizing' | 'authorized' | 'failed';
-export type AnalysisFilterSectionId = 'years' | 'vaults' | 'domains' | 'credentials';
-export type AnalysisFilterKey = 'year' | 'vault' | 'domain' | 'credential' | 'search';
-export type FilterCredentialKind = 'password' | 'totp' | 'passkey';
-export type RemoveAction = 'archive' | 'delete';
-export type ApplyStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+export enum AppStep {
+  Scan = 'scan', Analysis = 'analysis', Applying = 'applying', Summary = 'summary',
+}
+export enum AuthState {
+  Idle = 'idle', Authorizing = 'authorizing', Authorized = 'authorized', Failed = 'failed',
+}
+export enum AnalysisFilterSectionId {
+  Years = 'years', Vaults = 'vaults', Domains = 'domains', Credentials = 'credentials',
+}
+export enum AnalysisFilterKey {
+  Year = 'year', Vault = 'vault', Domain = 'domain', Credential = 'credential', Search = 'search',
+}
+export enum FilterCredentialKind {
+  Password = 'password', Totp = 'totp', Passkey = 'passkey',
+}
+export enum RemoveAction {
+  Archive = 'archive', Delete = 'delete',
+}
+export enum ApplyStatus {
+  Pending = 'pending', Running = 'running', Done = 'done', Failed = 'failed', Skipped = 'skipped',
+}
+
+export enum CredentialFieldKind {
+  Password = 'password', Secret = 'secret', Totp = 'totp', Passkey = 'passkey', Missing = 'missing',
+}
+
+export enum ItemDetailFieldKey {
+  Username = 'username', Title = 'title', Url = 'url', Credentials = 'credentials', Vault = 'vault', Category = 'category',
+  Updated = 'updated', Created = 'created', Tags = 'tags',
+}
+
+export enum PlanPreviewTone {
+  Keep = 'keep', Archive = 'archive', Delete = 'delete', Move = 'move', Tags = 'tags', Skip = 'skip',
+}
+
+export enum ApplyOperationType {
+  Archive = 'archive', Delete = 'delete', Move = 'move', Tags = 'tags', Title = 'title',
+}
+
+export enum TagRemovalScope {
+  Item = 'item', Group = 'group',
+}
 
 export interface TypeCountView {
   category: string;
@@ -40,7 +75,7 @@ export interface TabView {
 }
 
 export interface CredentialChipView {
-  kind: 'password' | 'secret' | 'totp' | 'passkey' | 'missing';
+  kind: CredentialFieldKind;
   label: string;
   bg: string;
   color: string;
@@ -55,7 +90,6 @@ export interface VaultOptionView {
   current: boolean;
 }
 
-export type ItemDetailFieldKey = 'username' | 'title' | 'url' | 'credentials' | 'vault' | 'category' | 'updated' | 'created' | 'tags';
 
 export interface ItemDetailRowView {
   key: ItemDetailFieldKey;
@@ -95,6 +129,8 @@ export interface AnalysisFilterSummaryView {
 export interface DuplicateItemView {
   id: string;
   title: string;
+  originalTitle: string;
+  titleChanged: boolean;
   username: string;
   url: string;
   category: string;
@@ -152,7 +188,7 @@ export interface PreviewGroupView {
   cardBorder: string;
   skipColor: string;
   items: DuplicateItemView[];
-  plan?: ActionPlanGroup;
+  plan?: ActionPlanGroupDto;
   actions: PlanActionPreviewView[];
 }
 
@@ -168,7 +204,7 @@ export interface PlanActionPreviewView {
   opLabel: string;
   targetLabel: string;
   detail: string;
-  tone: "keep" | "archive" | "delete" | "move" | "tags" | "skip";
+  tone: PlanPreviewTone;
   removedTags: string[];
   retainedTags: string[];
   color: string;
@@ -181,8 +217,9 @@ export interface ApplyOperationView {
   groupId: string;
   groupLabel: string;
   itemId: string;
-  type: 'archive' | 'delete' | 'move' | 'tags';
-  sourceAction: 'archive' | 'delete' | 'copy-to-vault-and-archive-source' | 'update-tags';
+  type: ApplyOperationType;
+  actionId: string;
+  sourceAction: import("@optimize-password/core").ActionKind;
   label: string;
   status: ApplyStatus;
   dryRun?: boolean;
@@ -212,7 +249,7 @@ export interface ApplyOperationGroupView {
 }
 
 export function removeActionFromDecision(decision: ActionDraftItem): RemoveAction {
-  return decision.deleteMode === 'delete' ? 'delete' : 'archive';
+  return decision.disposition === ItemDisposition.Delete ? RemoveAction.Delete : RemoveAction.Archive;
 }
 
 export function itemUpdatedDate(item: ItemSummary): string {
