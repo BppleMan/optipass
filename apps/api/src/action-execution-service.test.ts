@@ -101,7 +101,11 @@ describe("ActionExecutionService", () => {
         expect(result.analysis.items.map((item) => item.id)).toContain(result.itemIdMappings[source.id]);
     });
 
-    it("dry-run 倍速参数控制步骤间展示节奏", async () => {
+    it.each([
+        { multiplier: DryRunSpeedMultiplier.One, waitMs: 0 },
+        { multiplier: DryRunSpeedMultiplier.Five, waitMs: 200 },
+        { multiplier: DryRunSpeedMultiplier.Ten, waitMs: 400 },
+    ])("dry-run $multiplier x 档位在步骤后等待 $waitMs ms", async ({ multiplier, waitMs }) => {
         vi.useFakeTimers();
         try {
             const services = createApplicationServices([new CsvItemBackend()]);
@@ -122,13 +126,13 @@ describe("ActionExecutionService", () => {
                 executionId: "paced-dry-run",
                 plan,
                 mode: ExecutionMode.DryRun,
-                dryRunSpeedMultiplier: DryRunSpeedMultiplier.Ten,
+                dryRunSpeedMultiplier: multiplier,
             });
             let completed = false;
             void execution.then(() => { completed = true; });
-            await vi.advanceTimersByTimeAsync(99);
-            expect(completed).toBe(false);
-            await vi.advanceTimersByTimeAsync(1);
+            await vi.advanceTimersByTimeAsync(Math.max(0, waitMs - 1));
+            expect(completed).toBe(waitMs === 0);
+            await vi.advanceTimersByTimeAsync(waitMs === 0 ? 0 : 1);
             await expect(execution).resolves.toMatchObject({ succeeded: true });
         } finally {
             vi.useRealTimers();
@@ -166,7 +170,7 @@ describe("ActionExecutionService", () => {
             expect(completed).toBe(false);
 
             control.resume();
-            await vi.advanceTimersByTimeAsync(100);
+            await vi.advanceTimersByTimeAsync(400);
             await expect(execution).resolves.toMatchObject({ status: ActionExecutionStatus.Completed });
         } finally {
             vi.useRealTimers();

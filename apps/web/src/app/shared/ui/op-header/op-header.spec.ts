@@ -22,6 +22,7 @@ describe("OpHeaderComponent", () => {
 
         const element = fixture.nativeElement as HTMLElement;
         expect(element.querySelector(".account-chip.empty")).not.toBeNull();
+        expect(element.querySelector(".header-context > op-divider")).not.toBeNull();
         expect(element.textContent).not.toContain("试写倍率");
         const buttons = Array.from(element.querySelectorAll<HTMLButtonElement>(".dry-run-speed-segments button"));
         expect(buttons.map((button) => button.textContent?.trim())).toEqual(["1x", "5x", "10x"]);

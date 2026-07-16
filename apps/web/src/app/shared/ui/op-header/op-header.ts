@@ -1,11 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from "@angular/core";
 import { DryRunSpeedMultiplier } from "@optimize-password/core";
 import { AuthState } from "../../../core/models/workflow.models";
+import { DividerComponent } from "../divider/divider";
 
 @Component({
     selector: "op-header",
     standalone: true,
     changeDetection: ChangeDetectionStrategy.OnPush,
+    imports: [DividerComponent],
     templateUrl: "./op-header.html",
     styleUrl: "./op-header.scss",
 })
